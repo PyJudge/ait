@@ -26,7 +26,7 @@ def write(name, head, parts, subs=()):
 # strbuf
 write('strbuf.c', '#include "git-compat-util.h"\n#include "strbuf.h"\n', [
     fn('strbuf.c', 11), rng('strbuf.c', 62, 67), fn('strbuf.c', 69), fn('strbuf.c', 77), fn('strbuf.c', 85),
-    fn('strbuf.c', 106), fn('strbuf.c', 125), fn('strbuf.c', 311), fn('strbuf.c', 356), fn('strbuf.c', 407),
+    fn('strbuf.c', 106), fn('strbuf.c', 125), fn('strbuf.c', 246), fn('strbuf.c', 311), fn('strbuf.c', 356), fn('strbuf.c', 407),
     fn('strbuf.c', 523), fn('strbuf.c', 550), fn('strbuf.c', 768), fn('strbuf.c', 974), fn('strbuf.c', 981),
     fn('strbuf.c', 1058), fn('strbuf.c', 1085)],
     [('die(_("unable to format message: %s"), fmt);', 'die("unable to format message: %s", fmt);')])
@@ -36,6 +36,7 @@ void strbuf_release(struct strbuf *sb);
 char *strbuf_detach(struct strbuf *sb, size_t *sz);
 void strbuf_grow(struct strbuf *sb, size_t amount);
 void strbuf_rtrim(struct strbuf *sb);
+void strbuf_splice(struct strbuf *sb, size_t pos, size_t len, const void *data, size_t data_len);
 void strbuf_add(struct strbuf *sb, const void *data, size_t len);
 __attribute__((format (printf,2,3)))
 void strbuf_addf(struct strbuf *sb, const char *fmt, ...);

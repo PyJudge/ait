@@ -448,11 +448,14 @@ static int ref_transaction(const char *phase)
 	return 0;
 }
 
+static void recheck_hint(struct record *r, struct tree *t);
+
 /* spec 7.1.2-7.1.3: guard plain commits, validate merges */
 static int cmd_hook(int argc, const char **argv)
 {
 	struct state hs = { 0 }, ts = { 0 };
 	struct string_list paths = STRING_LIST_INIT_DUP, checks = STRING_LIST_INIT_DUP, gone = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
 	struct tree *ht, *t;
 	int no_merge;
 	size_t i;
@@ -484,42 +487,40 @@ static int cmd_hook(int argc, const char **argv)
 		return 0;
 	/* the block of 7.1.2: its warning and contract lines are normative */
 	warning("this commit leaves %d current contract(s) unverified", (int)gone.nr);
-	for (i = 0; i < gone.nr; i++) {
-		struct record *r = gone.items[i].util;
-		struct string_list defs = STRING_LIST_INIT_DUP;
-		size_t j;
+	for_each_string_list_item(item, &gone) {
+		struct record *r = item->util;
+		struct string_list_item *f;
 
-		fprintf(stderr, "    %s %s %s%s (%.*s)\n", r->id, rget(r, "role"), shows(r, "provider", ht, 1),
-			code_found(r, t) ? "" : " (no code under its scope)",
-			(int)strcspn(rget(r, "creator"), " "), rget(r, "creator"));
-		rvals(r, "file", &defs);
-		for (j = 0; j < defs.nr; j++)
-			if (ends_with(defs.items[j].string, " def"))
-				fputs(def_text(ht, xstrndup(defs.items[j].string, strcspn(defs.items[j].string, " ")),
-					       "        "), stderr);
+		fprintf(stderr, "    %s %s %s%s (%s)\n", r->id, val(r, ROLE), shows(r, PROVIDER, ht, 1),
+			code_found(r, t) ? "" : " (no code under its scope)", scope_path(val(r, CREATOR)));
+		for_each_string_list_item(f, &r->f[FILES])
+			if (is_def(f->string))
+				fputs(def_text(ht, scope_path(f->string), "        "), stderr);
 	}
 	warning("their receivers are notified after this commit");
 	advise("next time, to check and commit in one step, use 'ait commit' instead of 'git commit'");
-	for (i = 0; i < gone.nr; i++) {
-		struct record *r = gone.items[i].util;
-
-		advise("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", r->id, r->id);
-		if (code_found(r, t))
-			advise("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
-		else
-			advise("'%s' has no code under its scope; if it was moved, run 'ait amend %s %s<new scope> -m <why>' "
-			       "to get the tasks", r->id, r->id, *r->id == 'D' ? "- " : "");
+	for_each_string_list_item(item, &gone) {
+		advise("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", item->string, item->string);
+		recheck_hint(item->util, t);
 	}
 	return 0;
+}
+
+/* H7 and H8: check an unverified contract again, at its scope or where its code went */
+static void recheck_hint(struct record *r, struct tree *t)
+{
+	if (code_found(r, t))
+		advise("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
+	else
+		advise("'%s' has no code under its scope; if it was moved, run 'ait amend %s %s<new scope> -m <why>' "
+		       "to get the tasks", r->id, r->id, *r->id == 'D' ? "- " : "");
 }
 
 /* spec 3.9: two scopes overlap; "DIR/" and "/" cover what is under them */
 static int overlap(const char *a, const char *b)
 {
-	skip_prefix(a, "new:", &a);
-	skip_prefix(b, "new:", &b);
-	a = xstrndup(a, strcspn(a, " "));
-	b = xstrndup(b, strcspn(b, " "));
+	a = scope_path(a);
+	b = scope_path(b);
 	return !strcmp(a, "/") || !strcmp(b, "/") || !strcmp(a, b) ||
 	       (ends_with(a, "/") && starts_with(b, a)) || (ends_with(b, "/") && starts_with(a, b));
 }
@@ -527,20 +528,30 @@ static int overlap(const char *a, const char *b)
 /* the todo argument ARG names R: its ID, or a scope over its scopes or spec files (7.8.1) */
 static int named(struct record *r, const char *arg)
 {
-	static const char *keys[] = { "consumer", "provider", "file", NULL };
-	size_t k, i;
+	static const enum key ks[] = { CONSUMER, PROVIDER, FILES };
+	struct string_list_item *item;
+	size_t k;
 
-	if (!strcmp(arg, r->id))
-		return 1;
-	for (k = 0; keys[k]; k++) {
-		struct string_list v = STRING_LIST_INIT_DUP;
-
-		rvals(r, keys[k], &v);
-		for (i = 0; i < v.nr; i++)
-			if (overlap(arg, v.items[i].string))
+	for (k = 0; k < ARRAY_SIZE(ks); k++)
+		for_each_string_list_item(item, &r->f[ks[k]])
+			if (overlap(arg, item->string))
 				return 1;
+	return !strcmp(arg, r->id);
+}
+
+/* "file PATH exec|prompt|input" lines of 7.8.2, each definition with its body under it */
+static void file_lines(const char *prefix, struct record *r, struct tree *t)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &r->f[FILES]) {
+		char *path = scope_path(item->string);
+
+		if (is_def(item->string))
+			printf("%s %s %s\n%s", prefix, path, engine_of(t, path), def_text(t, path, "    "));
+		else
+			printf("%s %s input\n", prefix, path);
 	}
-	return 0;
 }
 
 static void link_lines(struct state *s, struct record *r, struct tree *t)
@@ -549,30 +560,16 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 
 	for (j = 0; j < s->nr; j++) {
 		struct record *l = s->r[j], *other;
-		struct string_list f = STRING_LIST_INIT_DUP;
-		size_t k;
 
-		if (*l->id != 'u' || strcmp(rget(l, "state"), "undertaken") || !strstr(l->id, r->id))
+		if (*l->id != 'u' || !in_state(l, "undertaken") || !strstr(l->id, r->id))
 			continue;
-		other = state_get(s, *r->id == 'O' ? xstrndup(l->id + 10, 13) : l->id + 24);
-		printf("%s %s %s %.*s\n", *r->id == 'O' ? "undertakes" : "undertaken-by", other->id, rget(other, "state"),
-		       (int)strcspn(rget(other, "creator"), " "), rget(other, "creator"));
-		if (*r->id != 'O' || strcmp(rget(other, "state"), "future"))
+		other = link_end(s, l, *r->id == 'D');
+		printf("%s %s %s %s\n", *r->id == 'O' ? "undertakes" : "undertaken-by", other->id, val(other, STATE),
+		       scope_path(val(other, CREATOR)));
+		if (*r->id != 'O' || !in_state(other, "future"))
 			continue;
-		printf("undertakes-provider %s %s\n", other->id, shows(other, "provider", t, 0));
-		rvals(other, "file", &f);
-		for (k = 0; k < f.nr; k++) {
-			char *path = xstrndup(f.items[k].string, strcspn(f.items[k].string, " "));
-			struct string_list kv = STRING_LIST_INIT_DUP;
-
-			if (!ends_with(f.items[k].string, " def")) {
-				printf("undertakes-file %s %s input\n", other->id, path);
-				continue;
-			}
-			def_load(t, path, &kv);
-			printf("undertakes-file %s %s %s\n%s", other->id, path,
-			       yget(&kv, "engine") && *yget(&kv, "engine") ? "exec" : "prompt", def_text(t, path, "    "));
-		}
+		printf("undertakes-provider %s %s\n", other->id, shows(other, PROVIDER, t, 0));
+		file_lines(xstrfmt("undertakes-file %s", other->id), other, t);
 	}
 }
 
@@ -581,12 +578,12 @@ static int cmd_todo(int argc, const char **argv)
 {
 	struct state s = { 0 };
 	struct string_list checks = STRING_LIST_INIT_DUP, index = STRING_LIST_INIT_DUP;
-	struct tree *t = tree_load(line1(git("write-tree"))), *ht;
+	struct string_list_item *item;
+	struct tree *t = tree_load(line1(git("write-tree"))), *ht = tree_load(head ? head : EMPTY_TREE);
 	const char *me = session(0) ? agent : NULL;
-	size_t i, j;
+	size_t i;
 	int k;
 
-	ht = tree_load(head ? head : EMPTY_TREE);
 	state_load(&s, ht);
 	checks_load(&checks);
 	for (k = 1; k < argc; k++) {
@@ -603,7 +600,6 @@ static int cmd_todo(int argc, const char **argv)
 	}
 	for (i = 0; i < s.nr; i++) {
 		struct record *r = s.r[i];
-		struct string_list v = STRING_LIST_INIT_DUP;
 		int mine, future, unver, pick = 0;
 
 		if (r->bad) {
@@ -612,8 +608,8 @@ static int cmd_todo(int argc, const char **argv)
 		}
 		if (*r->id == 'u' || !strcmp(r->id, "init"))
 			continue;
-		mine = me && starts_with(rget(r, "creator"), xstrfmt("%s ", me));
-		future = !strcmp(rget(r, "state"), "future");
+		mine = me && !strcmp(scope_path(val(r, CREATOR)), me);
+		future = in_state(r, "future");
 		unver = is_current(r) && unverified(r, t, &checks);
 		if (touches(r, ht, t))
 			string_list_append(&index, r->id)->util = r;
@@ -623,48 +619,28 @@ static int cmd_todo(int argc, const char **argv)
 			pick = me ? mine && (future || (unver && *r->id == 'D')) : future || unver;
 		if (!pick)
 			continue;
-		printf("id %s\nrole %s\nstate %s\ncreator %.*s\n", r->id, rget(r, "role"), rget(r, "state"),
-		       (int)strcspn(rget(r, "creator"), " "), rget(r, "creator"));
-		for (j = 0; j < 2; j++) {
-			struct string_list sc = STRING_LIST_INIT_DUP;
-			size_t n;
-
-			rvals(r, j ? "provider" : "consumer", &sc);
-			for (n = 0; n < sc.nr; n++)
-				printf("%s %s\n", j ? "provider" : "consumer", show(sc.items[n].string, t, j && is_current(r)));
-		}
+		printf("id %s\nrole %s\nstate %s\ncreator %s\n", r->id, val(r, ROLE), val(r, STATE), scope_path(val(r, CREATOR)));
+		for_each_string_list_item(item, &r->f[CONSUMER])
+			printf("consumer %s\n", show(item->string, t, 0));
+		for_each_string_list_item(item, &r->f[PROVIDER])
+			printf("provider %s\n", show(item->string, t, is_current(r)));
 		printf("%s", unver ? "unverified yes\n" : "");
-		rvals(r, "file", &v);
-		for (j = 0; j < v.nr; j++) {
-			char *path = xstrndup(v.items[j].string, strcspn(v.items[j].string, " "));
-			struct string_list kv = STRING_LIST_INIT_DUP;
-
-			if (!ends_with(v.items[j].string, " def")) {
-				printf("file %s input\n", path);
-				continue;
-			}
-			def_load(ht, path, &kv);
-			printf("file %s %s\n%s", path, yget(&kv, "engine") && *yget(&kv, "engine") ? "exec" : "prompt",
-			       def_text(ht, path, "    "));
-		}
+		file_lines("file", r, ht);
 		link_lines(&s, r, t);
 		putchar('\n');
-		if (unver && code_found(r, t))
-			advise("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
-		else if (unver)
-			advise("'%s' has no code under its scope; if it was moved, run 'ait amend %s %s<new scope> -m <why>' "
-			       "to get the tasks", r->id, r->id, *r->id == 'D' ? "- " : "");
+		if (unver)
+			recheck_hint(r, t);
 		else if (future && mine)
 			advise("when ready, stage the code and run 'ait fulfill %s%s -m <why>' to get the tasks", r->id,
 			       strstr(record_text(r, 1), "/ ") ? "=<scope>" : "");
 	}
 	if (index.nr)
 		puts("index");
-	for (i = 0; i < index.nr; i++)
-		if (!code_found(index.items[i].util, t))
-			printf("code-required %s\n", index.items[i].string);
-	for (i = 0; i < index.nr; i++)
-		printf("touch %s\n", index.items[i].string);
+	for_each_string_list_item(item, &index)
+		if (!code_found(item->util, t))
+			printf("code-required %s\n", item->string);
+	for_each_string_list_item(item, &index)
+		printf("touch %s\n", item->string);
 	if (index.nr)
 		putchar('\n');
 	return 0;

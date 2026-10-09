@@ -16,6 +16,7 @@ void strbuf_release(struct strbuf *sb);
 char *strbuf_detach(struct strbuf *sb, size_t *sz);
 void strbuf_grow(struct strbuf *sb, size_t amount);
 void strbuf_rtrim(struct strbuf *sb);
+void strbuf_splice(struct strbuf *sb, size_t pos, size_t len, const void *data, size_t data_len);
 void strbuf_add(struct strbuf *sb, const void *data, size_t len);
 __attribute__((format (printf,2,3)))
 void strbuf_addf(struct strbuf *sb, const char *fmt, ...);

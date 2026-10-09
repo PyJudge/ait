@@ -30,9 +30,11 @@ const char *blob_at(struct tree *t, const char *path);
 char *tree_with(const char *base, const char *index_info);
 void tree_diff(struct tree *a, struct tree *b, struct string_list *paths);
 
+/* a record is its values per key (spec 2.2.2); "new:PATH", "PATH OID", "DIR/ OID" for scopes */
+enum key { ROLE, STATE, CONSUMER, PROVIDER, TARGET, FILES, CREATOR, PREV, NKEYS };
 struct record {
 	char id[48];
-	struct string_list lines;	/* "key value", canonical order when written */
+	struct string_list f[NKEYS];
 	struct record *old;		/* the HEAD version */
 	const char *alias;
 	char *bad;
@@ -43,9 +45,13 @@ void state_load(struct state *s, struct tree *t);
 struct record *state_get(struct state *s, const char *id);
 struct record *state_add(struct state *s, const char *id);
 struct record *record_copy(struct record *r);
-const char *rget(struct record *r, const char *key);
-void rvals(struct record *r, const char *key, struct string_list *out);
-void rset(struct record *r, const char *key, struct string_list *vals);
+struct record *link_end(struct state *s, struct record *l, int offer);
+const char *val(struct record *r, enum key k);
+void put(struct record *r, enum key k, const char *v);
+int in_state(struct record *r, const char *state);
+char *scope_path(const char *v);
+const char *scope_oid(const char *v);
+int is_def(const char *file);
 char *record_text(struct record *r, int with_prev);
 int is_live(struct record *r);
 int is_current(struct record *r);
@@ -54,17 +60,20 @@ struct verdict { int code; const char *word; char *hint, *msg; };
 int check_state(struct state *s, struct tree *t, struct verdict *v);
 void validate(struct state *s, struct tree *t);
 int files_match(struct record *r, struct tree *t);
-char *rjoin(struct record *r, const char *key, const char *sep);
+char *scope_args(struct record *r, enum key k);
 char *def_paths(struct record *r);
+int declares(struct record *r, const char *path);
 int contract_path(struct state *s, const char *path);
 int path_ok(const char *p);
 char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs);
 char *show(const char *scope, struct tree *t, int current);
+char *shows(struct record *r, enum key k, struct tree *t, int current);
 char *pins(struct record *r);
-char *shows(struct record *r, const char *key, struct tree *t, int current);
 int code_found(struct record *r, struct tree *t);
 int touches(struct record *r, struct tree *a, struct tree *b);
+void repin(struct record *r, enum key k, struct tree *t, int new_only);
 char *def_text(struct tree *t, const char *path, const char *indent);
+const char *engine_of(struct tree *t, const char *def);
 int expand_files(struct record *r, struct tree *t);
 int unverified(struct record *r, struct tree *t, struct string_list *checks);
 void checks_load(struct string_list *checks);
