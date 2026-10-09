@@ -49,6 +49,12 @@ git checkout -q $GONE^ -- src/stock.c && echo changed >> src/stock.c && git add 
 run ait todo $O
 check "H8 at HEAD, since the commit that made it unverified" err_has "'$O' has no code under its scope (unverified since '$GONE'); if it was moved, run 'ait amend $O <new scope> - -m <why>'"
 check "then the reopen hint" err_has "reopen it: 'ait future amend $O -m <why>'"
+# 9.1: a commit that changes only prev is not where it became unverified
+git reset -q src/stock.c && git checkout -q src/stock.c 2>/dev/null
+OLD=$(git rev-parse HEAD:.ait/$O)
+sed -i.bak "s/^prev .*/prev $OLD/" .ait/$O && rm .ait/$O.bak && git add .ait/$O && tick && git commit -q --no-verify -m prev-only
+run ait todo $O
+check "the since commit stays the one that lost the code" err_has "(unverified since '$GONE')"
 git reset -q --hard "$H"
 
 # 5.5-5: once update-ref moved the branch, a failure to bring the index is a warning, not an error

@@ -882,10 +882,26 @@ int unverified(struct record *r, struct tree *t)
 	return !string_list_has_string(checks(), xstrfmt("%s %s", r->id, pins(r))) || off_pins(r, t);
 }
 
+/* the record TEXT is R as a current contract with R's pins (the provider and file lines of 5.4) */
+static int same_pins(const char *text, struct record *r)
+{
+	struct strbuf pinned = STRBUF_INIT;
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+
+	if (!text || !strstr(text, "\nstate current\n"))
+		return 0;
+	string_list_split(&lines, text, "\n", -1);
+	for_each_string_list_item(item, &lines)
+		if (starts_with(item->string, "provider ") || starts_with(item->string, "file "))
+			strbuf_addf(&pinned, "%s\n", item->string);
+	return !strcmp(pinned.buf, record_text(r, PIN_KEYS));
+}
+
 /*
  * 9.1 for H8: the commit of HEAD's first-parent history where R became unverified
- * with the record it has now: going back from HEAD while the commit holds this
- * record and R is unverified there, the last such commit. ait looks 100 commits back.
+ * with the pins it has now: going back from HEAD while the commit holds R current
+ * with these pins and R is unverified there, the last such commit. ait looks 100 commits back.
  */
 const char *unverified_since(struct record *r)
 {
@@ -908,9 +924,10 @@ const char *unverified_since(struct record *r)
 	for (i = 0; i < lines.nr && *lines.items[i].string; i++) {
 		char *commit = xstrndup(lines.items[i].string, 40);
 		struct tree *t = tree_load(commit);
+		const char *there = blob_at(t, xstrfmt(".ait/%s", r->id));
 
-		if (!blob_at(t, xstrfmt(".ait/%s", r->id)) || strcmp(blob_at(t, xstrfmt(".ait/%s", r->id)), record) ||
-		    (i < checked && !off_pins(r, t)))
+		/* 9.1: the same pins (provider and file lines) of a current contract; prev alone is no change */
+		if (!there || (strcmp(there, record) && !same_pins(blob_text(there), r)) || (i < checked && !off_pins(r, t)))
 			break;
 		since = commit;
 	}
@@ -1076,8 +1093,12 @@ static int yaml_scalar(struct yaml *y, const char **p, const char *stop, char *k
 	if (q && strchr("&*!|>%@`", q))
 		return yaml_fail(y, "unsupported YAML in '%s'", key);
 	if (q != '"' && q != '\'') {
-		while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == '#' && v > at && v[-1] == ' '))
+		while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == '#' && v > at && v[-1] == ' ')) {
+			/* YAML 1.2: ": " ends a key, so a plain scalar cannot hold it */
+			if (*v == ':' && (!v[1] || v[1] == ' ' || v[1] == '\n'))
+				return yaml_fail(y, "': ' inside the plain scalar of '%s'", key);
 			strbuf_addch(&sb, *v++);
+		}
 		strbuf_rtrim(&sb);
 	} else if (yaml_quoted(y, &v, &sb, key)) {
 		return -1;
@@ -1103,11 +1124,12 @@ static const char *key_end(const char *p, const char *stop)
 		if (*v != *p)
 			return NULL;
 		v += 1 + strspn(v + 1, " ");
-	} else {
-		while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == ':' && (!v[1] || strchr(" \n,]}", v[1]))))
-			v++;
+		/* after a quoted key, ':' needs no blank (YAML 1.2, as in JSON) */
+		return *v == ':' ? v : NULL;
 	}
-	return *v == ':' && v > p && (!v[1] || strchr(" \n,]}", v[1])) ? v : NULL;
+	while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == ':' && (!v[1] || strchr(" \n,]}", v[1]))))
+		v++;
+	return *v == ':' && v > p ? v : NULL;
 }
 
 /* the map key at *P, read up to its ':' and past it; NULL when there is none */
@@ -1124,6 +1146,11 @@ static char *yaml_key(struct yaml *y, const char **p, const char *stop)
 		strbuf_add(&sb, v, end - v);
 	strbuf_rtrim(&sb);
 	*p = end + 1;
+	/* a key is one step of a path ("a.0.b"): no schema key holds '.', and one that did would read as a path */
+	if (strchr(sb.buf, '.')) {
+		yaml_fail(y, "unknown key '%s'", sb.buf);
+		return NULL;
+	}
 	return strbuf_detach(&sb, NULL);
 }
 
@@ -1161,6 +1188,8 @@ static int yaml_flow(struct yaml *y, const char **p, char *key, int depth)
 	for (n = 0; **p != close; n++) {
 		char *sub = yaml_child(key, xstrfmt("%d", n)), *name;
 
+		if (**p == ',')
+			return yaml_fail(y, "an empty item in '%s'", key ? key : "the document");
 		if (close == '}') {
 			name = yaml_key(y, p, ",]}");
 			if (!name)
@@ -1193,11 +1222,11 @@ static const char *flow_end(const char *p, const char *next, int *no)
 	return c + (*c == '\n');
 }
 
-/* blanks, then the line's end or a comment */
+/* blanks, then the line's end or a comment, which a blank separates from what is before it */
 static int yaml_end(struct yaml *y, const char *p, int no)
 {
 	p += strspn(p, " ");
-	return *p && *p != '\n' && *p != '#' ? yaml_fail(y, "trailing text in line %d", no) : 0;
+	return *p && *p != '\n' && (*p != '#' || p[-1] != ' ') ? yaml_fail(y, "trailing text in line %d", no) : 0;
 }
 
 /* a level of block structure: where it is indented, its list items so far, its key and value */
@@ -1205,6 +1234,7 @@ struct yframe {
 	int indent, items, map_only;
 	char *prefix;
 	struct yval *v;
+	int entries;	/* where its entries are indented, -1 until the first */
 };
 
 /* a map or list opening under KEY one level deeper, as deep as ait reads (16 levels) */
@@ -1214,7 +1244,7 @@ static int yaml_push(struct yaml *y, struct yframe *st, int *sp, int indent, int
 	if (*sp >= 15)
 		return yaml_fail(y, "nested too deeply in line %d", no);
 	(*sp)++;
-	st[*sp] = (struct yframe){ indent, 0, map_only, key, yaml_put(y, key, xstrdup(""), at) };
+	st[*sp] = (struct yframe){ indent, 0, map_only, key, yaml_put(y, key, xstrdup(""), at), map_only ? indent + 2 : -1 };
 	if (!st[*sp].v)
 		return -1;
 	st[*sp].v->kind = kind;
@@ -1224,7 +1254,7 @@ static int yaml_push(struct yaml *y, struct yframe *st, int *sp, int indent, int
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err)
 {
 	struct yaml y = { text, what, kv, NULL };
-	struct yframe st[16] = { { -1, 0, 1, NULL, NULL } };
+	struct yframe st[16] = { { -1, 0, 1, NULL, NULL, -1 } };
 	const char *line, *next;
 	int sp = 0, no = 0;
 
@@ -1247,6 +1277,12 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 			sp--;
 		if (st[sp].v && yaml_kind(&y, st[sp].v, item ? 'l' : 'm', st[sp].prefix))
 			break;
+		/* YAML 1.2: the entries of one map or list stand at one indentation */
+		if (st[sp].entries >= 0 && indent != st[sp].entries) {
+			yaml_fail(&y, "bad indentation in line %d", no);
+			break;
+		}
+		st[sp].entries = indent;
 		prefix = st[sp].prefix;
 		if (item) {
 			prefix = xstrfmt("%s.%d", prefix, st[sp].items++);
