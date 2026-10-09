@@ -200,37 +200,57 @@ static void load(struct request *q)
  */
 static void parse_options(struct request *q, int argc, const char **argv)
 {
-	int i, from_m = 0, from_file = 0, option = 0;
+	/*
+	 * a positional argument never starts with '-' but for amend's lone "-"
+	 * (7.3.1), so every other "-..." is one of these or a usage error;
+	 * only -m may be repeated (5.3)
+	 */
+	static const struct option { const char *name, *as; int value; } options[] = {
+		{ "-m", "-m", 1 }, { "-F", "-F", 1 }, { "-r", "-r", 1 }, { "--result", "-r", 1 }, { "--force", "--force", 0 },
+	};
+	struct string_list seen = STRING_LIST_INIT_DUP;
+	const char *file = NULL;
+	int i, option = 0;
 
 	q->after_option = xcalloc(argc + 1, 1);
 	for (i = 0; i < argc; i++) {
-		const char *a = argv[i], *v;
+		const char *a = argv[i];
+		const struct option *o = NULL;
+		size_t k;
 
-		if (!strcmp(a, "--force")) {
-			q->force = option = 1;
-			continue;
-		}
-		if ((strcmp(a, "-m") && strcmp(a, "-F") && strcmp(a, "-r") && strcmp(a, "--result")) || i + 1 >= argc) {
+		if (*a != '-' || !strcmp(a, "-")) {
 			q->after_option[q->args.nr] = option;
 			strvec_push(&q->args, a);
 			option = 0;
 			continue;
 		}
-		option = 1;
-		v = argv[++i];
-		if (!strcmp(a, "-m") && !from_file) {
-			strbuf_addf(&q->msg, "%s%s", from_m++ ? "\n\n" : "", v);
-		} else if (!strcmp(a, "-F") && !from_file && !from_m) {
-			from_file = 1;
-			text_or_die(&q->msg, v);
-		} else if ((!strcmp(a, "-r") || !strcmp(a, "--result")) && !q->result) {
-			q->result = v;
-		} else {
+		for (k = 0; k < ARRAY_SIZE(options); k++)
+			if (!strcmp(a, options[k].name))
+				o = &options[k];
+		if (!o)
+			reject(129, NULL, "unknown option '%s'", a);
+		if (o->value && i + 1 >= argc)
+			reject(129, NULL, "option '%s' requires a value", a);
+		if (strcmp(o->as, "-m") && string_list_has_string(&seen, o->as))
 			reject(129, NULL, "option '%s' conflicts with another option", a);
-		}
+		string_list_insert(&seen, o->as);
+		option = 1;
+		if (!strcmp(o->as, "--force"))
+			q->force = 1;
+		else if (!strcmp(o->as, "-r"))
+			q->result = argv[++i];
+		else if (!strcmp(o->as, "-F"))
+			file = argv[++i];
+		else
+			strbuf_addf(&q->msg, "%s%s", q->msg.len ? "\n\n" : "", argv[++i]);
 	}
+	if (file && string_list_has_string(&seen, "-m"))
+		reject(129, NULL, "options '-m' and '-F' cannot be used together");
 	if (q->force && q->result)
 		reject(129, NULL, "options '-r' and '--force' cannot be used together");
+	/* 5.13: files are read after every usage error */
+	if (file)
+		text_or_die(&q->msg, file);
 	if (q->result && access(q->result, R_OK))
 		reject(128, "rerun without -r to get the check-result path", "could not read '%s'", q->result);
 }
@@ -257,7 +277,7 @@ static const char *arg(struct request *q, int *i)
 {
 	const char *a = (size_t)*i < q->args.nr ? q->args.v[*i] : NULL;
 
-	if (!a || (a[0] == '-' && a[1]) || q->after_option[*i])
+	if (!a || q->after_option[*i])
 		reject(129, NULL, "missing argument after '%s'", q->args.v[*i - 1]);
 	return q->args.v[(*i)++];
 }
@@ -694,13 +714,13 @@ static void code_present(struct request *q)
 	struct string_list_item *item, *sc;
 
 	for_each_string_list_item(item, &q->conf) {
+		if (is_abstract(item->util))
+			reject(128, xstrfmt("give it the scope you implemented: 'ait fulfill %s=<scope> -m <why>'", item->string),
+			       "bad scope: '%s' becomes current without a scope", item->string);
 		for_each_string_list_item(sc, &((struct record *)item->util)->f[PROVIDER]) {
 			char *file = scope_path(sc->string);
 			int written = !access(xstrfmt("%s/%s", top, file), F_OK), new = starts_with(sc->string, "new:");
 
-			if (ends_with(file, "/"))
-				reject(128, xstrfmt("give it the scope you implemented: 'ait fulfill %s=<scope> -m <why>'", item->string),
-				       "bad scope: '%s' becomes current without a scope", item->string);
 			if (blob_at(q->v, file))
 				continue;
 			if (!written && new)
@@ -897,15 +917,14 @@ static void given_scopes(struct request *q, struct record *r, const char *list)
 
 	string_list_split(&parts, list, ",", -1);
 	for_each_string_list_item(item, &parts) {
-		int abstract = 0, inside = 0;
+		int inside = 0;
 
 		for_each_string_list_item(old, &r->f[PROVIDER]) {
 			char *path = scope_path(old->string);
 
-			abstract |= ends_with(path, "/");
 			inside |= !strcmp(path, "/") || (ends_with(path, "/") && starts_with(item->string, path));
 		}
-		if (abstract && !inside)
+		if (is_abstract(r) && !inside)
 			reject(128, NULL, "bad scope: '%s' is outside the scope of '%s'", item->string, r->id);
 	}
 	scope_list(&vals, list, q->v, 0, 0);

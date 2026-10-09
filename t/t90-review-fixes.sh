@@ -49,6 +49,11 @@ expect_ok "a blob tag pushes" git push -q origin refs/tags/blobtag
 git config core.hooksPath .git-hooks
 expect_err "a repository hook directory next to .git is not written" E_STATE ait init
 check "no hook was written there" test ! -e .git-hooks/pre-commit
+git config core.hooksPath x/../.git-hooks
+expect_err "the same directory spelled through '..'" E_STATE ait init
+git config core.hooksPath ../outside
+expect_ok "a hook directory outside the worktree is written" ait init
+check "its hooks are ait's" grep -q ait ../outside/pre-commit
 git config --unset core.hooksPath
 
 # 7.2.3 and 5.7: a session that cannot be removed is not reported closed
@@ -56,4 +61,9 @@ B=$(ait session open --agent b 2>/dev/null)
 chmod 555 "$(git rev-parse --git-common-dir)/ait/sessions"
 expect_err "close fails when the session file stays" E_IO ait session close "$B"
 chmod 755 "$(git rev-parse --git-common-dir)/ait/sessions"
+
+# 4.1 and 5.1: AIT_SESSION names a session by its ID, never a file elsewhere
+C=$(git rev-parse --git-common-dir)/ait
+mkdir -p "$C/xy" && cp "$C/sessions/$A" "$C/xy/abcdefg"
+expect_err "a path of 13 characters is not a session" E_SESSION env AIT_SESSION=../xy/abcdefg ait todo
 done_testing

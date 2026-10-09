@@ -190,6 +190,17 @@ int in_state(struct record *r, const char *state)
 	return !strcmp(val(r, STATE), state);
 }
 
+/* spec 1.5c: a provider of "/" or "DIR/" */
+int is_abstract(struct record *r)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &r->f[PROVIDER])
+		if (ends_with(scope_path(item->string), "/"))
+			return 1;
+	return 0;
+}
+
 int is_live(struct record *r)
 {
 	return *r->id != 'u' && (in_state(r, "future") || in_state(r, "current"));

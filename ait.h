@@ -57,6 +57,7 @@ const char *scope_oid(const char *v);
 int is_def(const char *file);
 int one_of(const char *word, const char *const *set);
 char *record_text(struct record *r, int with_prev);
+int is_abstract(struct record *r);
 int is_live(struct record *r);
 int is_current(struct record *r);
 int was_current(struct record *r);

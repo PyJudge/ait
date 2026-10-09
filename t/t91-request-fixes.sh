@@ -37,6 +37,13 @@ check "--force then -r: one message" err_has "options '-r' and '--force' cannot 
 echo z > README && git add README
 tick; expect_ok "a message '--force'" ait commit -m --force
 git reset -q --soft HEAD~1 && git reset -q
+# 7.3.1: no positional argument starts with '-', so each "-..." is an option or a usage error; only -m repeats
+expect_err "--force twice" E_USAGE ait commit --force --force -m y
+expect_err "a stuck -m value" E_USAGE ait commit -my
+check "is named" err_has "unknown option '-my'"
+expect_err "-m without its value" E_USAGE ait commit -m
+check "is named" err_has "option '-m' requires a value"
+expect_err "-m and an empty -m beside -F" E_USAGE ait commit -m '' -F "$T/res.yaml"
 
 # 5.13: a usage error comes before the state of the repository
 git checkout -q --detach

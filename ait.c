@@ -201,13 +201,16 @@ static char *quoted(const char *s)
 	return strbuf_detach(&sb, NULL);
 }
 
-/* "agent NAME\nworktree PATH\n" (spec 4.2); returns the worktree or NULL */
+/*
+ * "agent NAME\nworktree PATH\n" (spec 4.2); returns the worktree or NULL.
+ * S names a file, so only a session ID (S and 12 hex digits, 4.1) is looked up.
+ */
 static char *session_read(const char *s, char *name)
 {
 	struct strbuf sb = STRBUF_INIT;
 	char *wt;
 
-	if (!s || strlen(s) != 13 || strbuf_read_file(&sb, state_path(xstrfmt("sessions/%s", s)), 0) < 0)
+	if (!s || *s != 'S' || strlen(s) != 13 || strspn(s + 1, "0123456789abcdef") != 12 || strbuf_read_file(&sb, state_path(xstrfmt("sessions/%s", s)), 0) < 0)
 		return NULL;
 	wt = strstr(sb.buf, "\nworktree ");
 	if (!starts_with(sb.buf, "agent ") || !wt)
@@ -265,7 +268,7 @@ static int cmd_session(int argc, const char **argv)
 	/* each session read once: ID -> "AGENT\nWORKTREE" */
 	dir = opendir(state_path("sessions"));
 	while (dir && (de = readdir(dir))) {
-		char *wt = *de->d_name == 'S' ? session_read(de->d_name, other) : NULL;
+		char *wt = session_read(de->d_name, other);
 
 		if (wt)
 			string_list_insert(&ids, de->d_name)->util = xstrfmt("%s\n%s", other, wt);
@@ -371,11 +374,10 @@ static int inside(const char *path, const char *dir)
 	return starts_with(path, dir) && (!path[strlen(dir)] || path[strlen(dir)] == '/');
 }
 
+/* in the form of TOP and COMMONDIR: absolute, with "..", "." and symlinks resolved by git */
 static char *hooks_dir(void)
 {
-	char *dir = line1(git("rev-parse --git-path hooks"));
-
-	return *dir == '/' ? dir : xstrfmt("%s/%s", top, dir);
+	return line1(git("rev-parse --path-format=absolute --git-path hooks"));
 }
 
 static int cmd_init(int argc, const char **argv)
@@ -719,7 +721,7 @@ static int cmd_todo(int argc, const char **argv)
 			recheck_hint(r, t);
 		else if (future && mine)
 			advise("when ready, stage the code and run 'ait fulfill %s%s -m <why>' to get the tasks", r->id,
-			       strstr(record_text(r, 1), "/ ") ? "=<scope>" : "");
+			       is_abstract(r) ? "=<scope>" : "");
 	}
 	if (index.nr)
 		puts("index");

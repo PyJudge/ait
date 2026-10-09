@@ -2,3 +2,4 @@
 /ait
 *.o
 /t/trash*/
+*.dSYM/
