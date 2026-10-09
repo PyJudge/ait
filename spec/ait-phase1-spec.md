@@ -366,7 +366,7 @@ Ait-Resolves: RID         (통합 hook이 붙인 요청에만. 그 통합이 해
   1. 명령을 시작할 때(후보를 만들기 전) `git symbolic-ref HEAD`로 얻은 ref R(`refs/heads/B`, B는 브랜치 이름)과 HEAD OID H를 끝까지 그대로 쓴다. 후보를 만들 때 읽은 index의 판도 적어 둔다.
   2. `git commit-tree T -p H`로 C를 만든다. H가 없으면(커밋이 없는 브랜치의 `init`) 부모 없이 만든다.
   3. `git update-ref R C H`를 실행한다(H가 없으면 old value에 0 OID를 주어 R이 없을 때만 만든다). 이 CAS가 실패하면 `E_HEAD_MOVED`이고 아무것도 바뀌지 않는다.
-  4. `worktrees/<KEY>.lock`을 잡고, `git symbolic-ref HEAD`가 R이고 R이 여전히 C인지 본다. 그러면 H→C나 H→U(후보)에서 바뀐 경로 중 index 판이 1에서 적어 둔 판과 같은 경로만 index를 C에 맞추고, 그중 `.ait/` 경로는 작업 폴더도 맞춘다(`noop`일 때도 같다). 그사이 다른 쪽이 stage한 경로와 작업 폴더의 다른 파일은 건드리지 않는다. 맞춘 뒤 HEAD가 여전히 R인지 다시 보고 잠금을 놓는다.
+  4. `worktrees/<KEY>.lock`을 잡고, `git symbolic-ref HEAD`가 R이고 R이 여전히 C인지 본다. 그러면 H→C나 H→U(후보)에서 바뀐 경로 중 index 판이 1에서 적어 둔 판과 같은 경로만 index를 C에 맞추고, 그중 `.ait/` 경로는 작업 폴더도 맞춘다(`noop`일 때도 같다). 그사이 다른 쪽이 stage한 경로와 작업 폴더의 다른 파일은 건드리지 않는다. sparse checkout(`core.sparseCheckout`)이면 맞춘 뒤 `git update-index --refresh`와 `git sparse-checkout reapply`로 패턴 밖의 경로를 작업 폴더에서 다시 빼고 skip-worktree 표시를 되살린다(git이 패턴 밖 경로를 다루는 대로다). 맞춘 뒤 HEAD가 여전히 R인지 다시 보고 잠금을 놓는다.
   5. 4를 건너뛰거나 다 하지 못해도(조건이 맞지 않음, 갱신 실패, 그사이 바뀐 경로) 요청은 성공으로 처리하고 `warning: committed 'C' to 'R', but the index and work tree were not updated`(일부만 맞췄으면 그 경로)를 쓴다. 지금 HEAD가 R이고 R이 C면 맞추지 못한 경로에 대해 hint `bring 'PATH...' to 'C' in the index and work tree`(`.ait/` 경로)와 `bring 'PATH...' to 'C' in the index`(나머지 경로)를 쓴다(없는 쪽은 쓰지 않는다). 아니면 다른 작업이 그 위에 있으므로 쓰지 않는다.
 - 5.6 **출력**(규칙 7): git의 선례를 그대로 따른다.
   - 결과와 판정은 stdout에 `key value` 행(porcelain)으로 쓴다. OID는 출력 어디서나 줄이지 않은 전체 OID로 쓴다.
@@ -471,9 +471,9 @@ Ait-Resolves: RID         (통합 hook이 붙인 요청에만. 그 통합이 해
   - `--force`가 아닌 `contract pull`과 `contract push`는 자기 validate 단계에서 거절한다. merge driver는 충돌로 처리한다.
 - 5.11 **ref 목록**: `refs/heads/*`와 `refs/remotes/*`에서 심볼릭 ref를 뺀 것.
 - 5.12 **git 호출 규약**:
-  - 시작할 때 toplevel과 index 경로를 확정한다. hook이 넘긴 `GIT_INDEX_FILE`이 있으면 절대경로로 바꿔 두고, 후보 index를 읽는 호출에 그 값을 명시해 넘긴다. `-F FILE`(`-`는 제외)과 `-r FILE`의 realpath도 이때 구한다. 없는 `-F`·`-r` 파일은 여기서 `E_READ`(5.13의 1)다. `-r` 파일의 내용은 8에서 읽는다.
+  - 시작할 때 git 디렉터리와 toplevel(환경에 `GIT_DIR`·`GIT_WORK_TREE`가 있으면 git이 그것을 따라 찾은 것)과 index 경로를 절대경로로 확정한다. hook이 넘긴 `GIT_INDEX_FILE`이 있으면 절대경로로 바꿔 두고, 후보 index를 읽는 호출에 그 값을 명시해 넘긴다. `-F FILE`(`-`는 제외)과 `-r FILE`의 realpath도 이때 구한다. 없는 `-F`·`-r` 파일은 여기서 `E_READ`(5.13의 1)다. `-r` 파일의 내용은 8에서 읽는다.
   - 그다음 자기 환경에서 `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, `GIT_DIFF_OPTS`를 지운다. 객체 저장소를 가리키는 변수(`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`)는 둔다.
-  - 하위 git은 `git -C <대상 worktree> -c core.quotePath=false -c trailer.separators=: -c core.commentChar=# -c core.commentString=# …` 형식으로 부른다. 환경에 `GIT_LITERAL_PATHSPECS=1`을 둔다. 경로 목록은 `-z`로 받고, 긴 OID 목록은 `--stdin`으로 넘긴다.
+  - 하위 git은 `git --git-dir=<git 디렉터리> --work-tree=<대상 worktree> -C <대상 worktree> -c core.quotePath=false -c trailer.separators=: -c core.commentChar=# -c core.commentString=# …` 형식으로 부른다. git이 hook에 `GIT_DIR`를 넘기듯 시작할 때 확정한 저장소를 그대로 넘기는 것이다(지운 변수로 다시 찾으면 사용자가 가리킨 것과 다른 저장소를 찾을 수 있다). worktree가 없는 bare 저장소(hook만 돈다)는 `--git-dir`만 준다. 환경에 `GIT_LITERAL_PATHSPECS=1`을 둔다. 경로 목록은 `-z`로 받고, 긴 OID 목록은 `--stdin`으로 넘긴다.
   - 해시(확인 입력 8.3, worktree 키 4.6, 뜻 지문 9.5)는 `git hash-object --stdin`의 출력을 쓴다.
 - 5.13 **오류 우선순위**: 아래 순서로 검사하고, 종료 오류는 처음 막힌 것이다. 이행 준비 보고(7.7.6)는 거절되더라도 계산할 수 있는 모든 행을 쓴다.
   1. 문법, 경로 형식(3.1·3.2 위반은 `E_SCOPE`), 인자로 준 파일(`E_READ`)

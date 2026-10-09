@@ -63,16 +63,17 @@ void unsupported(const char *what)
 }
 
 /*
- * spec 5.12: git runs in the worktree ait found; a bare repository, where only
- * hooks run, is named by its git directory, since discovery may be refused
- * there (safe.bareRepository); before setup, git finds it from here
+ * spec 5.12: git runs on the repository and worktree ait settled at start,
+ * named by their absolute paths, as git hands GIT_DIR and GIT_WORK_TREE to
+ * what it runs; a bare repository, where only hooks run, has no worktree.
+ * Before setup, git finds them from here.
  */
 static void at_repository(struct strvec *args)
 {
-	if (top)
-		strvec_pushl(args, "-C", top, NULL);
-	else if (gitdir)
+	if (gitdir)
 		strvec_pushf(args, "--git-dir=%s", gitdir);
+	if (top)
+		strvec_pushl(args, xstrfmt("--work-tree=%s", top), "-C", top, NULL);
 }
 
 /*

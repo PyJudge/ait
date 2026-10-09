@@ -134,7 +134,7 @@ static void follow(struct tree *h, struct tree *noted, const char *c)
 	struct string_list ait = STRING_LIST_INIT_DUP, rest = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct strbuf info = STRBUF_INIT;
-	int fd = lock_worktree(top), rc = fd < 0 || !at(c);
+	int fd = lock_worktree(top), rc = fd < 0 || !at(c), unset;
 
 	if (!rc) {
 		char *index = line1(git_run(NULL, NULL, &rc, "write-tree"));
@@ -167,6 +167,11 @@ static void follow(struct tree *h, struct tree *noted, const char *c)
 			bad = unlink(xstrfmt("%s/%s", top, item->string)) && errno != ENOENT;
 		if (bad)
 			string_list_append(&left, item->string);
+	}
+	/* a sparse checkout keeps out of the work tree what its patterns leave out, as git does (git-sparse-checkout(1)) */
+	if (!rc && brought.nr && !strcmp(line1(git_run(NULL, NULL, &unset, "config --bool core.sparseCheckout")), "true")) {
+		git_run(NULL, NULL, &unset, "update-index -q --refresh");
+		git_run(NULL, NULL, &rc, "sparse-checkout reapply");
 	}
 	if (!at(c))
 		rc = 1;
