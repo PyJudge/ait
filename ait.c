@@ -10,6 +10,7 @@
 
 const char *top, *gindex, *headref, *head, *gitdir, *commondir;
 char *git_error;
+size_t git_out_len;
 char agent[72], sid[16];
 
 /* spec 5.9a: a session that is not this worktree's default prefixes the ait commands it is given */
@@ -71,7 +72,7 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 	else if (code)
 		reject(128, top ? NULL : "run this command inside a git repository", "git failed: %s", git_error);
 	strbuf_release(&err);
-	return strbuf_detach(&out, NULL);
+	return strbuf_detach(&out, &git_out_len);
 }
 
 /* git_args() with the words of FMT, each "%s" word taking one argument verbatim */
@@ -119,15 +120,18 @@ static void setup(void)
 	static const char *clear[] = { "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX",
 				       "GIT_COMMON_DIR", "GIT_DIFF_OPTS", NULL };
 	int i, major = 0, minor = 0;
+	char *paths;
 
 	sscanf(git("version"), "git version %d.%d", &major, &minor);
 	if (major < 2 || (major == 2 && minor < 48))
 		reject(128, "install git 2.48 or later", "git %d.%d is too old for ait", major, minor);
-	top = line1(git("rev-parse --show-toplevel"));
+	paths = git("rev-parse --show-toplevel --absolute-git-dir --path-format=absolute --git-common-dir");
+	top = xstrndup(paths, strcspn(paths, "\n"));
+	paths += strlen(top) + 1;
+	gitdir = xstrndup(paths, strcspn(paths, "\n"));
+	commondir = line1(paths + strlen(gitdir) + 1);
 	if (getenv("GIT_INDEX_FILE"))
 		gindex = realpath(getenv("GIT_INDEX_FILE"), NULL);
-	gitdir = line1(git("rev-parse --absolute-git-dir"));
-	commondir = line1(git("rev-parse --path-format=absolute --git-common-dir"));
 	for (i = 0; clear[i]; i++)
 		unsetenv(clear[i]);
 	setenv("GIT_LITERAL_PATHSPECS", "1", 1);
@@ -145,7 +149,14 @@ static char *state_path(const char *name)
 /* spec 4.6: the default-session pointer of the worktree WT */
 static char *pointer_path(const char *wt)
 {
-	return state_path(xstrfmt("worktrees/%s", line1(git_run(wt, NULL, NULL, "hash-object --stdin"))));
+	static struct string_list keys = STRING_LIST_INIT_DUP;
+	struct string_list_item *hit = string_list_lookup(&keys, wt);
+
+	if (!hit) {
+		hit = string_list_insert(&keys, wt);
+		hit->util = line1(git_run(wt, NULL, NULL, "hash-object --stdin"));
+	}
+	return state_path(xstrfmt("worktrees/%s", (char *)hit->util));
 }
 
 static char *default_of(const char *wt)
@@ -420,14 +431,18 @@ static int cmd_init(int argc, const char **argv)
 static void check_hooks(void)
 {
 	struct tree *t = tree_load(head ? head : EMPTY_TREE);
+	char *dir;
 	size_t i;
 	int k;
 
 	for (i = 0; i < t->nr; i++)
 		if (starts_with(t->e[i].path, ".ait/") && strcmp(t->e[i].path, ".ait/init"))
 			break;
-	for (k = 0; i < t->nr && hooks[k]; k++)
-		if (!has_ait_hook(xstrfmt("%s/%s", hooks_dir(), hooks[k]), hooks[k])) {
+	if (i == t->nr)
+		return;
+	dir = hooks_dir();
+	for (k = 0; hooks[k]; k++)
+		if (!has_ait_hook(xstrfmt("%s/%s", dir, hooks[k]), hooks[k])) {
 			advise("this clone is not set up for ait; run 'ait init'");
 			return;
 		}

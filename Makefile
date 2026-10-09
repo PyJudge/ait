@@ -9,7 +9,7 @@ ait: $(SRC) $(wildcard *.h)
 	$(CC) $(CFLAGS) -o $@ $(SRC)
 
 test: ait
-	@for t in t/t*.sh; do sh $$t || exit 1; done
+	@sh t/run.sh
 
 clean:
 	rm -f ait

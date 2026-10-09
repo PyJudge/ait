@@ -10,13 +10,22 @@ static int cmp_entry(const void *a, const void *b)
 	return strcmp(((const struct entry *)a)->path, ((const struct entry *)b)->path);
 }
 
-/* one sorted listing per tree: lookups are a bsearch, a diff is a merge walk */
+/*
+ * One sorted listing per tree: lookups are a bsearch, a diff is a merge walk.
+ * Callers name trees by object ID, so a listing is read once per command.
+ */
 struct tree *tree_load(const char *treeish)
 {
-	struct tree *t = xcalloc(1, sizeof(*t));
+	static struct string_list loaded = STRING_LIST_INIT_DUP;
+	struct string_list_item *hit = string_list_lookup(&loaded, treeish);
+	struct tree *t;
 	size_t alloc = 0;
 	char *p, *end;
 
+	if (hit)
+		return hit->util;
+	t = xcalloc(1, sizeof(*t));
+	string_list_insert(&loaded, treeish)->util = t;
 	snprintf(t->oid, sizeof(t->oid), "%s",
 		 line1(git("rev-parse --verify %s", xstrfmt("%s^{tree}", treeish))));
 	for (p = git("ls-tree -r -t -z --full-tree %s", t->oid); *p; p = end + 1) {
@@ -44,6 +53,45 @@ const char *blob_at(struct tree *t, const char *path)
 	struct entry *e = tree_get(t, path);
 
 	return e && strcmp(e->mode, "040000") && strcmp(e->mode, "160000") ? e->oid : NULL;
+}
+
+/* the contents of blobs, by object ID: one cat-file for the records of a state */
+static struct string_list blobs = STRING_LIST_INIT_DUP;
+
+void blobs_read(struct string_list *oids)
+{
+	struct strbuf in = STRBUF_INIT;
+	struct string_list_item *item;
+	const char *p, *end;
+
+	for_each_string_list_item(item, oids)
+		if (!string_list_has_string(&blobs, item->string))
+			strbuf_addf(&in, "%s\n", item->string);
+	if (!in.len)
+		return;
+	/* "<oid> blob <size>\n<contents>\n" per object (git-cat-file(1), BATCH OUTPUT) */
+	p = git_run(in.buf, NULL, NULL, "cat-file --batch");
+	for (end = p + git_out_len; p < end; ) {
+		char oid[48];
+		size_t size;
+
+		if (sscanf(p, "%47s blob %zu", oid, &size) != 2)
+			break;
+		p = strchr(p, '\n') + 1;
+		string_list_insert(&blobs, oid)->util = xmemdupz(p, size);
+		p += size + 1;
+	}
+}
+
+const char *blob_text(const char *oid)
+{
+	struct string_list_item *hit = string_list_lookup(&blobs, oid);
+
+	if (!hit) {
+		hit = string_list_insert(&blobs, oid);
+		hit->util = git("cat-file blob %s", oid);
+	}
+	return hit->util;
 }
 
 /* BASE plus INDEX_INFO ("MODE OID\tPATH" lines) in a throwaway index (spec 4.8) */
@@ -152,14 +200,22 @@ static int cmp_value(const void *a, const void *b)
 	return strcmp(x, y);
 }
 
+static void record_sort(struct record *r)
+{
+	int k;
+
+	for (k = 0; k < NKEYS; k++)
+		QSORT(r->f[k].items, r->f[k].nr, cmp_value);
+}
+
 char *record_text(struct record *r, int with_prev)
 {
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
 	int k;
 
+	record_sort(r);
 	for (k = 0; k < NKEYS; k++) {
-		QSORT(r->f[k].items, r->f[k].nr, cmp_value);
 		for_each_string_list_item(item, &r->f[k])
 			if (with_prev || k != PREV)
 				strbuf_addf(&sb, "%s %s\n", keys[k], item->string);
@@ -253,8 +309,13 @@ static int id_ok(const char *id)
 
 void state_load(struct state *s, struct tree *t)
 {
+	struct string_list oids = STRING_LIST_INIT_DUP;
 	size_t i;
 
+	for (i = 0; i < t->nr; i++)
+		if (starts_with(t->e[i].path, ".ait/") && !strcmp(t->e[i].mode, "100644"))
+			string_list_append(&oids, t->e[i].oid);
+	blobs_read(&oids);
 	for (i = 0; i < t->nr; i++) {
 		struct entry *e = &t->e[i];
 		const char *id, *text;
@@ -264,7 +325,7 @@ void state_load(struct state *s, struct tree *t)
 			continue;
 		if (*id == 'X')
 			unsupported("drop record");
-		text = strcmp(e->mode, "100644") ? NULL : git("cat-file blob %s", e->oid);
+		text = strcmp(e->mode, "100644") ? NULL : blob_text(e->oid);
 		if (!strcmp(id, "init")) {
 			if (!text || strcmp(text, "version 1\n"))
 				state_add(s, id)->bad = xstrdup("must be the single line 'version 1'");
@@ -539,18 +600,17 @@ void repin(struct record *r, enum key k, struct tree *t, int new_only)
 /* the body lines of the definition PATH and its "$ ARG..." line, each after INDENT (spec 7.8.2) */
 char *def_text(struct tree *t, const char *path, const char *indent)
 {
-	struct string_list kv = STRING_LIST_INIT_DUP, body = STRING_LIST_INIT_DUP;
+	struct string_list *kv = def_get(t, path), body = STRING_LIST_INIT_DUP;
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
 	const char *a;
 	int k;
 
-	def_load(t, path, &kv);
-	string_list_split(&body, yget(&kv, "body"), "\n", -1);
+	string_list_split(&body, yget(kv, "body"), "\n", -1);
 	for_each_string_list_item(item, &body)
 		if (*item->string || item != body.items + body.nr - 1)
 			strbuf_addf(&sb, "%s%s\n", indent, item->string);
-	for (k = 0; (a = yget(&kv, xstrfmt("command.%d", k))); k++)
+	for (k = 0; (a = yget(kv, xstrfmt("command.%d", k))); k++)
 		strbuf_addf(&sb, "%s%s", k ? " " : xstrfmt("%s$ ", indent), a);
 	if (k)
 		strbuf_addch(&sb, '\n');
@@ -559,24 +619,37 @@ char *def_text(struct tree *t, const char *path, const char *indent)
 
 const char *engine_of(struct tree *t, const char *def)
 {
-	struct string_list kv = STRING_LIST_INIT_DUP;
+	struct string_list *kv = def_get(t, def);
 
-	def_load(t, def, &kv);
-	return yget(&kv, "engine") && *yget(&kv, "engine") ? "exec" : "prompt";
+	return yget(kv, "engine") && *yget(kv, "engine") ? "exec" : "prompt";
 }
 
-/* spec 5.4: hash of the provider and file lines in record order */
-char *pins(struct record *r)
+/* spec 5.4: the provider and file lines in record order */
+char *pin_lines(struct record *r)
 {
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
 
-	record_text(r, 1);
+	record_sort(r);
 	for_each_string_list_item(item, &r->f[PROVIDER])
 		strbuf_addf(&sb, "provider %s\n", item->string);
 	for_each_string_list_item(item, &r->f[FILES])
 		strbuf_addf(&sb, "file %s\n", item->string);
-	return line1(git_run(sb.buf, NULL, NULL, "hash-object --stdin"));
+	return strbuf_detach(&sb, NULL);
+}
+
+/* spec 5.4: their hash, the PINS of an Ait-Check line; each text is hashed once */
+char *pins(struct record *r)
+{
+	static struct string_list hashed = STRING_LIST_INIT_DUP;
+	char *text = pin_lines(r);
+	struct string_list_item *hit = string_list_lookup(&hashed, text);
+
+	if (!hit) {
+		hit = string_list_insert(&hashed, text);
+		hit->util = line1(git_run(text, NULL, NULL, "hash-object --stdin"));
+	}
+	return hit->util;
 }
 
 /* spec 1.5a: not confirmed with these pins, or the code or spec files moved since */
@@ -623,14 +696,12 @@ int expand_files(struct record *r, struct tree *t)
 		if (is_def(item->string))
 			string_list_insert(&defs, scope_path(item->string));
 	for_each_string_list_item(item, &defs) {
-		struct string_list kv = STRING_LIST_INIT_DUP;
 		struct entry *e = tree_get(t, item->string);
 
 		if (!blob_at(t, item->string))
 			return -1;
 		string_list_insert(&out, xstrfmt("%s %s %s def", e->path, e->mode, e->oid));
-		def_load(t, e->path, &kv);
-		for_each_string_list_item(in, &kv) {
+		for_each_string_list_item(in, def_get(t, e->path)) {
 			const char *p = in->util;
 
 			if (!starts_with(in->string, "inputs.") || string_list_has_string(&defs, p))
@@ -794,13 +865,22 @@ const char *yget(struct string_list *kv, const char *key)
 	return item ? item->util : NULL;
 }
 
-/* spec 2.5.2, 2.5.4, 2.5.6: a spec definition and the keys it may use */
-void def_load(struct tree *t, const char *path, struct string_list *kv)
+/*
+ * spec 2.5.2, 2.5.4, 2.5.6: a spec definition and the keys it may use. A
+ * definition is named by its blob, so each one is read and checked once.
+ */
+struct string_list *def_get(struct tree *t, const char *path)
 {
-	struct string_list_item *item;
-	const char *engine;
+	static struct string_list parsed = STRING_LIST_INIT_DUP;
+	const char *oid = blob_at(t, path), *engine;
+	struct string_list_item *hit = string_list_lookup(&parsed, oid), *item;
+	struct string_list *kv;
 
-	yaml(git("cat-file blob %s", blob_at(t, path)), kv, path);
+	if (hit)
+		return hit->util;
+	kv = xcalloc(1, sizeof(*kv));
+	string_list_init_dup(kv);
+	yaml(blob_text(oid), kv, path);
 	engine = yget(kv, "engine") ? yget(kv, "engine") : "";
 	if (yget(kv, "environment"))
 		unsupported("environment");
@@ -813,4 +893,6 @@ void def_load(struct tree *t, const char *path, struct string_list *kv)
 		if (!strstr(*engine ? " body engine command success inputs " : " body engine inputs ", xstrfmt(" %s ", k)))
 			reject(128, NULL, "bad format: '%s': unknown key '%s'", path, k);
 	}
+	string_list_insert(&parsed, oid)->util = kv;
+	return kv;
 }

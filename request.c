@@ -22,9 +22,18 @@ struct request {
 	struct string_list missing;	/* the check set without code to check */
 	struct string_list tasks;	/* "CONTRACT:DEF" -> record */
 	struct string_list hints;
-	struct strbuf report;		/* the 7.7.6 "mixed" and "invalid" lines */
+	struct string_list carried;	/* rule 5: D -> " via O..." of the target offers that undertake it */
+	struct string_list mixed;	/* the 7.7.6 "mixed PATH" lines */
+	struct verdict invalid;		/* the 7.7.6 "invalid" line: the state after the request */
 	struct verdict first;		/* the first condition that blocks fulfill or commit (5.13) */
+	struct strvec args;		/* the arguments that are not options */
+	char *after_option;		/* args.v[i] came right after an option */
 };
+
+#define REQUEST_INIT { .msg = STRBUF_INIT, .cmdline = STRBUF_INIT, .files = STRING_LIST_INIT_DUP, \
+	.scoped = STRING_LIST_INIT_DUP, .selected = STRING_LIST_INIT_DUP, .conf = STRING_LIST_INIT_DUP, \
+	.missing = STRING_LIST_INIT_DUP, .tasks = STRING_LIST_INIT_DUP, .hints = STRING_LIST_INIT_DUP, \
+	.carried = STRING_LIST_INIT_DUP, .mixed = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
 
 /* spec 2.3: the allowed transitions; 'x' is a demand or an offer, 'u' a link */
 static const char *gate_moves = " x-:future x-:current xfuture:future xfuture:cancelled xcurrent:current"
@@ -34,16 +43,20 @@ static const char *fulfill_moves = " xfuture:current xcurrent:current ";
 /* spec 5.2 */
 void precondition(int allow_unborn)
 {
-	static const char *ops[] = { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", NULL };
-	static const char *dirs[] = { "rebase-merge", "rebase-apply", "sequencer/todo", NULL };
-	int i, rc;
+	static const char *files[] = { "MERGE_HEAD", "rebase-merge", "rebase-apply", "sequencer/todo", NULL };
+	static const char *refs[] = { "CHERRY_PICK_HEAD", "REVERT_HEAD", NULL };
+	int i, busy = 0, rc;
 
-	for (i = 0; ops[i]; i++) {
-		git_run(NULL, NULL, &rc, "rev-parse -q --verify %s", ops[i]);
-		if (!rc || !access(xstrfmt("%s/%s", gitdir, dirs[i]), F_OK))
-			reject(128, "finish or abort it as 'git status' says, then rerun this command",
-			       "cannot run now: a git operation is in progress");
+	/* spec 5.2-2, after git v2.53.0 wt-status.c:1791 wt_status_get_state() */
+	for (i = 0; files[i]; i++)
+		busy |= !access(xstrfmt("%s/%s", gitdir, files[i]), F_OK);
+	for (i = 0; refs[i] && !busy; i++) {
+		git_run(NULL, NULL, &rc, "rev-parse -q --verify %s", refs[i]);
+		busy = !rc;
 	}
+	if (busy)
+		reject(128, "finish or abort it as 'git status' says, then rerun this command",
+		       "cannot run now: a git operation is in progress");
 	if (!headref)
 		reject(128, "run this command with HEAD on a branch", "cannot run now: HEAD is detached");
 	if (!head && !allow_unborn)
@@ -97,48 +110,55 @@ char *publish(struct string_list *paths, int only, const char *msg)
 	return line1(git("rev-parse HEAD"));
 }
 
-static void begin(struct request *q)
+static void load(struct request *q)
 {
 	precondition(0);
 	q->ht = tree_load(head);
 	state_load(&q->s, q->ht);
-	strbuf_init(&q->msg, 0);
-	strbuf_init(&q->cmdline, 0);
-	strbuf_init(&q->report, 0);
-	string_list_init_dup(&q->files);
-	string_list_init_dup(&q->scoped);
-	string_list_init_dup(&q->selected);
-	string_list_init_dup(&q->conf);
-	string_list_init_dup(&q->missing);
-	string_list_init_dup(&q->tasks);
-	string_list_init_dup(&q->hints);
 }
 
-/* -m, -F, -r and --force anywhere among the arguments (spec 5.3, 7.3.1) */
-static int option(struct request *q, int argc, const char **argv, int *i)
+/*
+ * spec 5.3 and 7.3.1: -m, -F, -r and --force may stand anywhere; the other
+ * arguments go to q->args in order. Usage comes first (5.13-1).
+ */
+static void parse_options(struct request *q, int argc, const char **argv)
 {
-	static int from_file, from_m;
-	const char *a = argv[*i];
+	int i, from_m = 0, from_file = 0, option = 0;
 
-	if (!strcmp(a, "--force") && !q->force && !q->result)
-		return q->force = 1;
-	if (*i + 1 >= argc || (strcmp(a, "-m") && strcmp(a, "-F") && strcmp(a, "-r") && strcmp(a, "--result")))
-		return 0;
-	if (!strcmp(a, "-m") && !from_file) {
-		strbuf_addf(&q->msg, "%s%s", from_m++ ? "\n\n" : "", argv[++*i]);
-	} else if (!strcmp(a, "-F") && !from_file++ && !from_m) {
-		if (strcmp(argv[++*i], "-") && strbuf_read_file(&q->msg, argv[*i], 0) < 0)
-			reject(128, NULL, "could not read '%s'", argv[*i]);
-		if (!strcmp(argv[*i], "-"))
-			strbuf_read(&q->msg, 0, 0);
-	} else if (a[1] != 'm' && a[1] != 'F' && !q->result && !q->force) {
-		q->result = argv[++*i];
-		if (access(q->result, R_OK))
-			reject(128, "rerun without -r to get the check-result path", "could not read '%s'", q->result);
-	} else {
-		reject(129, NULL, "option '%s' conflicts with another option", a);
+	q->after_option = xcalloc(argc + 1, 1);
+	for (i = 0; i < argc; i++) {
+		const char *a = argv[i], *v;
+
+		if (!strcmp(a, "--force")) {
+			q->force = option = 1;
+			continue;
+		}
+		if ((strcmp(a, "-m") && strcmp(a, "-F") && strcmp(a, "-r") && strcmp(a, "--result")) || i + 1 >= argc) {
+			q->after_option[q->args.nr] = option;
+			strvec_push(&q->args, a);
+			option = 0;
+			continue;
+		}
+		option = 1;
+		v = argv[++i];
+		if (!strcmp(a, "-m") && !from_file) {
+			strbuf_addf(&q->msg, "%s%s", from_m++ ? "\n\n" : "", v);
+		} else if (!strcmp(a, "-F") && !from_file && !from_m) {
+			from_file = 1;
+			if (!strcmp(v, "-"))
+				strbuf_read(&q->msg, 0, 0);
+			else if (strbuf_read_file(&q->msg, v, 0) < 0)
+				reject(128, NULL, "could not read '%s'", v);
+		} else if ((!strcmp(a, "-r") || !strcmp(a, "--result")) && !q->result) {
+			q->result = v;
+		} else {
+			reject(129, NULL, "option '%s' conflicts with another option", a);
+		}
 	}
-	return 1;
+	if (q->force && q->result)
+		reject(129, NULL, "options '-r' and '--force' cannot be used together");
+	if (q->result && access(q->result, R_OK))
+		reject(128, "rerun without -r to get the check-result path", "could not read '%s'", q->result);
 }
 
 /* spec 5.3 */
@@ -158,16 +178,20 @@ static void message(struct request *q, const char *prefix)
 	q->msg = sb;
 }
 
-static const char *arg(int argc, const char **argv, int *i)
+/* the next argument of a clause; options stand only between clauses (7.3.1) */
+static const char *arg(struct request *q, int *i)
 {
-	if (*i >= argc || (argv[*i][0] == '-' && argv[*i][1]))
-		reject(129, NULL, "missing argument after '%s'", argv[*i - 1]);
-	return argv[(*i)++];
+	const char *a = (size_t)*i < q->args.nr ? q->args.v[*i] : NULL;
+
+	if (!a || (a[0] == '-' && a[1]) || q->after_option[*i])
+		reject(129, NULL, "missing argument after '%s'", q->args.v[*i - 1]);
+	return q->args.v[(*i)++];
 }
 
+/* the words of the helper grammar (7.3.1) and the reserved aliases (1.9) */
 static int is_word(const char *a)
 {
-	return strstr(" demand offer future amend undertake release as -m -F -r --result --force ",
+	return strstr(" demand offer future amend undertake release as drop cancel contract ct fulfill ",
 		      xstrfmt(" %s ", a)) != NULL;
 }
 
@@ -184,24 +208,32 @@ static struct record *resolve(struct request *q, const char *k)
 	return state_get(&q->s, k);
 }
 
-/* a scope list "A,B" pinned at HEAD (spec 3.2a, 3.3); "-" keeps the old one */
-static void scopes(struct request *q, struct record *r, enum key k, const char *list)
+/* spec 3.2a: a scope list "A,B", each pinned at T; the same scope twice is a bad scope */
+static void scope_list(struct string_list *out, const char *list, struct tree *t, int allow_new, int allow_abs)
 {
-	struct string_list parts = STRING_LIST_INIT_DUP, vals = STRING_LIST_INIT_DUP;
+	struct string_list parts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	int future = in_state(r, "future");
 
-	if (!strcmp(list, "-"))
-		return;
 	string_list_split(&parts, list, ",", -1);
 	for_each_string_list_item(item, &parts) {
-		char *v = pin(item->string, q->ht, future || k == CONSUMER, future && k == PROVIDER);
+		char *v = pin(item->string, t, allow_new, allow_abs);
 
-		if (unsorted_string_list_has_string(&vals, v))
+		if (unsorted_string_list_has_string(out, v))
 			reject(128, NULL, "bad scope: '%s' is given twice", item->string);
-		string_list_append(&vals, v);
+		string_list_append(out, v);
 	}
-	r->f[k] = vals;
+}
+
+/* a helper's scope argument, pinned at HEAD (spec 3.3); "-" keeps the old one */
+static void scopes(struct request *q, struct record *r, enum key k, const char *list)
+{
+	struct string_list vals = STRING_LIST_INIT_DUP;
+	int future = in_state(r, "future");
+
+	if (strcmp(list, "-")) {
+		scope_list(&vals, list, q->ht, future || k == CONSUMER, future && k == PROVIDER);
+		r->f[k] = vals;
+	}
 }
 
 /* the definitions given to a helper; expand_files() pins them and what they declare */
@@ -217,12 +249,12 @@ static void defs(struct request *q, struct record *r, const char *list)
 	for_each_string_list_item(item, &parts) {
 		if (!path_ok(item->string))
 			reject(128, NULL, "bad scope: '%s'", item->string);
-		string_list_append(&q->files, item->string);
+		string_list_append(&q->files, item->string)->util = (void *)"def";
 		string_list_append(&r->f[FILES], xstrfmt("%s - - def", item->string));
 	}
 }
 
-static void new_contract(struct request *q, const char *role, int future, int argc, const char **argv, int *i)
+static void new_contract(struct request *q, const char *role, int future, int *i)
 {
 	char id[16];
 	struct record *r;
@@ -237,17 +269,17 @@ static void new_contract(struct request *q, const char *role, int future, int ar
 	put(r, ROLE, role);
 	put(r, STATE, future ? "future" : "current");
 	if (*role == 'd')
-		scopes(q, r, CONSUMER, arg(argc, argv, i));
-	scopes(q, r, PROVIDER, arg(argc, argv, i));
-	defs(q, r, arg(argc, argv, i));
+		scopes(q, r, CONSUMER, arg(q, i));
+	scopes(q, r, PROVIDER, arg(q, i));
+	defs(q, r, arg(q, i));
 	put(r, CREATOR, xstrfmt("%s %s", agent, sid));
 	put(r, PREV, "-");
-	if (*i >= argc || strcmp(argv[*i], "as"))
+	if ((size_t)*i >= q->args.nr || strcmp(q->args.v[*i], "as"))
 		return;
 	++*i;
-	alias = arg(argc, argv, i);
+	alias = arg(q, i);
 	if (!islower(*alias) || strlen(alias) > 32 || alias[strspn(alias, "abcdefghijklmnopqrstuvwxyz0123456789_")] ||
-	    is_word(alias) || strstr(" drop cancel contract ct fulfill ", xstrfmt(" %s ", alias)))
+	    is_word(alias))
 		reject(129, NULL, "bad alias '%s'", alias);
 	for (k = 0; k < q->s.nr; k++)
 		if (q->s.r[k]->alias && !strcmp(q->s.r[k]->alias, alias))
@@ -269,36 +301,18 @@ static int unchanged(struct record *r)
 	       *r->id == 'u' && in_state(r, "released");
 }
 
-/* the offer in a link that became current in this request carries its demand (rule 5) */
-static int carries(struct request *q, struct record *l, struct record *d)
+/* rule 5 (1.6, 7.7.2): D is checked, and fulfilled if future, with a target offer that undertakes it */
+static int carried(struct request *q, struct record *d)
 {
-	struct record *o = link_end(&q->s, l, 1);
-
-	return *l->id == 'u' && in_state(l, "undertaken") && link_end(&q->s, l, 0) == d &&
-	       is_current(o) && o->old && in_state(o->old, "future");
-}
-
-/* rule 5: D is checked with the offer that undertakes it when that offer becomes current */
-static int undertaken_by_new_current(struct request *q, struct record *d)
-{
-	size_t i;
-
-	for (i = 0; i < q->s.nr; i++)
-		if (carries(q, q->s.r[i], d))
-			return 1;
-	return 0;
+	return string_list_has_string(&q->carried, d->id);
 }
 
 /* " via O..." for a demand fulfilled with the offers that undertake it (7.7.5) */
-static char *via(struct request *q, struct record *d)
+static const char *via(struct request *q, struct record *d)
 {
-	struct strbuf sb = STRBUF_INIT;
-	size_t i;
+	struct string_list_item *item = string_list_lookup(&q->carried, d->id);
 
-	for (i = 0; i < q->s.nr; i++)
-		if (carries(q, q->s.r[i], d))
-			strbuf_addf(&sb, "%s %s", sb.len ? "" : " via", link_end(&q->s, q->s.r[i], 1)->id);
-	return strbuf_detach(&sb, NULL);
+	return item ? item->util : "";
 }
 
 static void add_hint(struct request *q, const char *h)
@@ -334,7 +348,7 @@ static void next_hints(struct request *q, struct string_list *ids)
 			add_hint(q, xstrfmt("or make it a promise: 'ait future %s %s%s%s %s -m <why>'", val(r, ROLE),
 					    scope_args(r, CONSUMER), *r->id == 'D' ? " " : "", scope_args(r, PROVIDER),
 					    def_paths(r)));
-		else if (was_current(r) && !undertaken_by_new_current(q, r))
+		else if (was_current(r) && !carried(q, r))
 			add_hint(q, xstrfmt("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'",
 					    r->id, r->id));
 	}
@@ -411,27 +425,26 @@ static void write_check_files(struct request *q, const char *in, const char *req
 	strbuf_addf(&sb, "input: %s\ntree: %s\ntasks:\n", dq(in), dq(q->v->oid));
 	for_each_string_list_item(task, &q->tasks) {
 		struct record *r = task->util;
-		struct string_list kv = STRING_LIST_INIT_DUP, body = STRING_LIST_INIT_DUP;
+		struct string_list *kv = def_get(q->v, task_def(task)), body = STRING_LIST_INIT_DUP;
 		struct string_list_item *item;
 		const char *engine = engine_of(q->v, task_def(task)), *a;
 		int k;
 
-		def_load(q->v, task_def(task), &kv);
 		strbuf_addf(&sb, "  - task: %s\n    contract: %s\n    role: %s\n", dq(task->string),
 			    dq(xstrndup(task->string, strchr(task->string, ':') - task->string)), dq(val(r, ROLE)));
 		if (*r->id == 'D')
 			strbuf_addf(&sb, "    consumer: %s\n", dq(shows(r, CONSUMER, q->v, 0)));
 		strbuf_addf(&sb, "    provider: %s\n    engine: %s\n    body: |\n",
 			    dq(shows(r, PROVIDER, q->v, was_current(r))), dq(engine));
-		string_list_split(&body, yget(&kv, "body"), "\n", -1);
+		string_list_split(&body, yget(kv, "body"), "\n", -1);
 		for_each_string_list_item(item, &body)
 			if (*item->string || item != body.items + body.nr - 1)
 				strbuf_addf(&sb, "      %s\n", item->string);
 		if (strcmp(engine, "exec"))
 			continue;
-		for (k = 0; (a = yget(&kv, xstrfmt("command.%d", k))); k++)
+		for (k = 0; (a = yget(kv, xstrfmt("command.%d", k))); k++)
 			strbuf_addf(&sb, "%s%s", k ? ", " : "    command: [", dq(a));
-		for (k = 0; (a = yget(&kv, xstrfmt("success.%d", k))) || !k; k++)
+		for (k = 0; (a = yget(kv, xstrfmt("success.%d", k))) || !k; k++)
 			strbuf_addf(&sb, "%s%s", k ? ", " : "]\n    success: [", a ? a : "0");
 		strbuf_addstr(&sb, "]\n");
 	}
@@ -526,14 +539,12 @@ static void unpinned(struct request *q, struct record *r)
 
 	for_each_string_list_item(item, &r->f[FILES]) {
 		char *def = scope_path(item->string);
-		struct string_list kv = STRING_LIST_INIT_DUP;
 		const char *a;
 		int k;
 
 		if (!is_def(item->string))
 			continue;
-		def_load(q->v, def, &kv);
-		for (k = 0; (a = yget(&kv, xstrfmt("command.%d", k))); k++) {
+		for (k = 0; (a = yget(def_get(q->v, def), xstrfmt("command.%d", k))); k++) {
 			while (starts_with(a, "./"))
 				a += 2;
 			if (path_ok(a) && (blob_at(q->v, a) || !access(xstrfmt("%s/%s", top, a), F_OK)) &&
@@ -586,8 +597,8 @@ static void check_set(struct request *q)
 			repin(r, PROVIDER, q->v, 1);
 		}
 		if (is_current(r) && (!was_current(r) || r->recheck || touches(r->old, q->ht, q->v) ||
-				      undertaken_by_new_current(q, r) ||
-				      (!unsorted_string_list_has_string(&q->scoped, r->id) && strcmp(pins(r), pins(r->old)))))
+				      carried(q, r) ||
+				      (!unsorted_string_list_has_string(&q->scoped, r->id) && strcmp(pin_lines(r), pin_lines(r->old)))))
 			string_list_append(&q->conf, r->id)->util = r;
 	}
 	string_list_sort(&q->conf);
@@ -611,18 +622,20 @@ static void code_present(struct request *q)
 				       "bad scope: '%s' becomes current without a scope", item->string);
 			if (blob_at(q->v, file))
 				continue;
-			string_list_append(&q->missing, item->string)->util = item->util;
 			if (!written && new)
 				add_hint(q, xstrfmt("write '%s'", file));
 			if (written || new)
 				add_hint(q, xstrfmt("stage '%s', then rerun this command", file));
 			else
 				add_hint(q, xstrfmt("if it was moved, rerun with '%s=<new scope>'", item->string));
-			next_hints(q, &q->missing);
-			block(q, 1, "code-required", hints(q), xstrfmt("no code under the contract's scope: '%s'", item->string));
-			break;
+			if (!unsorted_string_list_has_string(&q->missing, item->string))
+				string_list_append(&q->missing, item->string)->util = item->util;
 		}
 	}
+	if (!q->missing.nr)
+		return;
+	next_hints(q, &q->missing);
+	block(q, 1, "code-required", hints(q), xstrfmt("no code under the contract's scope: '%s'", q->missing.items[0].string));
 }
 
 /* spec 8.1 and 8.3: a task per definition of the check set, and the input that names this state */
@@ -657,14 +670,18 @@ static char *check_input(struct request *q)
 /* spec 7.7.6: what is missing and what to check; fulfill and commit write the state lines too */
 static void report(struct request *q, const char *req, const char *res, int with_tasks)
 {
-	struct string_list_item *item;
+	struct string_list_item *item, *sc;
 
 	for_each_string_list_item(item, &q->selected)
 		printf("id %s\n", item->string);
 	if (!q->gate) {
 		for_each_string_list_item(item, &q->conf)
-			printf("provider %s %s\n", item->string, shows(item->util, PROVIDER, q->v, was_current(item->util)));
-		fputs(q->report.buf, stdout);
+			for_each_string_list_item(sc, &((struct record *)item->util)->f[PROVIDER])
+				printf("provider %s %s\n", item->string, show(sc->string, q->v, was_current(item->util)));
+		for_each_string_list_item(sc, &q->mixed)
+			printf("mixed %s\n", sc->string);
+		if (q->invalid.code)
+			printf("invalid %s %s\n", q->invalid.word, q->invalid.msg);
 		for_each_string_list_item(item, &q->missing)
 			printf("code-required %s\n", item->string);
 		for_each_string_list_item(item, &q->conf)
@@ -678,7 +695,7 @@ static void report(struct request *q, const char *req, const char *res, int with
 		printf("check-request %s\ncheck-result %s\n", req, res);
 	}
 	if (!q->gate)
-		puts(q->missing.nr || q->report.len ? "ready no" : "ready yes");
+		puts(q->missing.nr || q->mixed.nr || q->invalid.code ? "ready no" : "ready yes");
 }
 
 /* spec 7.7.4 and 6.5: pin the check set at the judged tree, write what changed and commit it */
@@ -748,26 +765,27 @@ static int finish(struct request *q)
 	struct string_list failing = STRING_LIST_INIT_DUP;
 	struct strbuf failed = STRBUF_INIT, results = STRBUF_INIT;
 	char *input = NULL;
-	struct verdict v;
 	int unknown = 0;
 
 	transitions(q);
 	check_set(q);
 	if (!q->gate && !q->fulfill && !q->conf.nr && !q->first.code) {
+		struct string_list none = STRING_LIST_INIT_DUP;
+
+		/* 7.7a.1: nothing to check is a plain commit, without validate, session or trailers */
 		if (strcmp(q->v->oid, q->ht->oid))
-			publish(&q->files, 0, q->msg.buf);
+			publish(&none, 0, q->msg.buf);
 		else
 			puts("noop");
 		return 0;
 	}
-	session(1);
+	if (!q->gate && !q->fulfill)
+		session(1);
 	if (q->gate)
 		validate(&q->s, q->v);
 	code_present(q);
-	if (!q->gate && !q->missing.nr && check_state(&q->s, q->v, &v)) {
-		strbuf_addf(&q->report, "invalid %s %s\n", v.word, v.msg);
-		block(q, v.code, v.word, v.hint, v.msg);
-	}
+	if (!q->gate && !q->missing.nr && check_state(&q->s, q->v, &q->invalid))
+		block(q, q->invalid.code, q->invalid.word, q->invalid.hint, q->invalid.msg);
 	if (!q->missing.nr && !q->force)
 		input = check_input(q);
 	if (input && q->tasks.nr && q->result && !q->first.code &&
@@ -806,15 +824,18 @@ static void given_scopes(struct request *q, struct record *r, const char *list)
 
 	string_list_split(&parts, list, ",", -1);
 	for_each_string_list_item(item, &parts) {
-		int inside = !strstr(record_text(r, 1), "/ ");
+		int abstract = 0, inside = 0;
 
-		for_each_string_list_item(old, &r->f[PROVIDER])
-			inside |= ends_with(scope_path(old->string), "/") &&
-				  (!strcmp(scope_path(old->string), "/") || starts_with(item->string, scope_path(old->string)));
-		if (!inside)
+		for_each_string_list_item(old, &r->f[PROVIDER]) {
+			char *path = scope_path(old->string);
+
+			abstract |= ends_with(path, "/");
+			inside |= !strcmp(path, "/") || (ends_with(path, "/") && starts_with(item->string, path));
+		}
+		if (abstract && !inside)
 			reject(128, NULL, "bad scope: '%s' is outside the scope of '%s'", item->string, r->id);
-		string_list_append(&vals, pin(item->string, q->v, 0, 0));
 	}
+	scope_list(&vals, list, q->v, 0, 0);
 	r->f[PROVIDER] = vals;
 }
 
@@ -828,71 +849,65 @@ static void select_promise(struct request *q, struct record *r)
 	string_list_append(&q->selected, r->id);
 }
 
-/* D is undertaken by a future offer among the arguments, so D is fulfilled with it (7.7.2) */
-static int carried(struct request *q, struct string_list *ids, struct record *d)
+/* rule 5: the future demands undertaken by an offer among the targets, from HEAD (7.7.2) */
+static void carry(struct request *q, struct string_list *ids)
 {
 	size_t i;
 
 	for (i = 0; i < q->s.nr; i++) {
-		struct record *l = q->s.r[i];
+		struct record *l = q->s.r[i], *o;
+		struct string_list_item *d;
 
-		if (*l->id == 'u' && in_state(l, "undertaken") && link_end(&q->s, l, 0) == d &&
-		    unsorted_string_list_has_string(ids, link_end(&q->s, l, 1)->id) && in_state(link_end(&q->s, l, 1), "future"))
-			return 1;
+		if (*l->id != 'u' || !in_state(l, "undertaken"))
+			continue;
+		o = link_end(&q->s, l, 1);
+		if (!o || !unsorted_string_list_has_string(ids, o->id) || !in_state(o, "future"))
+			continue;
+		d = string_list_insert(&q->carried, link_end(&q->s, l, 0)->id);
+		d->util = xstrfmt("%s %s", d->util ? (char *)d->util : " via", o->id);
 	}
-	return 0;
 }
 
 /* spec 7.7 and 7.7a: fulfill keeps the selected promises; commit only checks what the change touches */
 int cmd_fulfill(int argc, const char **argv)
 {
-	struct request q = { .fulfill = !strcmp(argv[0], "fulfill") };
-	struct string_list paths = STRING_LIST_INIT_DUP, args = STRING_LIST_INIT_DUP, ids = STRING_LIST_INIT_DUP;
+	struct request q = REQUEST_INIT;
+	struct string_list paths = STRING_LIST_INIT_DUP, ids = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct verdict v;
-	int i;
 	size_t k;
 
-	for (i = 1; i < argc; i++)
-		if (!strcmp(argv[i], "--force"))
-			for (k = 1; k < (size_t)argc; k++)
-				if (!strcmp(argv[k], "-r") || !strcmp(argv[k], "--result"))
-					reject(129, NULL, "options '-r' and '--force' cannot be used together");
-	begin(&q);
-	for (i = 1; i < argc; i++)
-		if (!option(&q, argc, argv, &i))
-			string_list_append(&args, argv[i]);
+	q.fulfill = !strcmp(argv[0], "fulfill");
+	parse_options(&q, argc - 1, argv + 1);
+	message(&q, q.fulfill ? "[FULFILL] " : NULL);
 	/* spec 7.7.1: IDs once each; aliases live only inside one helper request */
-	for_each_string_list_item(item, &args) {
-		const char *a = item->string, *eq = strchr(a, '=');
+	for (k = 0; k < q.args.nr; k++) {
+		const char *a = q.args.v[k], *eq = strchr(a, '=');
 		char *id = eq ? xstrndup(a, eq - a) : xstrdup(a);
-		struct record *r = state_get(&q.s, id);
 
 		if (*a == '-' || unsorted_string_list_has_string(&ids, id) || (!q.fulfill && !eq) || islower(*id))
 			reject(129, islower(*id) ? "aliases are local to one command; use the ID printed on its 'new' line" : NULL,
 			       "bad argument '%s'", a);
-		if (!r || *r->id == 'u')
-			reject(128, NULL, "no such contract: '%s'", id);
-		string_list_append(&ids, id)->util = (void *)(eq ? eq + 1 : NULL);
+		string_list_append(&ids, id)->util = eq ? xstrdup(eq + 1) : NULL;
 	}
 	if (q.fulfill)
 		session(1);
+	load(&q);
 	q.v = tree_load(line1(git("write-tree")));
-	if (check_state(&q.s, q.ht, &v)) {
-		strbuf_addf(&q.report, "invalid %s %s\n", v.word, v.msg);
-		block(&q, v.code, v.word, v.hint, v.msg);
-	}
+	for_each_string_list_item(item, &ids)
+		if (!state_get(&q.s, item->string) || *item->string == 'u')
+			reject(128, NULL, "no such contract: '%s'", item->string);
+	if (q.fulfill)
+		carry(&q, &ids);
 	/* the selected targets: plain IDs, and ID=SCOPES of a future contract that no target offer carries */
 	for_each_string_list_item(item, &ids) {
 		struct record *r = state_get(&q.s, item->string);
 
-		if (q.fulfill && (!item->util || (in_state(r, "future") && !carried(&q, &ids, r))))
+		if (q.fulfill && (!item->util || (in_state(r, "future") && !carried(&q, r))))
 			select_promise(&q, r);
 	}
-	/* rule 5: a future offer that becomes current keeps the future demands it undertakes */
-	for (k = 0; k < q.s.nr; k++)
-		if (*q.s.r[k]->id == 'D' && in_state(q.s.r[k], "future") && undertaken_by_new_current(&q, q.s.r[k]))
-			put(q.s.r[k], STATE, "current");
+	for_each_string_list_item(item, &q.carried)
+		if (in_state(state_get(&q.s, item->string), "future"))
+			put(state_get(&q.s, item->string), STATE, "current");
 	for_each_string_list_item(item, &ids)
 		if (item->util) {
 			string_list_append(&q.scoped, item->string);
@@ -903,11 +918,10 @@ int cmd_fulfill(int argc, const char **argv)
 	tree_diff(q.ht, q.v, &paths);
 	for_each_string_list_item(item, &paths)
 		if (contract_path(&q.s, item->string)) {
-			strbuf_addf(&q.report, "mixed %s\n", item->string);
+			string_list_append(&q.mixed, item->string);
 			block(&q, 1, "mixed", xstrfmt("unstage the spec files ('%s'), then rerun this command", item->string),
 			      xstrfmt("contract changes and code changes are mixed: '%s'", item->string));
 		}
-	message(&q, q.fulfill ? "[FULFILL] " : NULL);
 	return finish(&q);
 }
 
@@ -933,7 +947,7 @@ static struct tree *candidate(struct request *q)
 		if (*staged && !strstr(staged, oid) && (!blob_at(q->ht, p) || !strstr(staged, blob_at(q->ht, p))))
 			reject(1, xstrfmt("stage all of '%s' or none of it", p), "spec files do not match the contract: '%s' is partly staged", p);
 		strbuf_addf(&info, "%s %s\t%s\n", st.st_mode & S_IXUSR ? "100755" : "100644", oid, p);
-		if (strbuf_read_file(&text, xstrfmt("%s/%s", top, p), 0) < 0 || !strstr(text.buf, "body:"))
+		if (!q->files.items[k].util || strbuf_read_file(&text, xstrfmt("%s/%s", top, p), 0) < 0)
 			continue;
 		yaml(text.buf, &kv, p);
 		for_each_string_list_item(item, &kv)
@@ -946,47 +960,49 @@ static struct tree *candidate(struct request *q)
 /* spec 7.3: clauses apply in order to the records loaded from HEAD */
 int cmd_request(int argc, const char **argv)
 {
-	struct request q = { .gate = 1 };
-	int i = !strcmp(argv[0], "contract") || !strcmp(argv[0], "ct");
+	struct request q = REQUEST_INIT;
+	const char **v;
+	int n, i;
 	size_t k;
 
-	if (i && argc > 1 && strstr(" new add commit push pull ", xstrfmt(" %s ", argv[1])))
-		unsupported(xstrfmt("contract %s", argv[1]));
-	begin(&q);
+	q.gate = 1;
+	parse_options(&q, argc, argv);
+	v = q.args.v;
+	n = q.args.nr;
+	i = !strcmp(v[0], "contract") || !strcmp(v[0], "ct");
+	if (i && n > 1 && strstr(" new add commit push pull ", xstrfmt(" %s ", v[1])))
+		unsupported(xstrfmt("contract %s", v[1]));
+	message(&q, "[CONTRACT] ");
 	session(1);
+	load(&q);
 	strbuf_addstr(&q.cmdline, "ait");
-	for (k = 0; k < (size_t)argc; k++) {
-		int skip = !strcmp(argv[k], "-m") || !strcmp(argv[k], "-F") || !strcmp(argv[k], "-r") || !strcmp(argv[k], "--result");
-
-		if (skip || !strcmp(argv[k], "--force")) {
-			k += skip;
-			continue;
-		}
+	for (k = 0; k < q.args.nr; k++) {
 		strbuf_addch(&q.cmdline, ' ');
-		sq_quote_buf_pretty(&q.cmdline, argv[k]);
+		sq_quote_buf_pretty(&q.cmdline, v[k]);
 	}
-	while (i < argc) {
-		int future = !strcmp(argv[i], "future");
-		const char *w = argv[i + future];
+	while (i < n) {
+		int future = !strcmp(v[i], "future");
+		const char *w;
 		struct record *r, *o;
 
-		if (option(&q, argc, argv, &i) && ++i)
-			continue;
+		if (future && i + 1 == n)
+			unsupported("future");
+		w = v[i + future];
 		i += future + 1;
-		if (!w || (future && !strcmp(w, "drop")))
-			unsupported(w ? "future drop" : "future");
+		if (future && !strcmp(w, "drop"))
+			unsupported("future drop");
 		if (!strcmp(w, "demand") || !strcmp(w, "offer")) {
-			new_contract(&q, w, future, argc, argv, &i);
+			new_contract(&q, w, future, &i);
 		} else if (!strcmp(w, "amend")) {
-			r = resolve(&q, arg(argc, argv, &i));
+			r = resolve(&q, arg(&q, &i));
 			if (*r->id == 'u' || !is_live(r))
 				reject(1, NULL, "not allowed: '%s' is not a future or current contract", r->id);
 			if (future)
 				put(r, STATE, "future");
 			r->recheck = is_current(r);
-			if (i < argc && !is_word(argv[i])) {
-				const char *a = *r->id == 'D' ? arg(argc, argv, &i) : "-", *b = arg(argc, argv, &i);
-				const char *f = arg(argc, argv, &i);
+			if (i < n && !is_word(v[i])) {
+				const char *a = *r->id == 'D' ? arg(&q, &i) : "-", *b = arg(&q, &i);
+				const char *f = arg(&q, &i);
 
 				r->recheck &= !strcmp(a, "-") && !strcmp(b, "-") && !strcmp(f, "-");
 				scopes(&q, r, CONSUMER, a);
@@ -994,12 +1010,12 @@ int cmd_request(int argc, const char **argv)
 				defs(&q, r, f);
 			}
 		} else if (future && !strcmp(w, "cancel")) {
-			put(resolve(&q, arg(argc, argv, &i)), STATE, "cancelled");
+			put(resolve(&q, arg(&q, &i)), STATE, "cancelled");
 		} else if (!future && (!strcmp(w, "undertake") || !strcmp(w, "release"))) {
 			char *id;
 
-			r = resolve(&q, arg(argc, argv, &i));
-			o = resolve(&q, arg(argc, argv, &i));
+			r = resolve(&q, arg(&q, &i));
+			o = resolve(&q, arg(&q, &i));
 			if (*r->id != 'D' || *o->id != 'O')
 				reject(128, NULL, "no such contract: '%s' must be a demand and '%s' an offer", r->id, o->id);
 			id = xstrfmt("undertake/%s-%s", r->id, o->id);
@@ -1014,7 +1030,6 @@ int cmd_request(int argc, const char **argv)
 			reject(129, NULL, "unknown clause '%s'", w);
 		}
 	}
-	message(&q, "[CONTRACT] ");
 	q.v = candidate(&q);
 	for (k = 0; k < q.s.nr; k++)
 		if (is_live(q.s.r[k]) && expand_files(q.s.r[k], q.v))

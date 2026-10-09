@@ -7,6 +7,7 @@
 
 extern const char *top, *gindex, *headref, *head, *gitdir, *commondir;
 extern char *git_error;
+extern size_t git_out_len;	/* the length of the last git output */
 #define EMPTY_TREE "4b825dc642cb6eb9a060e54bf8d69288fbee4904"	/* the first stderr line of the last git call */
 
 /* ait.c: process, messages and the commands that are not requests */
@@ -27,6 +28,8 @@ struct tree { char oid[48]; size_t nr; struct entry *e; };
 struct tree *tree_load(const char *treeish);
 struct entry *tree_get(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
+const char *blob_text(const char *oid);
+void blobs_read(struct string_list *oids);
 char *tree_with(const char *base, const char *index_info);
 void tree_diff(struct tree *a, struct tree *b, struct string_list *paths);
 
@@ -69,6 +72,7 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs);
 char *show(const char *scope, struct tree *t, int current);
 char *shows(struct record *r, enum key k, struct tree *t, int current);
 char *pins(struct record *r);
+char *pin_lines(struct record *r);
 int code_found(struct record *r, struct tree *t);
 int touches(struct record *r, struct tree *a, struct tree *b);
 void repin(struct record *r, enum key k, struct tree *t, int new_only);
@@ -79,7 +83,7 @@ int unverified(struct record *r, struct tree *t, struct string_list *checks);
 void checks_load(struct string_list *checks);
 void yaml(const char *text, struct string_list *kv, const char *what);
 const char *yget(struct string_list *kv, const char *key);
-void def_load(struct tree *t, const char *path, struct string_list *kv);
+struct string_list *def_get(struct tree *t, const char *path);
 
 /* request.c: the helpers, fulfill and commit share one pipeline */
 int cmd_request(int argc, const char **argv);

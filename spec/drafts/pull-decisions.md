@@ -32,6 +32,40 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
    - 따로 둔 offer→demand 규칙(옛 J8)은 없앤다.
    - 예: 내 current offer O에 남이 떠맡기를 붙인 이력을 `pull D`로 받으려 하면 거절된다. hint는 `ait contract pull D O`다.
 
+8. **git 조작을 보지 않고 계약 파일(판)만 본다.** git과 술래잡기를 하지 않는다. 어떤 git 조작으로 커밋이 생겼는지, 기록줄이 있는지는 판정에 쓰지 않는다.
+   - **규칙 1:** 판은 `prev`에서 ait 규칙(상태 전이)으로 갈 수 있어야 한다. 갈 수 없는 판은 사고다.
+     - 무엇인지 모르는 판이므로 pull은 받지 않는다.
+     - 그 브랜치는 고칠 때까지 막는다(5.10과 같다).
+   - **규칙 2:** 브랜치가 옛 판으로 돌아간 것(revert, reset, 파일만 되돌리기)은 사고가 아니다.
+     - 그 브랜치가 옛 계약 상태에 있을 뿐이다. 새 판이 없으므로 남에게 전해지지 않는다.
+     - 남에게도 거두려면 ait 명령으로 새 판을 남긴다. 계약 변경은 ait 명령으로만 전해진다.
+   - 같은 판을 옮긴 것(cherry-pick, rebase, squash)은 기록줄이 사라져도 사고가 아니다. 규칙에 맞게 손으로 고친 판도 사고가 아니다(이력에 `?`). 기록줄 위조는 판정과 상관없다.
+   - ait는 `post-commit` hook을 더 쓴다. 충돌 없는 revert에서도 git이 부르므로, 그 자리에서 알린다(막지 않는다). 옛 판으로 돌아갔을 때의 출력:
+     - `warning: this commit put 'D' back to an older version; only this branch has it`
+     - `hint: to take it back for others too, undo this commit and reopen it with ait: 'ait future amend D -m <why>'`
+     - 되돌린 커밋을 무르면 HEAD가 다시 D1이다. 그래서 그 위의 되돌리기는 `prev`가 D1인 새 판이 되어 전해진다.
+   - 규칙 1의 사고도 post-commit에서 알리고, 고치는 길은 5.10의 hint다.
+   - 9.2의 사건은 새 판에만 생긴다. 옛 판으로 돌아간 커밋은 남에게 사건이 아니다(규칙 2).
+
+9. **pull은 검사하고, 고르고, 그다음 git merge한다.**
+   - 받는 일 자체는 git merge다.
+   - ait가 더하는 것은 셋이다: 받을 커밋 찾기, 받기 전 검사(2·6·8), 고르지 않은 판을 `prev`에 남기기(4).
+   - git merge를 직접 쓰는 길은 규격·SKILL·hint 어디에서도 가르치지 않는다.
+
+10. **받는 계약 자신의 확인한 코드가 내 변경과 합쳐져 달라지면 받기 전에 거절한다.** 받은 D가 곧바로 미확인이 되기 때문이다. hint는 둘이다.
+    - 받으면서 같은 요청에서 되돌린다: `ait contract pull D future amend D -m <why>`. pull 뒤에 도우미 명령 절을 잇는 문법을 새로 둔다.
+    - 사소하면: `ait contract pull D --force -m <why>`.
+    - 6의 hint도 같은 꼴(한 요청)으로 맞춘다: `ait contract pull B future amend K -m <why>`.
+11. **스스로 정한 것** (사용자에게 알림):
+    - 같은 판이 여러 커밋에 따로 들어갔으면(복사) 멈추지 않는다. 들어올 커밋이 가장 적은 쪽을 받는다.
+    - 코드가 실제로 충돌하면 git처럼 그 자리에서 멈추고, 받는 쪽이 해결해 마친다. 계약 검사는 모두 그 전에 끝난다.
+
+## 용어 (사용자 확정, 2026-10-09)
+
+- **미확인**: current 계약이 확인한 **구현(코드)**이 확인 없이 바뀐 것.
+- **사고**: **명세**(계약의 조건, 계약 파일)가 ait 규칙 밖에서 바뀐 것.
+- 둘은 다른 말이다. "미확인(사고)"처럼 섞어 쓰지 않는다.
+
 ## 함께 고칠 용어
 
 - hint의 `make it a promise`(5.9a)는 `reopen`·`future`로 고친다. "promise"는 쓰지 않는다.
