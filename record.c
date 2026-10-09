@@ -481,13 +481,17 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 	return 0;
 }
 
-/* why R cannot be shown as it is in T: malformed, or its spec files are not there (NULL when it can) */
+/* why R cannot be shown from T: malformed, or a definition it declares is not a text file in T (NULL when it can) */
 const char *unusable(struct record *r, struct tree *t)
 {
+	struct string_list_item *item;
+
 	if (r->bad)
 		return r->bad;
-	if (is_live(r) && !files_match(r, t))
-		return "its spec files do not match it";
+	for_each_string_list_item(item, &r->f[FILES])
+		if (is_live(r) && is_def(item->string) && (!blob_at(t, scope_path(item->string)) ||
+							   !blob_text(blob_at(t, scope_path(item->string)))))
+			return xstrfmt("its definition '%s' is not there", scope_path(item->string));
 	return NULL;
 }
 
@@ -726,10 +730,12 @@ static struct string_list *checks(void)
 		return &confirmed;
 	string_list_split(&lines, git("log --format=%(trailers:key=Ait-Check,valueonly,separator=%x0a) %s", head),
 			  "\n", -1);
+	/* spec 5.4: exactly "ID reported|forced PINS" */
 	for_each_string_list_item(item, &lines) {
-		char id[48], how[16], p[48];
+		static const char *const how[] = { "reported", "forced", NULL };
+		char id[48], word[16], p[48], more;
 
-		if (sscanf(item->string, "%47s %15s %47s", id, how, p) == 3)
+		if (sscanf(item->string, "%47s %15s %47s %c", id, word, p, &more) == 3 && one_of(word, how) && oid_ok(p))
 			string_list_insert(&confirmed, xstrfmt("%s %s", id, p));
 	}
 	return &confirmed;
@@ -828,7 +834,7 @@ int read_text(struct strbuf *sb, const char *path)
 struct yval {
 	char *s;
 	size_t at;
-	int container;
+	char kind;	/* 'l' a list, 'm' a map, 0 a scalar */
 };
 
 struct yaml {
@@ -849,6 +855,15 @@ static int yaml_fail(struct yaml *y, const char *fmt, ...)
 	if (!y->err)
 		y->err = strbuf_detach(&sb, NULL);
 	return -1;
+}
+
+/* V holds a list ('l') or a map ('m'), never both */
+static int yaml_kind(struct yaml *y, struct yval *v, char kind, const char *key)
+{
+	if (v->kind && v->kind != kind)
+		return yaml_fail(y, "'%s' is both a list and a map", key);
+	v->kind = kind;
+	return 0;
 }
 
 static struct yval *yaml_put(struct yaml *y, char *key, char *s, const char *at)
@@ -873,6 +888,8 @@ static int yaml_scalar(struct yaml *y, const char **p, const char *stop, char *k
 	const char *v = *p, *at = v;
 	char q = *v;
 
+	if (q && strchr("&*!|>%@`", q))
+		return yaml_fail(y, "unsupported YAML in '%s'", key);
 	if (q != '"' && q != '\'') {
 		while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == '#' && v > at && v[-1] == ' '))
 			strbuf_addch(&sb, *v++);
@@ -902,7 +919,7 @@ static int yaml_flow(struct yaml *y, const char **p, char *key, int depth)
 		return -1;
 	if (depth > 15)
 		return yaml_fail(y, "'%s' is nested too deeply", key);
-	v->container = 1;
+	v->kind = close == ']' ? 'l' : 'm';
 	*p += 1 + strspn(*p + 1, " ");
 	for (n = 0; **p != close; n++) {
 		char *sub = xstrfmt("%s.%d", key, n);
@@ -958,8 +975,8 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 		item = *p == '-' && (p + 1 == e || p[1] == ' ');
 		while (sp && (indent < st[sp].indent || (indent == st[sp].indent && (!item || st[sp].map_only))))
 			sp--;
-		if (st[sp].v)
-			st[sp].v->container = 1;
+		if (st[sp].v && yaml_kind(&y, st[sp].v, item ? 'l' : 'm', st[sp].prefix))
+			break;
 		prefix = st[sp].prefix;
 		if (item) {
 			prefix = xstrfmt("%s.%d", prefix, st[sp].items++);
@@ -982,7 +999,7 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 			st[sp].v = yaml_put(&y, prefix, xstrdup(""), p);
 			if (!st[sp].v)
 				break;
-			st[sp].v->container = 1;
+			st[sp].v->kind = 'm';
 		}
 		colon = p + strspn(p, "abcdefghijklmnopqrstuvwxyz_");
 		if (colon == p || *colon != ':' || (colon[1] != ' ' && colon + 1 != e)) {
@@ -1036,8 +1053,6 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 		} else if (*p == '[' || *p == '{') {
 			if (!yaml_flow(&y, &p, key, sp))
 				yaml_end(&y, p, no);
-		} else if (strchr("&*!>", *p)) {
-			yaml_fail(&y, "unsupported YAML in line %d", no);
 		} else if (!yaml_scalar(&y, &p, "", key)) {
 			yaml_end(&y, p, no);
 		}
@@ -1093,8 +1108,8 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 				kind = (*e)[pattern.len + 1];
 		if (!kind)
 			reject(128, NULL, "bad format: '%s': unknown key '%s'", what, item->string);
-		if (strchr("lm", kind) ? !v->container && *v->s :
-		    v->container || (kind == 'i' && (!*v->s || v->s[strspn(v->s, "0123456789")])))
+		if (strchr("lm", kind) ? (v->kind ? v->kind != kind : *v->s != 0) :
+		    v->kind || (kind == 'i' && (!*v->s || v->s[strspn(v->s, "0123456789")])))
 			reject(128, NULL, "bad format: '%s': bad value of '%s'", what, item->string);
 	}
 }

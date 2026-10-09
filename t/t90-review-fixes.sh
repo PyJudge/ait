@@ -16,7 +16,7 @@ git reset -q --hard "$H" && rm -rf specs/p.yaml && git checkout -q -- specs/p.ya
 git update-index --add --cacheinfo 160000,$(git rev-parse HEAD),.ait/Odeadbeefdead
 tick; git commit -q --no-verify -m link
 expect_ok "todo with a gitlink under .ait/" ait todo
-check "the gitlink is skipped as malformed (5.10)" err_has "warning: skipping malformed '.ait/Odeadbeefdead' at 'HEAD'"
+check "the gitlink is skipped as malformed (5.10)" err_has "warning: skipping malformed '.ait/Odeadbeefdead' at 'index'"
 git reset -q --hard HEAD~1
 
 # 2.5.1: blanks after a closing quote are not text
@@ -38,7 +38,7 @@ tick; expect_ok "a demand to link" ait future demand src/order.c src/stock.c spe
 check "the demand has an ID" test -n "$D"
 mkdir -p .ait/undertake && printf 'state undertaken\nprev -\n' > .ait/undertake/$D-O000000000000 && git add .ait && tick && git commit -q --no-verify -m dangling
 expect_ok "todo with a dangling link" ait todo $D
-check "the dangling link is reported as malformed" err_has "warning: skipping malformed '.ait/undertake/$D-O000000000000' at 'HEAD'"
+check "the dangling link is reported as malformed" err_has "warning: skipping malformed '.ait/undertake/$D-O000000000000' at 'index'"
 git reset -q --hard HEAD~1
 
 # 7.1.6: only what peels to a commit is validated; a tag of a blob pushes

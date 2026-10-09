@@ -30,7 +30,19 @@ static char *prefixed(const char *hint)
 	return strbuf_detach(&sb, NULL);
 }
 
-/* git's error()/die() routines and advise(), with the exit code of spec 5.7 */
+/* every hint goes through here: git's advise(), with the session prefix of 5.9a */
+void suggest(const char *fmt, ...)
+{
+	struct strbuf sb = STRBUF_INIT;
+	va_list ap;
+
+	va_start(ap, fmt);
+	strbuf_vaddf(&sb, fmt, ap);
+	va_end(ap);
+	advise("%s", prefixed(sb.buf));
+}
+
+/* git's error()/die() routines and a hint, with the exit code of spec 5.7 */
 void reject(int code, const char *hint, const char *fmt, ...)
 {
 	va_list ap;
@@ -41,7 +53,7 @@ void reject(int code, const char *hint, const char *fmt, ...)
 	if (code == 129)
 		fputs("usage: ait <command> [<args>]  (see spec/ait-mini.md)\n", stderr);
 	if (hint)
-		advise("%s", prefixed(hint));
+		suggest("%s", hint);
 	exit(code);
 }
 
@@ -111,7 +123,9 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 		cat.in = cat.out = -1;
 		if (start_command(&cat))
 			reject(128, NULL, "git failed: cannot run 'git cat-file'");
+		/* the pipes are ait's alone, not for the git commands and hooks it runs later */
 		fcntl(cat.in, F_SETFD, FD_CLOEXEC);
+		fcntl(cat.out, F_SETFD, FD_CLOEXEC);
 		out = xfdopen(cat.out, "r");
 	}
 	if (write_in_full(cat.in, cmd, strlen(cmd)) < 0 || !fgets(line, sizeof(line), out))
@@ -326,7 +340,7 @@ static int cmd_session(int argc, const char **argv)
 			if (strncmp(who, name, wt - 1 - who) || strlen(name) != (size_t)(wt - 1 - who))
 				continue;
 			warning("agent name '%s' is also used by session '%s' (worktree '%s')", name, ids.items[i].string, wt);
-			advise("if '%s' is yours, close this one: 'ait session close %s', and use '%s' in '%s' with "
+			suggest("if '%s' is yours, close this one: 'ait session close %s', and use '%s' in '%s' with "
 			       "AIT_SESSION=%s; otherwise close this one and open again with another name",
 			       ids.items[i].string, sid, ids.items[i].string, wt, ids.items[i].string);
 		}
@@ -334,7 +348,7 @@ static int cmd_session(int argc, const char **argv)
 		mine = default_of(top);
 		if (session_read(mine, other) && strcmp(other, name)) {
 			warning("this worktree is used by session '%s' (agent '%s')", mine, other);
-			advise("close this one: 'ait session close %s', then open a session in a worktree of your own: "
+			suggest("close this one: 'ait session close %s', then open a session in a worktree of your own: "
 			       "'ait session open --agent %s' there", sid, name);
 		} else if (!session_read(mine, NULL)) {
 			write_state(pointer_path(top), xstrfmt("%s\n", sid));
@@ -434,7 +448,7 @@ static int cmd_init(int argc, const char **argv)
 		if (has_ait_hook(path, hooks[i]))
 			continue;
 		error("not allowed: hook '%s' is not set up for ait", path);
-		advise("make '%s' run 'ait hook %s' with its arguments and its stdin, and stop when that fails; git runs a hook "
+		suggest("make '%s' run 'ait hook %s' with its arguments and its stdin, and stop when that fails; git runs a hook "
 		       "only if it is executable. In a shell hook, these lines after the first line do it ('#!/bin/sh' first "
 		       "if the file is new):\n%s\nthen rerun this command", path, hooks[i], strcmp(hooks[i], "pre-push") ?
 		       xstrfmt("if command -v ait >/dev/null 2>&1; then ait hook %s \"$@\" || exit $?; fi", hooks[i]) :
@@ -443,7 +457,7 @@ static int cmd_init(int argc, const char **argv)
 		if (starts_with(path, xstrfmt("%s/", top)))
 			git_run(NULL, NULL, &rc, "--no-literal-pathspecs check-ignore -q -- %s", path + strlen(top) + 1);
 		if (starts_with(path, xstrfmt("%s/", top)) && rc)
-			advise("then commit it: stage '%s' and run 'ait commit -m <why>'", path + strlen(top) + 1);
+			suggest("then commit it: stage '%s' and run 'ait commit -m <why>'", path + strlen(top) + 1);
 		bad = 1;
 	}
 	mkdir(state_path(""), 0777);
@@ -486,7 +500,7 @@ static void check_hooks(void)
 	dir = hooks_dir();
 	for (k = 0; hooks[k]; k++)
 		if (!has_ait_hook(xstrfmt("%s/%s", dir, hooks[k]), hooks[k])) {
-			advise("this clone is not set up for ait; run 'ait init'");
+			suggest("this clone is not set up for ait; run 'ait init'");
 			return;
 		}
 }
@@ -557,7 +571,7 @@ static int ref_transaction(const char *phase)
 	return 0;
 }
 
-static void recheck_hint(struct record *r, struct tree *t);
+static void recheck_hint(struct record *r, struct tree *t, struct tree *at);
 
 /* spec 7.1.2-7.1.3: guard plain commits, validate merges */
 static int cmd_hook(int argc, const char **argv)
@@ -603,22 +617,67 @@ static int cmd_hook(int argc, const char **argv)
 				fputs(def_text(ht, scope_path(f->string), "        "), stderr);
 	}
 	warning("their receivers are notified after this commit");
-	advise("next time, to check and commit in one step, use 'ait commit' instead of 'git commit'");
+	suggest("next time, to check and commit in one step, use 'ait commit' instead of 'git commit'");
 	for_each_string_list_item(item, &gone) {
-		advise("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", item->string, item->string);
-		recheck_hint(item->util, t);
+		suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", item->string, item->string);
+		recheck_hint(item->util, t, t);
 	}
 	return 0;
 }
 
-/* H7 and H8: check an unverified contract again, at its scope or where its code went */
-static void recheck_hint(struct record *r, struct tree *t)
+/* KEPT,<new scope> of 5.9a: the pieces of R's provider that T still has, then the new place */
+static char *moved_arg(struct record *r, struct tree *t)
+{
+	struct strbuf kept = STRBUF_INIT, arg = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &r->f[PROVIDER])
+		if (blob_at(t, scope_path(item->string)))
+			strbuf_addf(&kept, "%s%s", kept.len ? "," : "", scope_path(item->string));
+	if (kept.len) {
+		sq_quote_buf_pretty(&arg, kept.buf);
+		strbuf_addch(&arg, ',');
+	}
+	strbuf_addstr(&arg, "<new scope>");
+	return strbuf_detach(&arg, NULL);
+}
+
+/* H7 and H8: check an unverified contract again, at its scope in T or where its code went; amend reads KEPT in AT */
+static void recheck_hint(struct record *r, struct tree *t, struct tree *at)
 {
 	if (code_found(r, t))
-		advise("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
+		suggest("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
 	else
-		advise("'%s' has no code under its scope; if it was moved, run 'ait amend %s %s<new scope> -m <why>' "
-		       "to get the tasks", r->id, r->id, *r->id == 'D' ? "- " : "");
+		suggest("'%s' has no code under its scope; if it was moved, run 'ait amend %s %s%s - -m <why>' to get the tasks",
+			r->id, r->id, *r->id == 'D' ? "- " : "", moved_arg(r, at));
+}
+
+/* H10: fulfil my promise P, with a scope for P and each abstract future demand it undertakes, or where its code went */
+static void fulfill_hint(struct state *s, struct record *p, struct tree *t)
+{
+	struct strbuf args = STRBUF_INIT;
+	struct string_list_item *item;
+	size_t j;
+
+	for_each_string_list_item(item, &p->f[PROVIDER])
+		if (!starts_with(item->string, "new:") && !ends_with(scope_path(item->string), "/") &&
+		    !blob_at(t, scope_path(item->string))) {
+			suggest("'%s' has no code under its scope; if it was moved, run 'ait fulfill %s=%s -m <why>' to get the tasks",
+				p->id, p->id, moved_arg(p, t));
+			suggest("if it is gone for good, run 'ait future cancel %s -m <why>'", p->id);
+			return;
+		}
+	strbuf_addf(&args, "%s%s", p->id, is_abstract(p) ? "=<scope>" : "");
+	for (j = 0; j < s->nr; j++) {
+		struct record *l = s->r[j], *d;
+
+		if (*l->id != 'u' || l->bad || !in_state(l, "undertaken") || link_end(s, l, 1) != p)
+			continue;
+		d = link_end(s, l, 0);
+		if (in_state(d, "future") && is_abstract(d))
+			strbuf_addf(&args, " %s=<scope>", d->id);
+	}
+	suggest("when ready, stage the code and run 'ait fulfill %s -m <why>' to get the tasks", args.buf);
 }
 
 /* spec 3.9: two scopes overlap; "DIR/" and "/" cover what is under them */
@@ -671,9 +730,10 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 		other = link_end(s, l, *r->id == 'D');
 		printf("%s %s %s %s\n", *r->id == 'O' ? "undertakes" : "undertaken-by", other->id, val(other, STATE),
 		       scope_path(val(other, CREATOR)));
-		if (*r->id != 'O' || !in_state(other, "future"))
+		if (*r->id != 'O' || !is_live(other))
 			continue;
-		printf("undertakes-provider %s %s\n", other->id, shows(other, PROVIDER, t, 0));
+		if (in_state(other, "future"))
+			printf("undertakes-provider %s %s\n", other->id, shows(other, PROVIDER, t, 0));
 		file_lines(xstrfmt("undertakes-file %s", other->id), other, t);
 	}
 }
@@ -681,7 +741,7 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 /* spec 7.8: my promises and my unverified demands, with what to do next */
 static int cmd_todo(int argc, const char **argv)
 {
-	struct state s = { 0 };
+	struct state s = { 0 }, hs = { 0 };
 	struct string_list index = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct tree *t = tree_load(line1(git("write-tree"))), *ht = head_tree();
@@ -689,7 +749,9 @@ static int cmd_todo(int argc, const char **argv)
 	size_t i;
 	int k;
 
-	state_load(&s, ht);
+	/* spec 7.8.1: the contracts as the index T0 has them; the index block compares HEAD's with T0 */
+	state_load(&s, t);
+	state_load(&hs, ht);
 	for (k = 1; k < argc; k++) {
 		const char *a = argv[k];
 
@@ -706,11 +768,11 @@ static int cmd_todo(int argc, const char **argv)
 		int mine, future, unver, pick = 0;
 
 		if (r->bad) {
-			warning("skipping malformed '.ait/%s' at 'HEAD'", r->id);
+			warning("skipping malformed '.ait/%s' at 'index'", r->id);
 			continue;
 		}
-		if (unusable(r, ht)) {
-			warning("skipping '.ait/%s' at 'HEAD': %s", r->id, unusable(r, ht));
+		if (unusable(r, t)) {
+			warning("skipping '.ait/%s' at 'index': %s", r->id, unusable(r, t));
 			continue;
 		}
 		if (*r->id == 'u' || !strcmp(r->id, "init"))
@@ -718,8 +780,6 @@ static int cmd_todo(int argc, const char **argv)
 		mine = me && !strcmp(scope_path(val(r, CREATOR)), me);
 		future = in_state(r, "future");
 		unver = is_current(r) && unverified(r, t);
-		if (touches(r, ht, t))
-			string_list_append(&index, r->id)->util = r;
 		for (k = 1; k < argc; k++)
 			pick |= state_get(&s, argv[k]) ? !strcmp(argv[k], r->id) : (future || unver) && named(r, argv[k]);
 		if (argc == 1)
@@ -732,15 +792,18 @@ static int cmd_todo(int argc, const char **argv)
 		for_each_string_list_item(item, &r->f[PROVIDER])
 			printf("provider %s\n", show(item->string, t, is_current(r)));
 		printf("%s", unver ? "unverified yes\n" : "");
-		file_lines("file", r, ht);
+		file_lines("file", r, t);
 		link_lines(&s, r, t);
 		putchar('\n');
 		if (unver)
-			recheck_hint(r, t);
+			recheck_hint(r, t, ht);
 		else if (future && mine)
-			advise("when ready, stage the code and run 'ait fulfill %s%s -m <why>' to get the tasks", r->id,
-			       is_abstract(r) ? "=<scope>" : "");
+			fulfill_hint(&s, r, t);
 	}
+	/* 7.7.6: the current contracts of HEAD whose provider the staged change touches */
+	for (i = 0; i < hs.nr; i++)
+		if (!hs.r[i]->bad && touches(hs.r[i], ht, t))
+			string_list_append(&index, hs.r[i]->id)->util = hs.r[i];
 	if (index.nr)
 		puts("index");
 	for_each_string_list_item(item, &index)

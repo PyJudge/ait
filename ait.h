@@ -10,6 +10,7 @@ extern char *git_error;		/* the first stderr line of the last git call */
 extern size_t git_out_len;	/* the length of the last git output */
 
 /* ait.c: process, messages and the commands that are not requests */
+void suggest(const char *fmt, ...) __attribute__((format (printf, 1, 2)));
 NORETURN void reject(int code, const char *hint, const char *fmt, ...) __attribute__((format (printf, 3, 4)));
 NORETURN void unsupported(const char *what);
 struct strvec;
