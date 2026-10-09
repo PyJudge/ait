@@ -25,6 +25,7 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
      - `reopen it first: 'ait future amend K -m <why>', then rerun this command`
      - K를 내 current offer O가 떠맡고 있으면 `'K' is undertaken by current 'O'; reopen them in the same request: 'ait future amend O future amend K -m <why>', then rerun this command`
      - 또는 `ait contract pull B --force -m <why>`. 사소하다고 판단해 받는 것이고, K의 `forced` 확인 기록으로 남는다. v14에 없는 새 길이다.
+     - (10에서 첫 두 hint를 한 요청 꼴로 바꿨다: `ait contract pull B future amend K -m <why>`.)
    - 명세 파일을 공유하는 내 계약이 future면 거절하지 않는다. 새 내용으로 다시 고정한다(6.2).
 
 7. **떠맡기 기록은 D와 O 둘 다의 변경이다.**
@@ -59,6 +60,8 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
 11. **스스로 정한 것** (사용자에게 알림):
     - 같은 판이 여러 커밋에 따로 들어갔으면(복사) 멈추지 않는다. 들어올 커밋이 가장 적은 쪽을 받는다.
     - 코드가 실제로 충돌하면 git처럼 그 자리에서 멈추고, 받는 쪽이 해결해 마친다. 계약 검사는 모두 그 전에 끝난다.
+
+12. **알림은 (계약, 판) 단위로 센다.** 같은 판은 몇 커밋에 생기든 받는 쪽에 한 번만 간다. 옛 판으로 돌아간 것은 사건이 아니므로(8) 섞이지 않는다. 사본을 요청 ID로 가리던 v14 9.5를 대신한다.
 
 ## 용어 (사용자 확정, 2026-10-09)
 

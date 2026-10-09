@@ -3,6 +3,7 @@
  * Records are stored facts; everything else here is computed (rule 1).
  */
 #include "ait.h"
+#include "quote.h"
 #include <regex.h>
 
 static int cmp_entry(const void *a, const void *b)
@@ -78,18 +79,21 @@ void blobs_read(struct string_list *oids)
 		if (sscanf(p, "%47s blob %zu", oid, &size) != 2)
 			break;
 		p = strchr(p, '\n') + 1;
-		string_list_insert(&blobs, oid)->util = xmemdupz(p, size);
+		string_list_insert(&blobs, oid)->util = memchr(p, 0, size) ? NULL : xmemdupz(p, size);
 		p += size + 1;
 	}
 }
 
+/* the text of a blob, or NULL when it holds a NUL and so is not text */
 const char *blob_text(const char *oid)
 {
 	struct string_list_item *hit = string_list_lookup(&blobs, oid);
+	char *text;
 
 	if (!hit) {
+		text = git("cat-file blob %s", oid);
 		hit = string_list_insert(&blobs, oid);
-		hit->util = git("cat-file blob %s", oid);
+		hit->util = strlen(text) == git_out_len ? text : NULL;
 	}
 	return hit->util;
 }
@@ -111,26 +115,25 @@ char *tree_with(const char *base, const char *index_info)
 	return tree;
 }
 
-/* paths whose blob or mode differ between A and B */
+/* the files whose blob or mode differ between A and B; a file that became a directory is gone */
 void tree_diff(struct tree *a, struct tree *b, struct string_list *paths)
 {
 	size_t i = 0, j = 0;
 
 	while (i < a->nr || j < b->nr) {
-		struct entry *x = i < a->nr ? &a->e[i] : NULL;
-		struct entry *y = j < b->nr ? &b->e[j] : NULL;
-		int c = !x ? 1 : !y ? -1 : strcmp(x->path, y->path);
-		struct entry *e = c < 0 ? x : y;
+		int c = i == a->nr ? 1 : j == b->nr ? -1 : strcmp(a->e[i].path, b->e[j].path);
+		struct entry *x = NULL, *y = NULL;
 
 		if (c <= 0)
-			i++;
+			x = &a->e[i++];
 		if (c >= 0)
-			j++;
-		/* a tree only matters where it replaced a file of the same path */
-		if (c ? !strcmp(e->mode, "040000") : !strcmp(x->mode, "040000") && !strcmp(y->mode, "040000"))
-			continue;
-		if (c || strcmp(x->mode, y->mode) || strcmp(x->oid, y->oid))
-			string_list_append(paths, e->path);
+			y = &b->e[j++];
+		if (x && !strcmp(x->mode, "040000"))
+			x = NULL;
+		if (y && !strcmp(y->mode, "040000"))
+			y = NULL;
+		if ((x || y) && (!x || !y || strcmp(x->mode, y->mode) || strcmp(x->oid, y->oid)))
+			string_list_append(paths, (x ? x : y)->path);
 	}
 }
 
@@ -332,11 +335,23 @@ void state_load(struct state *s, struct tree *t)
 			continue;
 		}
 		r = state_add(s, id);
-		if (!text || !id_ok(id))
+		if (strcmp(e->mode, "100644") || !id_ok(id))
 			r->bad = xstrdup("not a record path");
+		else if (!text)
+			r->bad = xstrdup("not a text file");
 		else
 			record_parse(r, text);
 		r->old = record_copy(r);
+	}
+	for (i = 0; i < s->nr; i++) {
+		struct record *r = s->r[i], *d, *o;
+
+		if (*r->id != 'u' || r->bad)
+			continue;
+		d = link_end(s, r, 0);
+		o = link_end(s, r, 1);
+		if (!d || !o || *d->id != 'D' || *o->id != 'O')
+			r->bad = r->old->bad = xstrdup("its demand or offer does not exist");
 	}
 }
 
@@ -440,7 +455,7 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 		    !strstr(*r->id == 'u' ? " undertaken released " : " future current cancelled withdrawn ",
 			    xstrfmt(" %s ", val(r, STATE))))
 			return bad_record(v, r, "role or state does not fit the record");
-		if (*r->id != 'u' && !*def_paths(r))
+		if (*r->id != 'u' && !strstr(record_text(r, 1), " def\n"))
 			return bad_record(v, r, "no spec definition");
 		if (in_state(r, "withdrawn"))
 			return fail_with(v, 1, "state", NULL, xstrfmt("not allowed: '%s' is withdrawn without a drop", r->id));
@@ -448,8 +463,6 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 			continue;
 		d = link_end(s, r, 0);
 		o = link_end(s, r, 1);
-		if (!d || !o)
-			return bad_record(v, r, "its demand or offer does not exist");
 		if (in_state(r, "undertaken") && is_current(o) && in_state(d, "future"))
 			return fail_with(v, 1, "state", was_current(d) ?
 					 xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: "
@@ -467,6 +480,17 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 	return 0;
 }
 
+/* spec 5.10: a request on a state with a malformed record stops with that record's error */
+void reject_malformed(struct state *s)
+{
+	struct verdict v;
+	size_t i;
+
+	for (i = 0; i < s->nr; i++)
+		if (s->r[i]->bad && bad_record(&v, s->r[i], s->r[i]->bad))
+			reject(v.code, v.hint, "%s", v.msg);
+}
+
 void validate(struct state *s, struct tree *t)
 {
 	struct verdict v;
@@ -475,28 +499,32 @@ void validate(struct state *s, struct tree *t)
 		reject(v.code, v.hint, "%s", v.msg);
 }
 
-/* the paths of KEY joined by ',': the scopes as a helper argument */
-char *scope_args(struct record *r, enum key k)
+/*
+ * The paths of KEY joined by ',' as one helper argument, quoted for the shell
+ * when it would read them (5.9a, git v2.53.0 quote.c sq_quote_buf_pretty());
+ * DEFS_ONLY keeps only the definitions of FILES.
+ */
+static char *join_arg(struct record *r, enum key k, int defs_only)
 {
-	struct strbuf sb = STRBUF_INIT;
+	struct strbuf sb = STRBUF_INIT, arg = STRBUF_INIT;
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &r->f[k])
-		strbuf_addf(&sb, "%s%s", sb.len ? "," : "", k == FILES ? scope_path(item->string) :
-			    xstrndup(item->string, strcspn(item->string, " ")));
-	return strbuf_detach(&sb, NULL);
+		if (!defs_only || is_def(item->string))
+			strbuf_addf(&sb, "%s%.*s", sb.len ? "," : "", (int)strcspn(item->string, " "), item->string);
+	sq_quote_buf_pretty(&arg, sb.buf);
+	strbuf_release(&sb);
+	return strbuf_detach(&arg, NULL);
 }
 
-/* the definitions of R as a FILES argument */
+char *scope_args(struct record *r, enum key k)
+{
+	return r->f[k].nr ? join_arg(r, k, 0) : xstrdup("");
+}
+
 char *def_paths(struct record *r)
 {
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, &r->f[FILES])
-		if (is_def(item->string))
-			strbuf_addf(&sb, "%s%s", sb.len ? "," : "", scope_path(item->string));
-	return strbuf_detach(&sb, NULL);
+	return join_arg(r, FILES, 1);
 }
 
 /* spec 3.3-3.4: fix a scope argument at tree T */
@@ -702,7 +730,7 @@ int expand_files(struct record *r, struct tree *t)
 			return -1;
 		string_list_insert(&out, xstrfmt("%s %s %s def", e->path, e->mode, e->oid));
 		for_each_string_list_item(in, def_get(t, e->path)) {
-			const char *p = in->util;
+			const char *p = yget(def_get(t, e->path), in->string);
 
 			if (!starts_with(in->string, "inputs.") || string_list_has_string(&defs, p))
 				continue;
@@ -747,152 +775,319 @@ int contract_path(struct state *s, const char *path)
 	return starts_with(path, ".ait/");
 }
 
-static char *scalar(const char *v, const char *what)
+/* a file ait reads as text: 0, or -1 when it cannot be read, 1 when it holds a NUL */
+int read_text(struct strbuf *sb, const char *path)
 {
-	struct strbuf sb = STRBUF_INIT;
-	char q = *v;
-
-	if (q != '"' && q != '\'') {
-		strbuf_add(&sb, v, strstr(v, " #") ? (size_t)(strstr(v, " #") - v) : strlen(v));
-		strbuf_rtrim(&sb);
-		return strbuf_detach(&sb, NULL);
-	}
-	for (v++; *v && (*v != q || (q == '\'' && v[1] == '\'')); v++) {
-		if ((q == '"' && *v == '\\' && (v[1] == '"' || v[1] == '\\')) || (q == '\'' && *v == '\''))
-			v++;
-		strbuf_addch(&sb, *v);
-	}
-	if (*v != q || (v[1 + strspn(v + 1, " ")] && v[1 + strspn(v + 1, " ")] != '#'))
-		reject(128, NULL, "bad format: '%s': unterminated or trailing text in '%s'", what, v);
-	return strbuf_detach(&sb, NULL);
-}
-
-static void kv_put(struct string_list *kv, char *key, char *val, const char *what)
-{
-	if (unsorted_string_list_has_string(kv, key))
-		reject(128, NULL, "bad format: '%s': duplicate key '%s'", what, key);
-	string_list_append(kv, key)->util = val;
+	if (!strcmp(path, "-") ? strbuf_read(sb, 0, 0) < 0 : strbuf_read_file(sb, path, 0) < 0)
+		return -1;
+	return strlen(sb->buf) != sb->len;
 }
 
 /*
  * The YAML subset of spec 2.5.1, flattened into KV: "a: x" is "a", list items
- * are "a.0", "a.1", and maps inside list items "a.0.b". Values are scalars.
+ * are "a.0", "a.1", map keys inside them "a.0.b". Every value keeps where it
+ * starts in the text and whether it holds a list or map.
  */
-void yaml(const char *text, struct string_list *kv, const char *what)
+struct yval {
+	char *s;
+	size_t at;
+	int container;
+};
+
+struct yaml {
+	const char *text, *what;
+	struct string_list *kv;
+	char *err;
+};
+
+static int yaml_fail(struct yaml *y, const char *fmt, ...)
 {
-	struct string_list lines = STRING_LIST_INIT_DUP;
-	struct { int indent, items, map_only; char *prefix; } stack[16] = { { -1, 0, 1, NULL } };
-	int sp = 0;
-	size_t i;
+	struct strbuf sb = STRBUF_INIT;
+	va_list ap;
 
-	string_list_split(&lines, text, "\n", -1);
-	for (i = 0; i < lines.nr; i++) {
-		char *line = lines.items[i].string, *key, *val, *prefix;
-		int indent = strspn(line, " "), item = line[indent] == '-' && (!line[indent + 1] || line[indent + 1] == ' ');
+	strbuf_addf(&sb, "bad format: '%s': ", y->what);
+	va_start(ap, fmt);
+	strbuf_vaddf(&sb, fmt, ap);
+	va_end(ap);
+	if (!y->err)
+		y->err = strbuf_detach(&sb, NULL);
+	return -1;
+}
 
-		if (strchr(line, '\t') || strchr(line, '\r'))
-			reject(128, NULL, "bad format: '%s': tab or CR in line %d", what, (int)i + 1);
-		if (!line[indent] || line[indent] == '#')
+static struct yval *yaml_put(struct yaml *y, char *key, char *s, const char *at)
+{
+	struct yval *v;
+
+	if (unsorted_string_list_has_string(y->kv, key)) {
+		yaml_fail(y, "duplicate key '%s'", key);
+		return NULL;
+	}
+	v = xcalloc(1, sizeof(*v));
+	v->s = s;
+	v->at = at - y->text;
+	string_list_append(y->kv, key)->util = v;
+	return v;
+}
+
+/* a scalar at *P, quoted or plain up to a character of STOP, a comment or the line's end */
+static int yaml_scalar(struct yaml *y, const char **p, const char *stop, char *key)
+{
+	struct strbuf sb = STRBUF_INIT;
+	const char *v = *p, *at = v;
+	char q = *v;
+
+	if (q != '"' && q != '\'') {
+		while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == '#' && v > at && v[-1] == ' '))
+			strbuf_addch(&sb, *v++);
+		strbuf_rtrim(&sb);
+	} else {
+		for (at = ++v; *v && *v != '\n' && (*v != q || (q == '\'' && v[1] == '\'')); v++) {
+			if ((q == '"' && *v == '\\' && (v[1] == '"' || v[1] == '\\')) || (q == '\'' && *v == '\''))
+				v++;
+			strbuf_addch(&sb, *v);
+		}
+		if (*v != q)
+			return yaml_fail(y, "unterminated quote in '%s'", key);
+		v++;
+	}
+	*p = v;
+	return yaml_put(y, key, strbuf_detach(&sb, NULL), at) ? 0 : -1;
+}
+
+/* a flow list "[a, b]" or flow map "{k: v}" at *P, nested as deep as written */
+static int yaml_flow(struct yaml *y, const char **p, char *key, int depth)
+{
+	char close = **p == '[' ? ']' : '}';
+	struct yval *v = yaml_put(y, key, xstrdup(""), *p);
+	int n;
+
+	if (!v)
+		return -1;
+	if (depth > 15)
+		return yaml_fail(y, "'%s' is nested too deeply", key);
+	v->container = 1;
+	*p += 1 + strspn(*p + 1, " ");
+	for (n = 0; **p != close; n++) {
+		char *sub = xstrfmt("%s.%d", key, n);
+
+		if (close == '}') {
+			size_t len = strcspn(*p, ":,]}\n");
+
+			if (!len || (*p)[len] != ':')
+				return yaml_fail(y, "not a key in '%s'", key);
+			sub = xstrfmt("%s.%.*s", key, (int)len, *p);
+			*p += len + 1 + strspn(*p + len + 1, " ");
+		}
+		if (**p == '[' || **p == '{' ? yaml_flow(y, p, sub, depth + 1) : yaml_scalar(y, p, ",]}", sub))
+			return -1;
+		*p += strspn(*p, " ");
+		if (**p == ',')
+			*p += 1 + strspn(*p + 1, " ");
+		else if (**p != close)
+			return yaml_fail(y, "expected ',' or '%c' in '%s'", close, key);
+	}
+	(*p)++;
+	return 0;
+}
+
+/* blanks, then the line's end or a comment */
+static int yaml_end(struct yaml *y, const char *p, int no)
+{
+	p += strspn(p, " ");
+	return *p && *p != '\n' && *p != '#' ? yaml_fail(y, "trailing text in line %d", no) : 0;
+}
+
+int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err)
+{
+	struct yaml y = { text, what, kv, NULL };
+	struct { int indent, items, map_only; char *prefix; struct yval *v; } st[16] = { { -1, 0, 1, NULL, NULL } };
+	const char *line, *next;
+	int sp = 0, no = 0;
+
+	for (line = text; *line && !y.err; line = next) {
+		const char *p = line, *colon, *e = strchrnul(line, '\n');
+		int indent = strspn(line, " "), item;
+		char *key, *prefix;
+
+		next = e + (*e == '\n');
+		no++;
+		p += indent;
+		if (memchr(line, '\t', e - line) || memchr(line, '\r', e - line)) {
+			yaml_fail(&y, "tab or CR in line %d", no);
+			break;
+		}
+		if (p == e || *p == '#')
 			continue;
-		while (sp && (indent < stack[sp].indent || (indent == stack[sp].indent && !(item && !stack[sp].map_only))))
+		item = *p == '-' && (p + 1 == e || p[1] == ' ');
+		while (sp && (indent < st[sp].indent || (indent == st[sp].indent && (!item || st[sp].map_only))))
 			sp--;
-		prefix = stack[sp].prefix;
-		line += indent;
+		if (st[sp].v)
+			st[sp].v->container = 1;
+		prefix = st[sp].prefix;
 		if (item) {
-			prefix = xstrfmt("%s.%d", prefix, stack[sp].items++);
-			line += line[1] ? 2 : 1;
+			prefix = xstrfmt("%s.%d", prefix, st[sp].items++);
+			p += p + 1 == e ? 1 : 2;
 			indent += 2;
-			if (line[strspn(line, "abcdefghijklmnopqrstuvwxyz_")] != ':') {
-				kv_put(kv, prefix, scalar(line, what), what);
+			if (p[strspn(p, "abcdefghijklmnopqrstuvwxyz_")] != ':') {
+				if (!(*p == '[' || *p == '{' ? yaml_flow(&y, &p, prefix, sp) : yaml_scalar(&y, &p, "", prefix)))
+					yaml_end(&y, p, no);
 				continue;
 			}
-			if (sp >= 15)
-				reject(128, NULL, "bad format: '%s': nested too deeply in line %d", what, (int)i + 1);
-			stack[++sp].indent = indent - 2;
-			stack[sp].map_only = 1;
-			stack[sp].prefix = prefix;
-			stack[sp].items = 0;
+			if (sp >= 15) {
+				yaml_fail(&y, "nested too deeply in line %d", no);
+				break;
+			}
+			sp++;
+			st[sp].indent = indent - 2;
+			st[sp].items = 0;
+			st[sp].map_only = 1;
+			st[sp].prefix = prefix;
+			st[sp].v = yaml_put(&y, prefix, xstrdup(""), p);
+			if (!st[sp].v)
+				break;
+			st[sp].v->container = 1;
 		}
-		val = strchr(line, ':');
-		if (!val || (val[1] && val[1] != ' ') || val == line || sp >= 15)
-			reject(128, NULL, "bad format: '%s': not a key in line %d", what, (int)i + 1);
-		key = prefix ? xstrfmt("%s.%.*s", prefix, (int)(val - line), line) : xstrndup(line, val - line);
-		val += 1 + strspn(val + 1, " ");
-		if (!*val || *val == '#') {
-			kv_put(kv, key, xstrdup(""), what);
-			stack[++sp].indent = indent;
-			stack[sp].map_only = 0;
-			stack[sp].prefix = key;
-			stack[sp].items = 0;
-		} else if (!strcmp(val, "|")) {
+		colon = p + strspn(p, "abcdefghijklmnopqrstuvwxyz_");
+		if (colon == p || *colon != ':' || (colon[1] != ' ' && colon + 1 != e)) {
+			yaml_fail(&y, "not a key in line %d", no);
+			break;
+		}
+		key = prefix ? xstrfmt("%s.%.*s", prefix, (int)(colon - p), p) : xstrndup(p, colon - p);
+		p = colon + 1 + strspn(colon + 1, " ");
+		if (p == e || *p == '#') {
+			if (sp >= 15) {
+				yaml_fail(&y, "nested too deeply in line %d", no);
+				break;
+			}
+			sp++;
+			st[sp].indent = indent;
+			st[sp].items = 0;
+			st[sp].map_only = 0;
+			st[sp].prefix = key;
+			st[sp].v = yaml_put(&y, key, xstrdup(""), p);
+		} else if (*p == '|') {
+			/* a literal block: the more indented lines below, clipped to one final newline */
 			struct strbuf sb = STRBUF_INIT;
+			const char *l = next, *at = next;
 			int block = -1;
 
-			for (; i + 1 < lines.nr; i++) {
-				char *l = lines.items[i + 1].string;
-				int in = strspn(l, " ");
+			if (yaml_end(&y, p + 1, no))
+				break;
+			while (*l) {
+				const char *le = strchrnul(l, '\n');
+				int in = strspn(l, " "), blank = l + in == le;
 
-				if (l[in] && in <= indent)
+				if (!blank && in <= indent)
 					break;
-				if (l[in] && block < 0)
+				if (!blank && block < 0) {
 					block = in;
-				strbuf_addf(&sb, "%s\n", (int)strlen(l) > block && block >= 0 ? l + block : "");
+					at = l + in;
+				}
+				if (!blank && in < block) {
+					yaml_fail(&y, "a line of '%s' is less indented than its first", key);
+					break;
+				}
+				strbuf_add(&sb, l + (blank ? le - l : block), blank ? 0 : le - l - block);
+				strbuf_addch(&sb, '\n');
+				l = le + (*le == '\n');
+				no++;
 			}
 			while (sb.len > 1 && sb.buf[sb.len - 2] == '\n')
 				strbuf_setlen(&sb, sb.len - 1);
-			kv_put(kv, key, block < 0 ? xstrdup("") : strbuf_detach(&sb, NULL), what);
-		} else if (*val == '[' && val[strlen(val) - 1] == ']') {
-			struct string_list items = STRING_LIST_INIT_DUP;
-			size_t j;
-
-			if (val[1 + strspn(val + 1, " ")] != ']')
-				string_list_split(&items, xstrndup(val + 1, strlen(val) - 2), ",", -1);
-			for (j = 0; j < items.nr; j++)
-				kv_put(kv, xstrfmt("%s.%d", key, (int)j),
-				       scalar(items.items[j].string + strspn(items.items[j].string, " "), what), what);
-		} else if (strchr("[{&*!|>", *val)) {
-			reject(128, NULL, "bad format: '%s': unsupported YAML in line %d", what, (int)i + 1);
-		} else {
-			kv_put(kv, key, scalar(val, what), what);
+			yaml_put(&y, key, block < 0 ? xstrdup("") : strbuf_detach(&sb, NULL), at);
+			next = l;
+		} else if (*p == '[' || *p == '{') {
+			if (!yaml_flow(&y, &p, key, sp))
+				yaml_end(&y, p, no);
+		} else if (strchr("&*!>", *p)) {
+			yaml_fail(&y, "unsupported YAML in line %d", no);
+		} else if (!yaml_scalar(&y, &p, "", key)) {
+			yaml_end(&y, p, no);
 		}
 	}
+	*err = y.err;
+	return y.err ? -1 : 0;
+}
+
+void yaml(const char *text, struct string_list *kv, const char *what)
+{
+	char *err;
+
+	if (yaml_parse(text, kv, what, &err))
+		reject(128, NULL, "%s", err);
 }
 
 const char *yget(struct string_list *kv, const char *key)
 {
 	struct string_list_item *item = unsorted_string_list_lookup(kv, key);
 
-	return item ? item->util : NULL;
+	return item ? ((struct yval *)item->util)->s : NULL;
+}
+
+/* where the value of KEY starts in the parsed text */
+size_t yat(struct string_list *kv, const char *key)
+{
+	return ((struct yval *)unsorted_string_list_lookup(kv, key)->util)->at;
 }
 
 /*
- * spec 2.5.2, 2.5.4, 2.5.6: a spec definition and the keys it may use. A
- * definition is named by its blob, so each one is read and checked once.
+ * Every key of KV against SCHEMA, entries "PATTERN KIND" where N in a pattern
+ * stands for a list index and KIND is s (scalar), i (integer), l (list) or
+ * m (map); a list or map may be written empty. The first mismatch is fatal.
  */
+void yaml_check(struct string_list *kv, const char *const *schema, const char *what)
+{
+	struct string_list_item *item;
+	const char *const *e;
+
+	for_each_string_list_item(item, kv) {
+		struct yval *v = item->util;
+		struct strbuf pattern = STRBUF_INIT;
+		struct string_list parts = STRING_LIST_INIT_DUP;
+		struct string_list_item *part;
+		char kind = 0;
+
+		string_list_split(&parts, item->string, ".", -1);
+		for_each_string_list_item(part, &parts)
+			strbuf_addf(&pattern, "%s%s", pattern.len ? "." : "",
+				    *part->string && !part->string[strspn(part->string, "0123456789")] ? "N" : part->string);
+		for (e = schema; *e && !kind; e++)
+			if (starts_with(*e, pattern.buf) && (*e)[pattern.len] == ' ')
+				kind = (*e)[pattern.len + 1];
+		if (!kind)
+			reject(128, NULL, "bad format: '%s': unknown key '%s'", what, item->string);
+		if (strchr("lm", kind) ? !v->container && *v->s :
+		    v->container || (kind == 'i' && (!*v->s || v->s[strspn(v->s, "0123456789")])))
+			reject(128, NULL, "bad format: '%s': bad value of '%s'", what, item->string);
+	}
+}
+
+/* spec 2.5.2, 2.5.4, 2.5.6: a spec definition; each one is read and checked once per blob */
 struct string_list *def_get(struct tree *t, const char *path)
 {
+	static const char *const exec[] = { "body s", "engine s", "command l", "command.N s", "success l",
+					    "success.N i", "inputs l", "inputs.N s", NULL };
+	static const char *const prompt[] = { "body s", "engine s", "inputs l", "inputs.N s", NULL };
 	static struct string_list parsed = STRING_LIST_INIT_DUP;
 	const char *oid = blob_at(t, path), *engine;
-	struct string_list_item *hit = string_list_lookup(&parsed, oid), *item;
+	struct string_list_item *hit = string_list_lookup(&parsed, oid);
 	struct string_list *kv;
 
 	if (hit)
 		return hit->util;
+	if (!blob_text(oid))
+		reject(128, NULL, "bad format: '%s': not a text file", path);
 	kv = xcalloc(1, sizeof(*kv));
 	string_list_init_dup(kv);
 	yaml(blob_text(oid), kv, path);
-	engine = yget(kv, "engine") ? yget(kv, "engine") : "";
 	if (yget(kv, "environment"))
 		unsupported("environment");
-	if (!yget(kv, "body") || !*yget(kv, "body") || (*engine && strcmp(engine, "exec")) ||
-	    (*engine && !yget(kv, "command.0")))
+	engine = yget(kv, "engine") ? yget(kv, "engine") : "";
+	if (*engine && strcmp(engine, "exec"))
+		reject(128, NULL, "bad format: '%s': engine '%s' is not exec or prompt", path, engine);
+	yaml_check(kv, *engine ? exec : prompt, path);
+	if (!yget(kv, "body") || !*yget(kv, "body") || (*engine && !yget(kv, "command.0")))
 		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'", path);
-	for_each_string_list_item(item, kv) {
-		char *k = xstrndup(item->string, strcspn(item->string, "."));
-
-		if (!strstr(*engine ? " body engine command success inputs " : " body engine inputs ", xstrfmt(" %s ", k)))
-			reject(128, NULL, "bad format: '%s': unknown key '%s'", path, k);
-	}
 	string_list_insert(&parsed, oid)->util = kv;
 	return kv;
 }

@@ -110,11 +110,23 @@ char *publish(struct string_list *paths, int only, const char *msg)
 	return line1(git("rev-parse HEAD"));
 }
 
+/* a file given to ait is read as text (E_READ, or E_FORMAT when it holds a NUL) */
+static void text_or_die(struct strbuf *sb, const char *path)
+{
+	int rc = read_text(sb, path);
+
+	if (rc < 0)
+		reject(128, NULL, "could not read '%s'", path);
+	if (rc > 0)
+		reject(128, NULL, "bad format: '%s': not a text file", path);
+}
+
 static void load(struct request *q)
 {
 	precondition(0);
 	q->ht = tree_load(head);
 	state_load(&q->s, q->ht);
+	reject_malformed(&q->s);
 }
 
 /*
@@ -145,10 +157,7 @@ static void parse_options(struct request *q, int argc, const char **argv)
 			strbuf_addf(&q->msg, "%s%s", from_m++ ? "\n\n" : "", v);
 		} else if (!strcmp(a, "-F") && !from_file && !from_m) {
 			from_file = 1;
-			if (!strcmp(v, "-"))
-				strbuf_read(&q->msg, 0, 0);
-			else if (strbuf_read_file(&q->msg, v, 0) < 0)
-				reject(128, NULL, "could not read '%s'", v);
+			text_or_die(&q->msg, v);
 		} else if ((!strcmp(a, "-r") || !strcmp(a, "--result")) && !q->result) {
 			q->result = v;
 		} else {
@@ -287,12 +296,18 @@ static void new_contract(struct request *q, const char *role, int future, int *i
 	r->alias = alias;
 }
 
-static void replace_all(struct strbuf *sb, const char *from, const char *to)
+/* spec 8.4: in the task values of a result file, the new contract +SEQ becomes ID */
+static void rename_tasks(struct strbuf *sb, int seq, const char *id)
 {
-	char *hit;
+	struct string_list kv = STRING_LIST_INIT_DUP;
+	char *from = xstrfmt("+%d:", seq), *err;
+	const char *t;
+	int n;
 
-	while ((hit = strstr(sb->buf, from)))
-		strbuf_splice(sb, hit - sb->buf, strlen(from), to, strlen(to));
+	yaml_parse(sb->buf, &kv, "results", &err);
+	for (n = kv.nr; n >= 0; n--)
+		if ((t = yget(&kv, xstrfmt("results.%d.task", n))) && starts_with(t, from))
+			strbuf_splice(sb, yat(&kv, xstrfmt("results.%d.task", n)), strlen(from) - 1, id, strlen(id));
 }
 
 static int unchanged(struct record *r)
@@ -420,7 +435,9 @@ static char *task_def(struct string_list_item *task)
 static void write_check_files(struct request *q, const char *in, const char *req, const char *res)
 {
 	struct strbuf sb = STRBUF_INIT, old = STRBUF_INIT;
+	struct string_list kv = STRING_LIST_INIT_DUP;
 	struct string_list_item *task;
+	char *err;
 
 	strbuf_addf(&sb, "input: %s\ntree: %s\ntasks:\n", dq(in), dq(q->v->oid));
 	for_each_string_list_item(task, &q->tasks) {
@@ -450,7 +467,8 @@ static void write_check_files(struct request *q, const char *in, const char *req
 	}
 	mkdir(xstrfmt("%s/ait", gitdir), 0777);
 	write_file_buf(req, sb.buf, sb.len);
-	if (strbuf_read_file(&old, res, 0) >= 0 && starts_with(old.buf, xstrfmt("input: %s\n", in)))
+	if (!read_text(&old, res) && !yaml_parse(old.buf, &kv, res, &err) && yget(&kv, "input") &&
+	    !strcmp(yget(&kv, "input"), in))
 		return;
 	strbuf_reset(&sb);
 	strbuf_addf(&sb, "input: %s\n# for each task: outcome is pass, fail or unknown; a pass needs a basis\n"
@@ -462,31 +480,26 @@ static void write_check_files(struct request *q, const char *in, const char *req
 
 /*
  * spec 8.4: the results answer this state (0 when they do not), every task once,
- * each pass with a basis; FAILED and FAILING collect the tasks that did not pass
+ * each pass with a basis; FAILED and FAILING collect the tasks that did not pass.
+ * TEXT gets the file, for the commit message.
  */
-static int read_results(struct request *q, const char *input, struct strbuf *failed,
+static int read_results(struct request *q, const char *input, struct strbuf *text, struct strbuf *failed,
 			struct string_list *failing, int *unknown)
 {
+	static const char *const schema[] = { "input s", "results l", "results.N m", "results.N.task s",
+					      "results.N.outcome s", "results.N.basis s", "results.N.reason s", NULL };
 	struct string_list kv = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	struct strbuf text = STRBUF_INIT;
 	char *hint = xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis", q->result);
 	const char *t;
 	int n;
 
-	strbuf_read_file(&text, q->result, 0);
-	yaml(text.buf, &kv, q->result);
+	text_or_die(text, q->result);
+	yaml(text->buf, &kv, q->result);
 	if (!yget(&kv, "input"))
 		reject(128, hint, "bad format: '%s': no 'input'", q->result);
 	if (strcmp(yget(&kv, "input"), input))
 		return 0;
-	for_each_string_list_item(item, &kv) {
-		const char *f = strchr(item->string, '.') ? strchr(strchr(item->string, '.') + 1, '.') : NULL;
-
-		if (strcmp(item->string, "input") && strcmp(item->string, "results") &&
-		    (!starts_with(item->string, "results.") || !f || !strstr(" task outcome basis reason ", xstrfmt(" %s ", f + 1))))
-			reject(128, hint, "bad format: '%s': unknown key '%s'", q->result, item->string);
-	}
+	yaml_check(&kv, schema, q->result);
 	for (n = 0; (t = yget(&kv, xstrfmt("results.%d.task", n))); n++) {
 		const char *outcome = yget(&kv, xstrfmt("results.%d.outcome", n));
 		const char *basis = yget(&kv, xstrfmt("results.%d.basis", n));
@@ -722,7 +735,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 		write_file_buf(xstrfmt("%s/.ait/%s", top, r->id), text, strlen(text));
 		string_list_append(&written, xstrfmt(".ait/%s", r->id))->util = r;
 		if (!r->old && r->seq)
-			replace_all(results, xstrfmt("task: +%d:", r->seq), xstrfmt("task: %s:", r->id));
+			rename_tasks(results, r->seq, r->id);
 	}
 	if (!written.nr && !q->conf.nr && !strcmp(q->v->oid, q->ht->oid)) {
 		puts("noop");
@@ -789,8 +802,8 @@ static int finish(struct request *q)
 	if (!q->missing.nr && !q->force)
 		input = check_input(q);
 	if (input && q->tasks.nr && q->result && !q->first.code &&
-	    read_results(q, input, &failed, &failing, &unknown))
-		strbuf_read_file(&results, q->result, 0);
+	    !read_results(q, input, &results, &failed, &failing, &unknown))
+		strbuf_reset(&results);
 	if (q->first.code || (q->tasks.nr && !q->force && !results.len)) {
 		if (input && q->tasks.nr)
 			write_check_files(q, input, req, res);
@@ -947,12 +960,13 @@ static struct tree *candidate(struct request *q)
 		if (*staged && !strstr(staged, oid) && (!blob_at(q->ht, p) || !strstr(staged, blob_at(q->ht, p))))
 			reject(1, xstrfmt("stage all of '%s' or none of it", p), "spec files do not match the contract: '%s' is partly staged", p);
 		strbuf_addf(&info, "%s %s\t%s\n", st.st_mode & S_IXUSR ? "100755" : "100644", oid, p);
-		if (!q->files.items[k].util || strbuf_read_file(&text, xstrfmt("%s/%s", top, p), 0) < 0)
+		if (!q->files.items[k].util)
 			continue;
+		text_or_die(&text, xstrfmt("%s/%s", top, p));
 		yaml(text.buf, &kv, p);
 		for_each_string_list_item(item, &kv)
-			if (starts_with(item->string, "inputs.") && !unsorted_string_list_has_string(&q->files, item->util))
-				string_list_append(&q->files, item->util);
+			if (starts_with(item->string, "inputs.") && !unsorted_string_list_has_string(&q->files, yget(&kv, item->string)))
+				string_list_append(&q->files, yget(&kv, item->string));
 	}
 	return tree_load(tree_with(q->ht->oid, info.buf));
 }
