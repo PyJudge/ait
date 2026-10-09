@@ -6,9 +6,8 @@
 #include "string-list.h"
 
 extern const char *top, *gindex, *headref, *head, *gitdir, *commondir;
-extern char *git_error;
+extern char *git_error;		/* the first stderr line of the last git call */
 extern size_t git_out_len;	/* the length of the last git output */
-#define EMPTY_TREE "4b825dc642cb6eb9a060e54bf8d69288fbee4904"	/* the first stderr line of the last git call */
 
 /* ait.c: process, messages and the commands that are not requests */
 NORETURN void reject(int code, const char *hint, const char *fmt, ...) __attribute__((format (printf, 3, 4)));
@@ -17,6 +16,7 @@ struct strvec;
 char *git_args(struct strvec *args, const char *in, const char *index, int *rc);
 char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...);
 #define git(...) git_run(NULL, NULL, NULL, __VA_ARGS__)
+char *object(const char *name, int contents, char *oid, size_t *size);
 char *line1(char *s);
 void newid(char *out, int prefix);
 const char *session(int need);
@@ -26,10 +26,10 @@ extern char agent[72], sid[16];
 struct entry { const char *path; char mode[8], oid[48]; };
 struct tree { char oid[48]; size_t nr; struct entry *e; };
 struct tree *tree_load(const char *treeish);
+struct tree *head_tree(void);
 struct entry *tree_get(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
 const char *blob_text(const char *oid);
-void blobs_read(struct string_list *oids);
 char *tree_with(const char *base, const char *index_info);
 void tree_diff(struct tree *a, struct tree *b, struct string_list *paths);
 
@@ -64,6 +64,7 @@ int was_current(struct record *r);
 struct verdict { int code; const char *word; char *hint, *msg; };
 int check_state(struct state *s, struct tree *t, struct verdict *v);
 void validate(struct state *s, struct tree *t);
+void validate_at(struct tree *t);
 void reject_malformed(struct state *s);
 const char *unusable(struct record *r, struct tree *t);
 int files_match(struct record *r, struct tree *t);
@@ -72,6 +73,7 @@ char *def_paths(struct record *r);
 int declares(struct record *r, const char *path);
 int contract_path(struct state *s, const char *path);
 int path_ok(const char *p);
+void no_range(const char *arg);
 char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs);
 char *show(const char *scope, struct tree *t, int current);
 char *shows(struct record *r, enum key k, struct tree *t, int current);
@@ -80,11 +82,11 @@ char *pin_lines(struct record *r);
 int code_found(struct record *r, struct tree *t);
 int touches(struct record *r, struct tree *a, struct tree *b);
 void repin(struct record *r, enum key k, struct tree *t, int new_only);
+void body_lines(struct strbuf *sb, struct string_list *kv, const char *indent);
 char *def_text(struct tree *t, const char *path, const char *indent);
 const char *engine_of(struct tree *t, const char *def);
 int expand_files(struct record *r, struct tree *t);
-int unverified(struct record *r, struct tree *t, struct string_list *checks);
-void checks_load(struct string_list *checks);
+int unverified(struct record *r, struct tree *t);
 int read_text(struct strbuf *sb, const char *path);
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err);
 void yaml(const char *text, struct string_list *kv, const char *what);

@@ -66,4 +66,8 @@ chmod 755 "$(git rev-parse --git-common-dir)/ait/sessions"
 C=$(git rev-parse --git-common-dir)/ait
 mkdir -p "$C/xy" && cp "$C/sessions/$A" "$C/xy/abcdefg"
 expect_err "a path of 13 characters is not a session" E_SESSION env AIT_SESSION=../xy/abcdefg ait todo
+
+# 3.2: only a well-formed PATH:S-E is a line range; todo reads its arguments as pin does
+expect_err "a malformed range is a bad scope" E_SCOPE ait todo src/order.c:3
+expect_err "a well-formed one is left out of ait-mini" MINI ait todo src/order.c:1-2
 done_testing

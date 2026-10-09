@@ -7,6 +7,7 @@
 #include "quote.h"
 #include <dirent.h>
 #include <sys/file.h>
+#include <regex.h>
 
 const char *top, *gindex, *headref, *head, *gitdir, *commondir;
 char *git_error;
@@ -93,6 +94,42 @@ char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...)
 	return git_args(&args, in, index, rc);
 }
 
+/*
+ * The object NAME resolves to, through one "git cat-file --batch-command" for
+ * the whole command (git-cat-file(1), BATCH OUTPUT): its contents when
+ * CONTENTS, else "", with its ID in OID; NULL when NAME names no object.
+ */
+char *object(const char *name, int contents, char *oid, size_t *size)
+{
+	static struct child_process cat = CHILD_PROCESS_INIT;
+	static FILE *out;
+	char line[256], id[48], type[16], *cmd = xstrfmt("%s %s\n", contents ? "contents" : "info", name), *buf;
+	size_t n;
+
+	if (!out) {
+		strvec_pushl(&cat.args, "git", "-C", top ? top : ".", "cat-file", "--batch-command", NULL);
+		cat.in = cat.out = -1;
+		if (start_command(&cat))
+			reject(128, NULL, "git failed: cannot run 'git cat-file'");
+		fcntl(cat.in, F_SETFD, FD_CLOEXEC);
+		out = xfdopen(cat.out, "r");
+	}
+	if (write_in_full(cat.in, cmd, strlen(cmd)) < 0 || !fgets(line, sizeof(line), out))
+		reject(128, NULL, "git failed: 'git cat-file' stopped");
+	if (sscanf(line, "%47s %15s %zu", id, type, &n) != 3)
+		return NULL;
+	if (oid)
+		strcpy(oid, id);
+	if (size)
+		*size = n;
+	if (!contents)
+		return xstrdup("");
+	buf = xmallocz(n);
+	if (fread(buf, 1, n, out) != n || fgetc(out) != '\n')
+		reject(128, NULL, "git failed: 'git cat-file' stopped");
+	return buf;
+}
+
 char *line1(char *s)
 {
 	if (s)
@@ -120,7 +157,7 @@ static void setup(void)
 	static const char *clear[] = { "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX",
 				       "GIT_COMMON_DIR", "GIT_DIFF_OPTS", NULL };
 	int i, major = 0, minor = 0;
-	char *paths;
+	char *paths, oid[48];
 
 	sscanf(git("version"), "git version %d.%d", &major, &minor);
 	if (major < 2 || (major == 2 && minor < 48))
@@ -137,8 +174,8 @@ static void setup(void)
 	setenv("GIT_LITERAL_PATHSPECS", "1", 1);
 	headref = line1(git_run(NULL, NULL, &i, "symbolic-ref -q HEAD"));
 	headref = i ? NULL : headref;
-	head = line1(git_run(NULL, NULL, &i, "rev-parse -q --verify HEAD^{commit}"));
-	head = i ? NULL : head;
+	if (object("HEAD^{commit}", 0, oid, NULL))
+		head = xstrdup(oid);
 }
 
 static char *state_path(const char *name)
@@ -330,36 +367,30 @@ static int cmd_session(int argc, const char **argv)
 	return 0;
 }
 
-/* spec 7.1.1: an executable hook with the words "ait hook NAME" on a line that is not a comment */
+/*
+ * spec 7.1.1: an executable hook where "ait", "hook" and NAME follow each other
+ * with only blanks, quotes, commas or brackets between, on a line that is not a comment
+ */
 static int has_ait_hook(const char *path, const char *name)
 {
+	const char *sep = "[] \t'\",()[]";
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct strbuf sb = STRBUF_INIT;
-	size_t i;
+	struct string_list_item *item;
+	regex_t re;
+	int found = 0;
 
 	if (access(path, X_OK) || strbuf_read_file(&sb, path, 0) < 0)
 		return 0;
+	regcomp(&re, xstrfmt("(^|%s)ait%s+hook%s+%s(%s|$)", sep, sep, sep, name, sep), REG_EXTENDED | REG_NOSUB);
 	string_list_split(&lines, sb.buf, "\n", -1);
-	for (i = 0; i < lines.nr; i++) {
-		struct string_list w = STRING_LIST_INIT_DUP;
-		char *l = lines.items[i].string + strspn(lines.items[i].string, " \t");
-		size_t j, k = 0;
+	for_each_string_list_item(item, &lines) {
+		const char *l = item->string + strspn(item->string, " \t");
 
-		if (*l == '#' || starts_with(l, "//"))
-			continue;
-		for (j = 0; l[j]; j++)
-			if (strchr(" \t'\",()[]", l[j]))
-				l[j] = ' ';
-		string_list_split(&w, l, " ", -1);
-		for (j = 0; j < w.nr; j++)
-			if (*w.items[j].string)
-				w.items[k++] = w.items[j];
-		for (j = 0; j + 2 < k; j++)
-			if (!strcmp(w.items[j].string, "ait") && !strcmp(w.items[j + 1].string, "hook") &&
-			    !strcmp(w.items[j + 2].string, name))
-				return 1;
+		found |= *l != '#' && !starts_with(l, "//") && !regexec(&re, l, 0, NULL, 0);
 	}
-	return 0;
+	regfree(&re);
+	return found;
 }
 
 /*
@@ -418,9 +449,9 @@ static int cmd_init(int argc, const char **argv)
 	mkdir(state_path(""), 0777);
 	if (bad)
 		return 1;
-	t = tree_load(head ? head : EMPTY_TREE);
-	if (tree_get(t, ".ait/init") && !strcmp(tree_get(t, ".ait/init")->mode, "100644") &&
-	    !strcmp(git("cat-file blob %s", tree_get(t, ".ait/init")->oid), "version 1\n")) {
+	t = head_tree();
+	if (blob_at(t, ".ait/init") && !strcmp(tree_get(t, ".ait/init")->mode, "100644") &&
+	    !strcmp(object(blob_at(t, ".ait/init"), 1, NULL, NULL), "version 1\n")) {
 		puts("init exists");
 		return 0;
 	}
@@ -428,11 +459,9 @@ static int cmd_init(int argc, const char **argv)
 	/* spec 7.1.1-5: if another init won the race, its init file is ours too */
 	if (publish(tree_with(t->oid, xstrfmt("100644 %s\t.ait/init\n", line1(git_run("version 1\n", NULL, NULL,
 		    "hash-object -w --stdin")))), "[CONTRACT] ait init\n")) {
-		struct strbuf now = STRBUF_INIT;
-		int rc;
+		const char *now = object("HEAD:.ait/init", 1, NULL, NULL);
 
-		strbuf_addstr(&now, git_run(NULL, NULL, &rc, "cat-file blob HEAD:.ait/init"));
-		if (rc || strcmp(now.buf, "version 1\n"))
+		if (!now || strcmp(now, "version 1\n"))
 			reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 		puts("init exists");
 		return 0;
@@ -444,7 +473,7 @@ static int cmd_init(int argc, const char **argv)
 /* spec 5.2a: a clone with records but without ait's hooks lets plain commits go unnoticed */
 static void check_hooks(void)
 {
-	struct tree *t = tree_load(head ? head : EMPTY_TREE);
+	struct tree *t = head_tree();
 	char *dir;
 	size_t i;
 	int k;
@@ -473,18 +502,11 @@ static int pre_push(void)
 	string_list_split(&lines, in.buf, "\n", -1);
 	for (i = 0; i < lines.nr; i++) {
 		char ref[1024], oid[48];
-		struct state s = { 0 };
-		struct tree *t;
-		int rc;
 
-		if (sscanf(lines.items[i].string, "%1023s %47s", ref, oid) != 2 || strspn(oid, "0") == strlen(oid))
+		if (sscanf(lines.items[i].string, "%1023s %47s", ref, oid) != 2 || strspn(oid, "0") == strlen(oid) ||
+		    !object(xstrfmt("%s^{commit}", oid), 0, NULL, NULL))
 			continue;
-		git_run(NULL, NULL, &rc, "rev-parse -q --verify %s", xstrfmt("%s^{commit}", oid));
-		if (rc)
-			continue;
-		t = tree_load(oid);
-		state_load(&s, t);
-		validate(&s, t);
+		validate_at(tree_load(oid));
 	}
 	return 0;
 }
@@ -513,17 +535,18 @@ static int ref_transaction(const char *phase)
 	string_list_split(&lines, in.buf, "\n", -1);
 	for_each_string_list_item(item, &lines) {
 		char old[72], new[72], ref[1024];
-		int same = 1, rc;
+		int same = 1;
 
 		if (sscanf(item->string, "%71s %71s %1023s", old, new, ref) != 3)
 			continue;
 		if (!strcmp(ref, want_ref)) {
-			char *got = git_run(NULL, NULL, &rc, "rev-parse %s %s", xstrfmt("%s^{tree}", new), xstrfmt("%s^@", new));
+			/* the commit's header starts "tree T\n", then a "parent P\n" line per parent */
+			const char *got = object(new, 1, NULL, NULL);
 			/* an unborn branch is all zeros, and its commit has no parent */
 			int root = !want_old[strspn(want_old, "0")];
-			char *want = xstrfmt("%s\n%s%s", want_tree, root ? "" : want_old, root ? "" : "\n");
+			char *want = xstrfmt("tree %s\n%s%s%s", want_tree, root ? "" : "parent ", root ? "" : want_old, root ? "" : "\n");
 
-			same = !rc && !strcmp(old, want_old) && !strcmp(got, want);
+			same = got && !strcmp(old, want_old) && starts_with(got, want) && !starts_with(got + strlen(want), "parent ");
 		} else if (!strcmp(ref, "HEAD") || starts_with(ref, "refs/heads/"))
 			same = 0;
 		if (!same) {
@@ -539,8 +562,8 @@ static void recheck_hint(struct record *r, struct tree *t);
 /* spec 7.1.2-7.1.3: guard plain commits, validate merges */
 static int cmd_hook(int argc, const char **argv)
 {
-	struct state hs = { 0 }, ts = { 0 };
-	struct string_list paths = STRING_LIST_INIT_DUP, checks = STRING_LIST_INIT_DUP, gone = STRING_LIST_INIT_DUP;
+	struct state hs = { 0 };
+	struct string_list paths = STRING_LIST_INIT_DUP, gone = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct tree *ht, *t;
 	size_t i;
@@ -551,11 +574,10 @@ static int cmd_hook(int argc, const char **argv)
 		return 0;
 	t = tree_load(line1(git_run(NULL, gindex, NULL, "write-tree")));
 	if (!strcmp(argv[1], "pre-merge-commit") || git_op_in_progress()) {
-		state_load(&ts, t);
-		validate(&ts, t);
+		validate_at(t);
 		return 0;
 	}
-	ht = tree_load(head ? head : EMPTY_TREE);
+	ht = head_tree();
 	state_load(&hs, ht);
 	tree_diff(ht, t, &paths);
 	for (i = 0; i < paths.nr; i++)
@@ -563,10 +585,8 @@ static int cmd_hook(int argc, const char **argv)
 			reject(1, xstrfmt("unstage '%s'; contracts change only through ait (see spec/ait-mini.md)",
 					  paths.items[i].string),
 			       "contract files cannot be changed by a plain commit: '%s'", paths.items[i].string);
-	checks_load(&checks);
 	for (i = 0; i < hs.nr; i++)
-		if (is_current(hs.r[i]) && !unusable(hs.r[i], ht) && !unverified(hs.r[i], ht, &checks) &&
-		    unverified(hs.r[i], t, &checks))
+		if (is_current(hs.r[i]) && !unusable(hs.r[i], ht) && !unverified(hs.r[i], ht) && unverified(hs.r[i], t))
 			string_list_append(&gone, hs.r[i]->id)->util = hs.r[i];
 	if (!gone.nr)
 		return 0;
@@ -662,15 +682,14 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 static int cmd_todo(int argc, const char **argv)
 {
 	struct state s = { 0 };
-	struct string_list checks = STRING_LIST_INIT_DUP, index = STRING_LIST_INIT_DUP;
+	struct string_list index = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct tree *t = tree_load(line1(git("write-tree"))), *ht = tree_load(head ? head : EMPTY_TREE);
+	struct tree *t = tree_load(line1(git("write-tree"))), *ht = head_tree();
 	const char *me = session(0) ? agent : NULL;
 	size_t i;
 	int k;
 
 	state_load(&s, ht);
-	checks_load(&checks);
 	for (k = 1; k < argc; k++) {
 		const char *a = argv[k];
 
@@ -678,8 +697,7 @@ static int cmd_todo(int argc, const char **argv)
 			continue;
 		if (strlen(a) == 13 && strchr("DOX", *a))
 			reject(128, NULL, "no such contract: '%s'", a);
-		if (strchr(a, ':'))
-			unsupported("line ranges");
+		no_range(a);
 		if (strcmp(a, "/") && !path_ok(ends_with(a, "/") ? xstrndup(a, strlen(a) - 1) : a))
 			reject(128, NULL, "bad scope: '%s'", a);
 	}
@@ -699,7 +717,7 @@ static int cmd_todo(int argc, const char **argv)
 			continue;
 		mine = me && !strcmp(scope_path(val(r, CREATOR)), me);
 		future = in_state(r, "future");
-		unver = is_current(r) && unverified(r, t, &checks);
+		unver = is_current(r) && unverified(r, t);
 		if (touches(r, ht, t))
 			string_list_append(&index, r->id)->util = r;
 		for (k = 1; k < argc; k++)

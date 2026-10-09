@@ -266,6 +266,15 @@ ssize_t write_in_full(int fd, const void *buf, size_t count)
 	return total;
 }
 
+/* git v2.53.0 wrapper.c:375 */
+FILE *xfdopen(int fd, const char *mode)
+{
+	FILE *stream = fdopen(fd, mode);
+	if (!stream)
+		die_errno("Out of memory? fdopen failed");
+	return stream;
+}
+
 /* git v2.53.0 wrapper.c:682 */
 void write_file_buf(const char *path, const char *buf, size_t len)
 {

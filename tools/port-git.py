@@ -110,7 +110,7 @@ write('wrapper.c', '#include "git-compat-util.h"\n#include "strbuf.h"\n', [
     fn('wrapper.c', 21), fn('wrapper.c', 41), fn('wrapper.c', 49), fn('wrapper.c', 74), fn('wrapper.c', 79),
     fn('wrapper.c', 95), fn('wrapper.c', 111), fn('wrapper.c', 116), fn('wrapper.c', 130), fn('wrapper.c', 146),
     fn('wrapper.c', 171), fn('wrapper.c', 205), fn('wrapper.c', 228), fn('wrapper.c', 250), fn('wrapper.c', 286),
-    fn('wrapper.c', 305), fn('wrapper.c', 682), fn('wrapper.c', 691), fn('compat/nonblock.c', 6), fn('compat/qsort_s.c', 9), fn('compat/qsort_s.c', 48)])
+    fn('wrapper.c', 305), fn('wrapper.c', 375), fn('wrapper.c', 682), fn('wrapper.c', 691), fn('compat/nonblock.c', 6), fn('compat/qsort_s.c', 9), fn('compat/qsort_s.c', 48)])
 write('quote.c', '#include "git-compat-util.h"\n#include "strbuf.h"\n#include "quote.h"\n', [
     fn('quote.c', 11), fn('quote.c', 28), fn('quote.c', 50)])
 write('quote.h', '#ifndef QUOTE_H\n#define QUOTE_H\nstruct strbuf;\n', [
@@ -167,6 +167,7 @@ ssize_t xread(int fd, void *buf, size_t len);
 ssize_t xwrite(int fd, const void *buf, size_t len);
 ssize_t read_in_full(int fd, void *buf, size_t count);
 ssize_t write_in_full(int fd, const void *buf, size_t count);
+FILE *xfdopen(int fd, const char *mode);
 int enable_pipe_nonblock(int fd);
 void write_file_buf(const char *path, const char *buf, size_t len);
 __attribute__((format (printf, 2, 3)))

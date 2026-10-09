@@ -27,8 +27,8 @@ struct tree *tree_load(const char *treeish)
 		return hit->util;
 	t = xcalloc(1, sizeof(*t));
 	string_list_insert(&loaded, treeish)->util = t;
-	snprintf(t->oid, sizeof(t->oid), "%s",
-		 line1(git("rev-parse --verify %s", xstrfmt("%s^{tree}", treeish))));
+	if (!object(xstrfmt("%s^{tree}", treeish), 0, t->oid, NULL))
+		reject(128, NULL, "git failed: not a tree: '%s'", treeish);
 	for (p = git("ls-tree -r -t -z --full-tree %s", t->oid); *p; p = end + 1) {
 		struct entry *e;
 
@@ -49,6 +49,11 @@ struct entry *tree_get(struct tree *t, const char *path)
 	return bsearch(&key, t->e, t->nr, sizeof(*t->e), cmp_entry);
 }
 
+struct tree *head_tree(void)
+{
+	return tree_load(head ? head : "4b825dc642cb6eb9a060e54bf8d69288fbee4904");	/* the empty tree */
+}
+
 const char *blob_at(struct tree *t, const char *path)
 {
 	struct entry *e = tree_get(t, path);
@@ -56,44 +61,18 @@ const char *blob_at(struct tree *t, const char *path)
 	return e && strcmp(e->mode, "040000") && strcmp(e->mode, "160000") ? e->oid : NULL;
 }
 
-/* the contents of blobs, by object ID: one cat-file for the records of a state */
-static struct string_list blobs = STRING_LIST_INIT_DUP;
-
-void blobs_read(struct string_list *oids)
-{
-	struct strbuf in = STRBUF_INIT;
-	struct string_list_item *item;
-	const char *p, *end;
-
-	for_each_string_list_item(item, oids)
-		if (!string_list_has_string(&blobs, item->string))
-			strbuf_addf(&in, "%s\n", item->string);
-	if (!in.len)
-		return;
-	/* "<oid> blob <size>\n<contents>\n" per object (git-cat-file(1), BATCH OUTPUT) */
-	p = git_run(in.buf, NULL, NULL, "cat-file --batch");
-	for (end = p + git_out_len; p < end; ) {
-		char oid[48];
-		size_t size;
-
-		if (sscanf(p, "%47s blob %zu", oid, &size) != 2)
-			break;
-		p = strchr(p, '\n') + 1;
-		string_list_insert(&blobs, oid)->util = memchr(p, 0, size) ? NULL : xmemdupz(p, size);
-		p += size + 1;
-	}
-}
-
-/* the text of a blob, or NULL when it holds a NUL and so is not text */
+/* the text of a blob, or NULL when it holds a NUL and so is not text; each blob is read once */
 const char *blob_text(const char *oid)
 {
+	static struct string_list blobs = STRING_LIST_INIT_DUP;
 	struct string_list_item *hit = string_list_lookup(&blobs, oid);
+	size_t size;
 	char *text;
 
 	if (!hit) {
-		text = git("cat-file blob %s", oid);
+		text = object(oid, 1, NULL, &size);
 		hit = string_list_insert(&blobs, oid);
-		hit->util = strlen(text) == git_out_len ? text : NULL;
+		hit->util = text && strlen(text) == size ? text : NULL;
 	}
 	return hit->util;
 }
@@ -337,13 +316,8 @@ static int id_ok(const char *id)
 
 void state_load(struct state *s, struct tree *t)
 {
-	struct string_list oids = STRING_LIST_INIT_DUP;
 	size_t i;
 
-	for (i = 0; i < t->nr; i++)
-		if (starts_with(t->e[i].path, ".ait/") && !strcmp(t->e[i].mode, "100644"))
-			string_list_append(&oids, t->e[i].oid);
-	blobs_read(&oids);
 	for (i = 0; i < t->nr; i++) {
 		struct entry *e = &t->e[i];
 		const char *id, *text;
@@ -536,6 +510,15 @@ void validate(struct state *s, struct tree *t)
 		reject(v.code, v.hint, "%s", v.msg);
 }
 
+/* the state that T holds is valid (spec 5.9) */
+void validate_at(struct tree *t)
+{
+	struct state s = { 0 };
+
+	state_load(&s, t);
+	validate(&s, t);
+}
+
 /*
  * The paths of KEY joined by ',' as one helper argument, quoted for the shell
  * when it would read them (5.9a, git v2.53.0 quote.c sq_quote_buf_pretty());
@@ -564,20 +547,12 @@ char *def_paths(struct record *r)
 	return join_arg(r, FILES, 1);
 }
 
-/* spec 3.3-3.4: fix a scope argument at tree T */
-char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
+/* spec 3.2: a well-formed PATH:S-E, the line range ait-mini leaves out; a malformed one is a bad scope */
+void no_range(const char *arg)
 {
-	char *dir = ends_with(arg, "/") ? xstrndup(arg, strlen(arg) - 1) : xstrdup(arg);
-	const char *rest;
-	struct entry *e;
 	regex_t re;
 	int range;
 
-	if (skip_prefix(arg, "new:", &rest) && allow_new && path_ok(rest) && !tree_get(t, rest))
-		return xstrdup(arg);
-	if (!strcmp(arg, "/") && allow_abs)
-		return xstrfmt("/ %s", t->oid);
-	/* a well-formed PATH:S-E is a line range (spec 3.2); a malformed one is a bad scope */
 	regcomp(&re, "^[^:]+:([1-9][0-9]*)-([1-9][0-9]*)$", REG_EXTENDED | REG_NOSUB);
 	range = !starts_with(arg, "new:") && !regexec(&re, arg, 0, NULL, 0) &&
 		path_ok(xstrndup(arg, strchr(arg, ':') - arg)) &&
@@ -585,6 +560,20 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 	regfree(&re);
 	if (range)
 		unsupported("line ranges");
+}
+
+/* spec 3.3-3.4: fix a scope argument at tree T */
+char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
+{
+	char *dir = ends_with(arg, "/") ? xstrndup(arg, strlen(arg) - 1) : xstrdup(arg);
+	const char *rest;
+	struct entry *e;
+
+	if (skip_prefix(arg, "new:", &rest) && allow_new && path_ok(rest) && !tree_get(t, rest))
+		return xstrdup(arg);
+	if (!strcmp(arg, "/") && allow_abs)
+		return xstrfmt("/ %s", t->oid);
+	no_range(arg);
 	e = path_ok(dir) ? tree_get(t, dir) : NULL;
 	if (e && ends_with(arg, "/") && allow_abs && !strcmp(e->mode, "040000"))
 		return xstrfmt("%s %s", arg, e->oid);
@@ -662,19 +651,27 @@ void repin(struct record *r, enum key k, struct tree *t, int new_only)
 	}
 }
 
-/* the body lines of the definition PATH and its "$ ARG..." line, each after INDENT (spec 7.8.2) */
-char *def_text(struct tree *t, const char *path, const char *indent)
+/* the body lines of a definition, each after INDENT */
+void body_lines(struct strbuf *sb, struct string_list *kv, const char *indent)
 {
-	struct string_list *kv = def_get(t, path), body = STRING_LIST_INIT_DUP;
-	struct strbuf sb = STRBUF_INIT;
+	struct string_list body = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	const char *a;
-	int k;
 
 	string_list_split(&body, yget(kv, "body"), "\n", -1);
 	for_each_string_list_item(item, &body)
 		if (*item->string || item != body.items + body.nr - 1)
-			strbuf_addf(&sb, "%s%s\n", indent, item->string);
+			strbuf_addf(sb, "%s%s\n", indent, item->string);
+}
+
+/* the body lines of the definition PATH and its "$ ARG..." line, each after INDENT (spec 7.8.2) */
+char *def_text(struct tree *t, const char *path, const char *indent)
+{
+	struct string_list *kv = def_get(t, path);
+	struct strbuf sb = STRBUF_INIT;
+	const char *a;
+	int k;
+
+	body_lines(&sb, kv, indent);
 	for (k = 0; (a = yget(kv, xstrfmt("command.%d", k))); k++)
 		strbuf_addf(&sb, "%s%s", k ? " " : xstrfmt("%s$ ", indent), a);
 	if (k)
@@ -717,12 +714,33 @@ char *pins(struct record *r)
 	return hit->util;
 }
 
+/* the confirmed pins: every "Ait-Check: ID reported|forced PINS" in HEAD's history, read when first asked */
+static struct string_list *checks(void)
+{
+	static struct string_list confirmed = STRING_LIST_INIT_DUP;
+	static int loaded;
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+
+	if (loaded++ || !head)
+		return &confirmed;
+	string_list_split(&lines, git("log --format=%(trailers:key=Ait-Check,valueonly,separator=%x0a) %s", head),
+			  "\n", -1);
+	for_each_string_list_item(item, &lines) {
+		char id[48], how[16], p[48];
+
+		if (sscanf(item->string, "%47s %15s %47s", id, how, p) == 3)
+			string_list_insert(&confirmed, xstrfmt("%s %s", id, p));
+	}
+	return &confirmed;
+}
+
 /* spec 1.5a: not confirmed with these pins, or the code or spec files moved since */
-int unverified(struct record *r, struct tree *t, struct string_list *checks)
+int unverified(struct record *r, struct tree *t)
 {
 	struct string_list_item *item;
 
-	if (!string_list_has_string(checks, xstrfmt("%s %s", r->id, pins(r))) || !files_match(r, t))
+	if (!string_list_has_string(checks(), xstrfmt("%s %s", r->id, pins(r))) || !files_match(r, t))
 		return 1;
 	for_each_string_list_item(item, &r->f[PROVIDER]) {
 		const char *now = blob_at(t, scope_path(item->string));
@@ -731,24 +749,6 @@ int unverified(struct record *r, struct tree *t, struct string_list *checks)
 			return 1;
 	}
 	return 0;
-}
-
-/* the confirmed pins: every "Ait-Check: ID reported|forced PINS" in HEAD's history */
-void checks_load(struct string_list *checks)
-{
-	struct string_list lines = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-
-	if (!head)
-		return;
-	string_list_split(&lines, git("log --format=%(trailers:key=Ait-Check,valueonly,separator=%x0a) %s", head),
-			  "\n", -1);
-	for_each_string_list_item(item, &lines) {
-		char id[48], how[16], p[48];
-
-		if (sscanf(item->string, "%47s %15s %47s", id, how, p) == 3)
-			string_list_insert(checks, xstrfmt("%s %s", id, p));
-	}
 }
 
 /* spec 2.4: the file lines are the defs and what the defs declare, pinned at T */

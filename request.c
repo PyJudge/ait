@@ -62,18 +62,12 @@ static int allowed(struct request *q, struct record *r, const char *from, const 
 int git_op_in_progress(void)
 {
 	static const char *const files[] = { "MERGE_HEAD", "rebase-merge", "rebase-apply", "sequencer/todo", NULL };
-	static const char *const refs[] = { "CHERRY_PICK_HEAD", "REVERT_HEAD", NULL };
-	int i, rc;
+	int i;
 
 	for (i = 0; files[i]; i++)
 		if (!access(xstrfmt("%s/%s", gitdir, files[i]), F_OK))
 			return 1;
-	for (i = 0; refs[i]; i++) {
-		git_run(NULL, NULL, &rc, "rev-parse -q --verify %s", refs[i]);
-		if (!rc)
-			return 1;
-	}
-	return 0;
+	return object("CHERRY_PICK_HEAD", 0, NULL, NULL) || object("REVERT_HEAD", 0, NULL, NULL);
 }
 
 /* spec 5.2 */
@@ -133,7 +127,7 @@ static void follow(struct tree *h, const char *c)
  */
 int publish(const char *tree, const char *msg)
 {
-	struct tree *h = tree_load(head ? head : EMPTY_TREE);
+	struct tree *h = head_tree();
 	char *dir = xstrfmt("%s/ait-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp"), *index;
 	struct strvec commit = STRVEC_INIT;
 	char *moved, *why;
@@ -189,7 +183,7 @@ static void text_or_die(struct strbuf *sb, const char *path)
 static void load(struct request *q)
 {
 	precondition(0);
-	q->ht = tree_load(head);
+	q->ht = head_tree();
 	state_load(&q->s, q->ht);
 	reject_malformed(&q->s);
 }
@@ -486,16 +480,12 @@ static void fix_hints(struct request *q, struct string_list *ids)
 }
 
 /* the first blocking condition wins (5.13); fulfill and commit keep computing their report */
-static void block(struct request *q, int code, const char *word, char *hint, char *msg)
+static void block(struct request *q, struct verdict v)
 {
 	if (q->gate)
-		reject(code, hint, "%s", msg);
-	if (!q->first.code) {
-		q->first.code = code;
-		q->first.word = word;
-		q->first.hint = hint;
-		q->first.msg = msg;
-	}
+		reject(v.code, v.hint, "%s", v.msg);
+	if (!q->first.code)
+		q->first = v;
 }
 
 /* the double-quoted YAML scalar of spec 8.2 */
@@ -529,8 +519,7 @@ static void write_check_files(struct request *q, const char *in, const char *req
 	strbuf_addf(&sb, "input: %s\ntree: %s\ntasks:\n", dq(in), dq(q->v->oid));
 	for_each_string_list_item(task, &q->tasks) {
 		struct record *r = task->util;
-		struct string_list *kv = def_get(q->v, task_def(task)), body = STRING_LIST_INIT_DUP;
-		struct string_list_item *item;
+		struct string_list *kv = def_get(q->v, task_def(task));
 		const char *engine = engine_of(q->v, task_def(task)), *a;
 		int k;
 
@@ -540,10 +529,7 @@ static void write_check_files(struct request *q, const char *in, const char *req
 			strbuf_addf(&sb, "    consumer: %s\n", dq(shows(r, CONSUMER, q->v, 0)));
 		strbuf_addf(&sb, "    provider: %s\n    engine: %s\n    body: |\n",
 			    dq(shows(r, PROVIDER, q->v, was_current(r))), dq(engine));
-		string_list_split(&body, yget(kv, "body"), "\n", -1);
-		for_each_string_list_item(item, &body)
-			if (*item->string || item != body.items + body.nr - 1)
-				strbuf_addf(&sb, "      %s\n", item->string);
+		body_lines(&sb, kv, "      ");
 		if (strcmp(engine, "exec"))
 			continue;
 		for (k = 0; (a = yget(kv, xstrfmt("command.%d", k))); k++)
@@ -736,7 +722,8 @@ static void code_present(struct request *q)
 	if (!q->missing.nr)
 		return;
 	next_hints(q, &q->missing);
-	block(q, 1, "code-required", hints(q), xstrfmt("no code under the contract's scope: '%s'", q->missing.items[0].string));
+	block(q, (struct verdict){ 1, "code-required", hints(q),
+				   xstrfmt("no code under the contract's scope: '%s'", q->missing.items[0].string) });
 }
 
 /* spec 8.1 and 8.3: a task per definition of the check set, and the input that names this state */
@@ -878,7 +865,7 @@ static int finish(struct request *q)
 		validate(&q->s, q->v);
 	code_present(q);
 	if (!q->gate && !q->missing.nr && check_state(&q->s, q->v, &q->invalid))
-		block(q, q->invalid.code, q->invalid.word, q->invalid.hint, q->invalid.msg);
+		block(q, q->invalid);
 	if (!q->missing.nr && !q->force)
 		input = check_input(q);
 	if (input && q->tasks.nr && q->result && !q->first.code &&
@@ -1011,8 +998,9 @@ int cmd_fulfill(int argc, const char **argv)
 	for_each_string_list_item(item, &paths)
 		if (contract_path(&q.s, item->string)) {
 			string_list_append(&q.mixed, item->string);
-			block(&q, 1, "mixed", xstrfmt("unstage the spec files ('%s'), then rerun this command", item->string),
-			      xstrfmt("contract changes and code changes are mixed: '%s'", item->string));
+			block(&q, (struct verdict){ 1, "mixed", xstrfmt("unstage the spec files ('%s'), then rerun this command",
+									  item->string),
+						    xstrfmt("contract changes and code changes are mixed: '%s'", item->string) });
 		}
 	return finish(&q);
 }
