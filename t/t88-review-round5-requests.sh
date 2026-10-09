@@ -53,6 +53,21 @@ tick; ait offer src/order.c specs/p.yaml --force -m o >"$T/out"; K=$(new_id)
 tick; expect_err "cancel a current contract" E_STATE ait future cancel $K future offer src/order.c specs/missing.yaml -m m
 git reset -q --hard "$H"
 
+# 8.2: the gate's check request names the normalized candidate T, the new record in it
+W=$(git rev-parse --git-path ait/check-result.yaml); Q=$(git rev-parse --git-path ait/check-request.yaml)
+tick; run ait offer src/stock.c specs/pass.yaml -m o
+check "the check request's tree holds the new record" sh -c "git ls-tree -r \$(sed -n 's/^tree: \"\\(.*\\)\"/\\1/p' '$Q') | grep -q '\.ait/O'"
+fill "$W" pass
+tick; ait offer src/stock.c specs/pass.yaml -m o -r "$W" >"$T/out"; K=$(new_id)
+
+# 5.8 E_CHECK_FAILED: fulfill and commit may reopen a current contract with a new condition
+echo x >> src/stock.c && git add src/stock.c
+tick; run ait commit -m x
+fill "$W" fail
+tick; run ait commit -m x -r "$W"
+check "the condition hint" err_has "to change its condition, reopen it with the new one: 'ait future amend $K - <new defs> -m <why>', then rerun this command"
+git reset -q --hard "$H"
+
 # 7.3.1: a lone "future" is a grammar error
 tick; expect_err "future without a clause" E_USAGE ait future -m m
 done_testing

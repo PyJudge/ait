@@ -860,12 +860,12 @@ static struct string_list *checks(void)
 	return &confirmed;
 }
 
-/* spec 1.5a: not confirmed with these pins, or the code or spec files moved since */
-int unverified(struct record *r, struct tree *t)
+/* the code or spec files of R in T are not the ones it pins (the second half of 1.5a) */
+static int off_pins(struct record *r, struct tree *t)
 {
 	struct string_list_item *item;
 
-	if (!string_list_has_string(checks(), xstrfmt("%s %s", r->id, pins(r))) || !files_match(r, t))
+	if (!files_match(r, t))
 		return 1;
 	for_each_string_list_item(item, &r->f[PROVIDER]) {
 		const char *now = blob_at(t, scope_path(item->string));
@@ -874,6 +874,47 @@ int unverified(struct record *r, struct tree *t)
 			return 1;
 	}
 	return 0;
+}
+
+/* spec 1.5a: not confirmed with these pins, or the code or spec files moved since */
+int unverified(struct record *r, struct tree *t)
+{
+	return !string_list_has_string(checks(), xstrfmt("%s %s", r->id, pins(r))) || off_pins(r, t);
+}
+
+/*
+ * 9.1 for H8: the commit of HEAD's first-parent history where R became unverified
+ * with the record it has now: going back from HEAD while the commit holds this
+ * record and R is unverified there, the last such commit. ait looks 100 commits back.
+ */
+const char *unverified_since(struct record *r)
+{
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	const char *record = blob_at(head_tree(), xstrfmt(".ait/%s", r->id)), *since = NULL;
+	char *pinned = xstrfmt(" %s", pins(r)), *found = xstrfmt("\t%s ", r->id);
+	size_t i, checked = 0;
+
+	if (!head)
+		return NULL;
+	/* "C<TAB>ID HOW PINS<TAB>...": the oldest commit that holds the check of these pins confirms all after it */
+	string_list_split(&lines, git("log --first-parent -n 100 --format=%H%x09%(trailers:key=Ait-Check,valueonly,"
+				      "separator=%x09) %s", head), "\n", -1);
+	for (i = 0; i < lines.nr; i++) {
+		const char *at = strstr(lines.items[i].string, found);
+
+		if (at && starts_with(strchrnul(at + strlen(found), ' '), pinned))
+			checked = i + 1;
+	}
+	for (i = 0; i < lines.nr && *lines.items[i].string; i++) {
+		char *commit = xstrndup(lines.items[i].string, 40);
+		struct tree *t = tree_load(commit);
+
+		if (!blob_at(t, xstrfmt(".ait/%s", r->id)) || strcmp(blob_at(t, xstrfmt(".ait/%s", r->id)), record) ||
+		    (i < checked && !off_pins(r, t)))
+			break;
+		since = commit;
+	}
+	return since;
 }
 
 /* spec 2.5.2: an input of the definition DEF is a PATH of 3.1 */

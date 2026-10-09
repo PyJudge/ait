@@ -847,6 +847,28 @@ static void fix_hints(struct request *q, struct string_list *ids)
 	}
 }
 
+/*
+ * 5.8 E_CHECK_FAILED: fulfill or commit may change the condition of K, current
+ * in HEAD, by reopening it with new definitions, its offers of 5.9 d along
+ */
+static void condition_hint(struct request *q, struct record *k)
+{
+	struct string_list set = STRING_LIST_INIT_DUP;
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+
+	if (q->gate || !was_current(k))
+		return;
+	reopen_set(&q->s, k, &set);
+	for_each_string_list_item(item, &set)
+		if (item->util == k)
+			strbuf_addf(&sb, "ait future amend %s %s<new defs>", k->id, *k->id == 'D' ? "- - " : "- ");
+		else
+			strbuf_addf(&sb, " future amend %s", item->string);
+	add_hint(q, xstrfmt("to change its condition, reopen it with the new one: '%s -m <why>', then rerun this command",
+			    sb.buf));
+}
+
 /* the first blocking condition wins (5.13); fulfill and commit keep computing their report */
 static void block(struct request *q, struct verdict v)
 {
@@ -854,6 +876,30 @@ static void block(struct request *q, struct verdict v)
 		reject(v.code, v.hint, "%s", v.msg);
 	if (!q->first.code)
 		q->first = v;
+}
+
+/*
+ * the judged tree with the records this request changes, each with its prev
+ * (2.2.4): the normalized candidate of the gate (6.2), or what fulfill and commit
+ * write; CHANGED, when given, gets those records
+ */
+static char *judged_tree(struct request *q, struct string_list *changed)
+{
+	struct strbuf info = STRBUF_INIT;
+	size_t i;
+
+	for (i = 0; i < q->s.nr; i++) {
+		struct record *r = q->s.r[i];
+
+		if (unchanged(r))
+			continue;
+		put(r, PREV, r->old ? blob_at(q->ht, xstrfmt(".ait/%s", r->id)) : "-");
+		strbuf_addf(&info, "100644 %s\t.ait/%s\n",
+			    line1(git_run(record_text(r, ALL_KEYS), NULL, NULL, "hash-object -w --stdin")), r->id);
+		if (changed)
+			string_list_append(changed, r->id)->util = r;
+	}
+	return tree_with(q->v->oid, info.buf);
 }
 
 /* the double-quoted YAML scalar of spec 8.2 */
@@ -884,7 +930,8 @@ static void write_check_files(struct request *q, const char *in, const char *req
 	struct string_list_item *task;
 	char *err;
 
-	strbuf_addf(&sb, "input: %s\ntree: %s\ntasks:\n", dq(in), dq(q->v->oid));
+	/* 8.2: the tree to check, T0 for fulfill and commit, the normalized candidate T for the gate */
+	strbuf_addf(&sb, "input: %s\ntree: %s\ntasks:\n", dq(in), dq(q->gate ? judged_tree(q, NULL) : q->v->oid));
 	for_each_string_list_item(task, &q->tasks) {
 		struct record *r = task->util;
 		struct string_list *kv = def_get(q->v, task_def(task));
@@ -1193,7 +1240,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 	static const char *const kinds[] = { "new", "changed", "fulfilled", "undertaken", "released", NULL };
 	struct string_list changed = STRING_LIST_INIT_DUP, sorted = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct strbuf info = STRBUF_INIT, trailers = STRBUF_INIT;
+	struct strbuf trailers = STRBUF_INIT;
 	char rid[16], *tree;
 	size_t i;
 	int kind;
@@ -1201,19 +1248,10 @@ static void commit_request(struct request *q, struct strbuf *results)
 	newid(rid, 'R');
 	for_each_string_list_item(item, &q->conf)
 		repin(item->util, PROVIDER, q->v, 0);
-	for (i = 0; i < q->s.nr; i++) {
-		struct record *r = q->s.r[i];
-
-		if (unchanged(r))
-			continue;
-		put(r, PREV, r->old ? blob_at(q->ht, xstrfmt(".ait/%s", r->id)) : "-");
-		strbuf_addf(&info, "100644 %s\t.ait/%s\n", line1(git_run(record_text(r, ALL_KEYS), NULL, NULL, "hash-object -w --stdin")),
-			    r->id);
-		string_list_append(&changed, r->id)->util = r;
-		if (!r->old && r->seq)
-			rename_tasks(results, r->seq, r->id);
-	}
-	tree = tree_with(q->v->oid, info.buf);
+	tree = judged_tree(q, &changed);
+	for_each_string_list_item(item, &changed)
+		if (!((struct record *)item->util)->old && ((struct record *)item->util)->seq)
+			rename_tasks(results, ((struct record *)item->util)->seq, item->string);
 	if (!strcmp(tree, q->ht->oid) && !q->conf.nr) {
 		puts("noop");
 		return;
@@ -1253,6 +1291,7 @@ static int finish(struct request *q)
 {
 	char *req = xstrfmt("%s/ait/check-request.yaml", gitdir), *res = xstrfmt("%s/ait/check-result.yaml", gitdir);
 	struct string_list failing = STRING_LIST_INIT_DUP, fails = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
 	struct strbuf failed = STRBUF_INIT, results = STRBUF_INIT;
 	struct verdict v;
 	char *input = NULL;
@@ -1306,6 +1345,8 @@ static int finish(struct request *q)
 		}
 		fix_hints(q, &fails);
 		next_hints(q, &failing);
+		for_each_string_list_item(item, &failing)
+			condition_hint(q, item->util);
 		reject(1, hints(q), "check failed: %s", failed.buf);
 	}
 	commit_request(q, &results);

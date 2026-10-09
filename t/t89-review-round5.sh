@@ -43,10 +43,11 @@ git reset -q --hard "$H"
 
 # H7 and H8 are judged at HEAD, where the amend runs: code staged only is no code yet
 tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out"; O=$(new_id)
-git rm -q src/stock.c && tick && git commit -q -m gone 2>/dev/null
-git checkout -q HEAD^ -- src/stock.c && echo changed >> src/stock.c && git add src/stock.c
+git rm -q src/stock.c && tick && git commit -q -m gone 2>/dev/null; GONE=$(git rev-parse HEAD)
+echo r > README && git add README && tick && git commit -q -m later 2>/dev/null
+git checkout -q $GONE^ -- src/stock.c && echo changed >> src/stock.c && git add src/stock.c
 run ait todo $O
-check "H8 at HEAD" err_has "'$O' has no code under its scope; if it was moved, run 'ait amend $O <new scope> - -m <why>'"
+check "H8 at HEAD, since the commit that made it unverified" err_has "'$O' has no code under its scope (unverified since '$GONE'); if it was moved, run 'ait amend $O <new scope> - -m <why>'"
 check "then the reopen hint" err_has "reopen it: 'ait future amend $O -m <why>'"
 git reset -q --hard "$H"
 

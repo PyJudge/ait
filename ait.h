@@ -104,6 +104,7 @@ const char *engine_of(struct tree *t, const char *def);
 const char *input_path(const char *def, const char *p);
 int expand_files(struct record *r, struct tree *t);
 int unverified(struct record *r, struct tree *t);
+const char *unverified_since(struct record *r);
 int read_text(struct strbuf *sb, const char *path);
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err);
 void yaml(const char *text, struct string_list *kv, const char *what);

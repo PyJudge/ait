@@ -615,7 +615,7 @@ static int pre_push(void)
 	return 0;
 }
 
-static void recheck_hint(struct state *s, struct record *r, struct tree *h);
+static void recheck_hint(struct state *s, struct record *r, struct tree *h, int guard);
 
 /*
  * spec 7.1.3: git stopped while bringing another commit into HEAD and has
@@ -688,23 +688,28 @@ static int cmd_hook(int argc, const char **argv)
 		if (code_found(item->util, t))
 			suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", item->string,
 				reopen_ids(&hs, item->util));
-		recheck_hint(&hs, item->util, t);
+		recheck_hint(&hs, item->util, t, 1);
 	}
 	return 0;
 }
 
 /*
  * H7 and H8: check an unverified contract again, judged at HEAD's tree H
- * where the amend will run: at its scope, or where its code went, then reopen it
+ * where the amend will run: at its scope, or where its code went, then reopen it.
+ * The guard of 7.1.2 makes the commit H8 would name, so it names none.
  */
-static void recheck_hint(struct state *s, struct record *r, struct tree *h)
+static void recheck_hint(struct state *s, struct record *r, struct tree *h, int guard)
 {
+	const char *since;
+
 	if (code_found(r, h)) {
 		suggest("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
 		return;
 	}
-	suggest("'%s' has no code under its scope; if it was moved, run 'ait amend %s %s%s - -m <why>' to get the tasks",
-		r->id, r->id, *r->id == 'D' ? "- " : "", moved_arg(r, h));
+	since = guard ? NULL : unverified_since(r);
+	suggest("'%s' has no code under its scope%s; if it was moved, run 'ait amend %s %s%s - -m <why>' to get the tasks",
+		r->id, since ? xstrfmt(" (unverified since '%s')", since) : "", r->id, *r->id == 'D' ? "- " : "",
+		moved_arg(r, h));
 	suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", r->id, reopen_ids(s, r));
 }
 
@@ -846,7 +851,7 @@ static int cmd_todo(int argc, const char **argv)
 		link_lines(&s, r, t);
 		putchar('\n');
 		if (unver)
-			recheck_hint(&hs, state_get(&hs, r->id) ? state_get(&hs, r->id) : r, ht);
+			recheck_hint(&hs, state_get(&hs, r->id) ? state_get(&hs, r->id) : r, ht, 0);
 		/* H10: my future offer, or my demand that was reopened (mini counts what I made, 1.3) */
 		else if (future && mine && (*r->id == 'O' || reopened(r)))
 			fulfill_hint(&s, r, t);
