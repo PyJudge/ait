@@ -74,9 +74,12 @@ void tree_diff(struct tree *a, struct tree *b, struct string_list *paths)
 		int c = !x ? 1 : !y ? -1 : strcmp(x->path, y->path);
 		struct entry *e = c < 0 ? x : y;
 
-		i += c <= 0;
-		j += c >= 0;
-		if (!strcmp(e->mode, "040000"))
+		if (c <= 0)
+			i++;
+		if (c >= 0)
+			j++;
+		/* a tree only matters where it replaced a file of the same path */
+		if (c ? !strcmp(e->mode, "040000") : !strcmp(x->mode, "040000") && !strcmp(y->mode, "040000"))
 			continue;
 		if (c || strcmp(x->mode, y->mode) || strcmp(x->oid, y->oid))
 			string_list_append(paths, e->path);
@@ -199,7 +202,7 @@ struct record *record_copy(struct record *r)
 		for_each_string_list_item(item, &r->f[k])
 			string_list_append(&c->f[k], item->string);
 	}
-	c->old = r;
+	c->old = NULL;
 	return c;
 }
 
@@ -259,16 +262,16 @@ void state_load(struct state *s, struct tree *t)
 
 		if (!skip_prefix(e->path, ".ait/", &id) || !strcmp(e->mode, "040000"))
 			continue;
-		text = git("cat-file blob %s", e->oid);
+		if (*id == 'X')
+			unsupported("drop record");
+		text = strcmp(e->mode, "100644") ? NULL : git("cat-file blob %s", e->oid);
 		if (!strcmp(id, "init")) {
-			if (strcmp(e->mode, "100644") || strcmp(text, "version 1\n"))
+			if (!text || strcmp(text, "version 1\n"))
 				state_add(s, id)->bad = xstrdup("must be the single line 'version 1'");
 			continue;
 		}
-		if (*id == 'X')
-			unsupported("drop record");
 		r = state_add(s, id);
-		if (strcmp(e->mode, "100644") || !id_ok(id))
+		if (!text || !id_ok(id))
 			r->bad = xstrdup("not a record path");
 		else
 			record_parse(r, text);
@@ -688,7 +691,7 @@ static char *scalar(const char *v, const char *what)
 			v++;
 		strbuf_addch(&sb, *v);
 	}
-	if (*v != q || (v[1] && v[strspn(v + 1, " ") + 1] != '#'))
+	if (*v != q || (v[1 + strspn(v + 1, " ")] && v[1 + strspn(v + 1, " ")] != '#'))
 		reject(128, NULL, "bad format: '%s': unterminated or trailing text in '%s'", what, v);
 	return strbuf_detach(&sb, NULL);
 }
@@ -732,6 +735,8 @@ void yaml(const char *text, struct string_list *kv, const char *what)
 				kv_put(kv, prefix, scalar(line, what), what);
 				continue;
 			}
+			if (sp >= 15)
+				reject(128, NULL, "bad format: '%s': nested too deeply in line %d", what, (int)i + 1);
 			stack[++sp].indent = indent - 2;
 			stack[sp].map_only = 1;
 			stack[sp].prefix = prefix;

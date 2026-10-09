@@ -6,6 +6,7 @@
 #include "run-command.h"
 #include "quote.h"
 #include <dirent.h>
+#include <sys/file.h>
 
 const char *top, *gindex, *headref, *head, *gitdir, *commondir;
 char *git_error;
@@ -154,15 +155,31 @@ static char *default_of(const char *wt)
 	return strbuf_read_file(&sb, pointer_path(wt), 0) < 0 ? NULL : line1(strbuf_detach(&sb, NULL));
 }
 
+static NORETURN void write_error(const char *path)
+{
+	reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command", path),
+	       "write error: '%s': %s", path, strerror(errno));
+}
+
+/* spec 4.6: the shared state of the worktree WT changes only under worktrees/<KEY>.lock */
+static int lock_worktree(const char *wt)
+{
+	char *path = xstrfmt("%s.lock", pointer_path(wt));
+	int fd = open(path, O_RDWR | O_CREAT, 0666);
+
+	if (fd < 0 || flock(fd, LOCK_EX))
+		write_error(path);
+	return fd;
+}
+
 /* local state is written whole; a failure is E_IO (spec 5.7) */
 static void write_state(const char *path, const char *text)
 {
-	char *tmp = xstrfmt("%s.tmp", path);
+	char *tmp = xstrfmt("%s.%d.tmp", path, (int)getpid());
 	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 
 	if (fd < 0 || write_in_full(fd, text, strlen(text)) < 0 || close(fd) || rename(tmp, path))
-		reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command",
-				    fd < 0 ? state_path("sessions") : path), "write error: '%s': %s", path, strerror(errno));
+		write_error(fd < 0 ? xstrndup(path, strrchr(path, '/') - path) : path);
 }
 
 static char *quoted(const char *s)
@@ -200,9 +217,14 @@ const char *session(int need)
 	else if (!env)
 		env = ptr;
 	wt = session_read(env, agent);
-	if (env && !wt && env == ptr)
-		unlink(pointer_path(top));
-	else if (env && !wt)
+	if (env && !wt && env == ptr) {
+		int fd = lock_worktree(top);
+		char *now = default_of(top);
+
+		if (now && !strcmp(now, ptr))
+			unlink(pointer_path(top));
+		close(fd);
+	} else if (env && !wt)
 		reject(128, "ait session list", "no usable ait session: unknown session '%s'", env);
 	else if (wt && strcmp(wt, top))
 		reject(128, xstrfmt("cd %s", quoted(wt)), "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
@@ -220,10 +242,11 @@ const char *session(int need)
 static int cmd_session(int argc, const char **argv)
 {
 	struct string_list ids = STRING_LIST_INIT_DUP;
-	char *mine = default_of(top), other[72];
+	char *mine, other[72];
 	struct dirent *de;
 	DIR *dir;
 	size_t i;
+	int fd;
 
 	mkdir(state_path(""), 0777);
 	mkdir(state_path("sessions"), 0777);
@@ -252,6 +275,8 @@ static int cmd_session(int argc, const char **argv)
 			       "AIT_SESSION=%s; otherwise close this one and open again with another name",
 			       ids.items[i].string, sid, ids.items[i].string, wt, ids.items[i].string);
 		}
+		fd = lock_worktree(top);
+		mine = default_of(top);
 		if (session_read(mine, other) && strcmp(other, name)) {
 			warning("this worktree is used by session '%s' (agent '%s')", mine, other);
 			advise("close this one: 'ait session close %s', then open a session in a worktree of your own: "
@@ -259,6 +284,7 @@ static int cmd_session(int argc, const char **argv)
 		} else if (!session_read(mine, NULL)) {
 			write_state(pointer_path(top), xstrfmt("%s\n", sid));
 		}
+		close(fd);
 		printf("%s\n", sid);
 	} else if (argc == 2 && !strcmp(argv[1], "list")) {
 		for (i = 0; i < ids.nr; i++) {
@@ -270,19 +296,16 @@ static int cmd_session(int argc, const char **argv)
 	} else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "close")) {
 		const char *s = argc == 3 ? argv[2] : session(1);
 
+		const char *wt = session_read(s, NULL);
+
 		if (!string_list_has_string(&ids, s))
 			reject(128, "ait session list", "no usable ait session: unknown session '%s'", s);
-		unlink(state_path(xstrfmt("sessions/%s", s)));
-		dir = opendir(state_path("worktrees"));
-		while (dir && (de = readdir(dir))) {
-			struct strbuf sb = STRBUF_INIT;
-			char *p = state_path(xstrfmt("worktrees/%s", de->d_name));
-
-			if (strbuf_read_file(&sb, p, 0) >= 0 && !strcmp(line1(sb.buf), s))
-				unlink(p);
-		}
-		if (dir)
-			closedir(dir);
+		fd = lock_worktree(wt);
+		if (unlink(state_path(xstrfmt("sessions/%s", s))))
+			write_error(state_path("sessions"));
+		if (default_of(wt) && !strcmp(default_of(wt), s) && unlink(pointer_path(wt)))
+			write_error(state_path("worktrees"));
+		close(fd);
 	} else {
 		reject(129, NULL, "unknown session command");
 	}
@@ -327,6 +350,12 @@ static int has_ait_hook(const char *path, const char *name)
  */
 static const char *hooks[] = { "pre-commit", "pre-merge-commit", "commit-msg", "pre-push", "reference-transaction", NULL };
 
+/* PATH is DIR or under it */
+static int inside(const char *path, const char *dir)
+{
+	return starts_with(path, dir) && (!path[strlen(dir)] || path[strlen(dir)] == '/');
+}
+
 static char *hooks_dir(void)
 {
 	char *dir = line1(git("rev-parse --git-path hooks"));
@@ -337,7 +366,7 @@ static char *hooks_dir(void)
 static int cmd_init(int argc, const char **argv)
 {
 	char *dir = hooks_dir();
-	int in_repo = starts_with(dir, xstrfmt("%s/", top)) && !starts_with(dir, commondir);
+	int in_repo = inside(dir, top) && !inside(dir, commondir);
 	struct string_list paths = STRING_LIST_INIT_DUP;
 	struct tree *t;
 	int i, bad = 0;
@@ -417,8 +446,12 @@ static int pre_push(void)
 		char ref[1024], oid[48];
 		struct state s = { 0 };
 		struct tree *t;
+		int rc;
 
 		if (sscanf(lines.items[i].string, "%1023s %47s", ref, oid) != 2 || strspn(oid, "0") == strlen(oid))
+			continue;
+		git_run(NULL, NULL, &rc, "rev-parse -q --verify %s", xstrfmt("%s^{commit}", oid));
+		if (rc)
 			continue;
 		t = tree_load(oid);
 		state_load(&s, t);
@@ -564,6 +597,10 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 		if (*l->id != 'u' || !in_state(l, "undertaken") || !strstr(l->id, r->id))
 			continue;
 		other = link_end(s, l, *r->id == 'D');
+		if (!other) {
+			warning("skipping malformed '.ait/%s' at 'HEAD'", l->id);
+			continue;
+		}
 		printf("%s %s %s %s\n", *r->id == 'O' ? "undertakes" : "undertaken-by", other->id, val(other, STATE),
 		       scope_path(val(other, CREATOR)));
 		if (*r->id != 'O' || !in_state(other, "future"))
