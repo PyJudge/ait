@@ -374,9 +374,20 @@ const char *session(int need)
 	if (!wt)
 		return NULL;
 	snprintf(sid, sizeof(sid), "%s", env);
-	if (!ptr || strcmp(env, ptr))
-		cmd_prefix = xstrfmt("AIT_SESSION=%s ", sid);
 	return sid;
+}
+
+/*
+ * 5.9a: hints name the session when it is not this worktree's default; that
+ * is known before any step checks the session (5.13)
+ */
+static void session_prefix(void)
+{
+	const char *env = getenv("AIT_SESSION"), *ptr = top ? default_of(top) : NULL;
+	char *wt = env ? session_read(env, NULL) : NULL;
+
+	if (top && wt && !strcmp(wt, top) && (!ptr || strcmp(env, ptr)))
+		cmd_prefix = xstrfmt("AIT_SESSION=%s ", env);
 }
 
 static int cmd_session(int argc, const char **argv)
@@ -882,6 +893,7 @@ int main(int argc, const char **argv)
 		if (!commands[i].fn)
 			unsupported(argv[1]);
 		setup(!strcmp(argv[1], "hook"));
+		session_prefix();
 		if (strcmp(argv[1], "init") && strcmp(argv[1], "hook"))
 			check_hooks();
 		return commands[i].fn(argc - 1, argv + 1);

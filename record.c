@@ -463,17 +463,15 @@ static int value_ok(struct record *r, enum key k, const char *v)
 
 static int fail_with(struct verdict *v, int code, const char *word, char *hint, char *msg)
 {
-	v->code = code;
-	v->word = word;
-	v->hint = hint;
-	v->msg = msg;
+	*v = (struct verdict){ code, word, hint, msg, NULL, NULL };
 	return code;
 }
 
 static int bad_record(struct verdict *v, struct record *r, const char *why)
 {
 	return fail_with(v, 128, "format", xstrfmt("records are written only by ait; restore '.ait/%s' as in the "
-						   "last commit where it was valid", r->id),
+						   "last commit where it was valid, then commit that alone as "
+						   "spec/ait-mini.md says", r->id),
 			 xstrfmt("bad format: '.ait/%s': %s", r->id, why));
 }
 
@@ -523,20 +521,27 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 			continue;
 		d = link_end(s, r, 0);
 		o = link_end(s, r, 1);
-		if (in_state(r, "undertaken") && is_current(o) && in_state(d, "future"))
-			return fail_with(v, 1, "state", was_current(d) ?
-					 xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: "
-						 "'ait future amend %s future amend %s -m <why>'", d->id, o->id, d->id, o->id) :
-					 xstrfmt("undertake it with a future offer: 'ait future offer %s %s as o undertake %s o -m <why>'",
-						 scope_args(d, PROVIDER), def_paths(d), d->id),
-					 xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
+		if (in_state(r, "undertaken") && is_current(o) && in_state(d, "future")) {
+			fail_with(v, 1, "state", was_current(d) ?
+				  xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: "
+					  "'ait future amend %s future amend %s -m <why>'", d->id, o->id, d->id, o->id) :
+				  xstrfmt("undertake it with a future offer: 'ait future offer %s %s as o undertake %s o -m <why>'",
+					  scope_args(d, PROVIDER), def_paths(d), d->id),
+				  xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
+			v->k = d;
+			v->o = o;
+			return 1;
+		}
 	}
 	for (i = 0; i < s->nr; i++)
-		if (is_live(s->r[i]) && !files_match(s->r[i], t))
-			return fail_with(v, 1, "incomplete", xstrfmt("make the spec files of '%s' match it, or reopen it "
-								      "with them: 'ait future amend %s -m <why>'",
-								      s->r[i]->id, reopen_ids(s, s->r[i])),
-					 xstrfmt("spec files do not match the contract: '%s'", s->r[i]->id));
+		if (is_live(s->r[i]) && !files_match(s->r[i], t)) {
+			fail_with(v, 1, "incomplete", xstrfmt("make the spec files of '%s' match it, or reopen it "
+							       "with them: 'ait future amend %s -m <why>'",
+							       s->r[i]->id, reopen_ids(s, s->r[i])),
+				  xstrfmt("spec files do not match the contract: '%s'", s->r[i]->id));
+			v->k = s->r[i];
+			return 1;
+		}
 	return 0;
 }
 
@@ -564,12 +569,15 @@ struct record *readable(struct record *r)
 	return r;
 }
 
-void reject_malformed(struct state *s)
+/* the first malformed record of S, as a verdict (5.10) */
+int malformed(struct state *s, struct verdict *v)
 {
 	size_t i;
 
 	for (i = 0; i < s->nr; i++)
-		readable(s->r[i]);
+		if (s->r[i]->bad)
+			return bad_record(v, s->r[i], s->r[i]->bad);
+	return 0;
 }
 
 void validate(struct state *s, struct tree *t)

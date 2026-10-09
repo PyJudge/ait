@@ -71,12 +71,13 @@ struct record *partner(struct state *s, struct record *l, struct record *r);
 int is_current(struct record *r);
 int was_current(struct record *r);
 int reopened(struct record *r);
-struct verdict { int code; const char *word; char *hint, *msg; };
+/* a failed check: exit code, porcelain word, hint, message, and the records it is about (K, and O for 5.9 d) */
+struct verdict { int code; const char *word; char *hint, *msg; struct record *k, *o; };
 int check_state(struct state *s, struct tree *t, struct verdict *v);
 void validate(struct state *s, struct tree *t);
 void validate_at(struct tree *t);
 struct record *readable(struct record *r);
-void reject_malformed(struct state *s);
+int malformed(struct state *s, struct verdict *v);
 const char *unusable(struct record *r, struct tree *t);
 int files_match(struct record *r, struct tree *t);
 char *scope_args(struct record *r, enum key k);

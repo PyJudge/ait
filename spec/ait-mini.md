@@ -27,7 +27,7 @@ git은 2.36 이상이어야 한다. ait는 객체를 `git cat-file --batch-comma
 | `ait contract push` | `git push` |
 | `ait peek` | `ait todo ID` (계약 하나를 볼 때), 또는 `.ait/ID`를 직접 읽는다 |
 | `ait listen` · `sub` · `unsub` (알림) | 없다. `git fetch`로 받은 뒤 `ait todo`로 내 약속과 미확인인 내 요구를 본다 |
-| `ait contract new` · `add` · `commit` (직접 작성) | 도우미 명령(`future amend` 등)으로 고친다 |
+| `ait contract new` · `add` · `commit` (직접 작성) | 도우미 명령(`future amend` 등)으로 고친다. 형식이 틀린 레코드(5.10)는 도우미가 읽을 수 없으므로, hint대로 그 레코드를 마지막으로 맞던 커밋의 판으로 되돌려 그것만 stage하고 `git commit --no-verify`로 커밋한다(계약 경로를 바꾸는 일반 커밋은 hook이 막는다) |
 | `ait future drop` (current 계약 철회) | 없다. 되돌린 뒤 거둔다: `ait future amend K -m …`를 실행하고, 다음 요청으로 `ait future cancel K -m …`를 실행한다 |
 | 행 범위 `PATH:S-E` | 파일 범위 `PATH`를 쓴다 |
 | `.ait/` 병합 충돌 해결(merge driver) | git의 기본 병합을 쓴다. 충돌이 나면 한쪽 판을 골라 stage하고 merge를 마친다. hook이 결과를 검증한다 |
