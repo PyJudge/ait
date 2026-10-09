@@ -398,6 +398,7 @@ static void new_contract(struct request *q, struct clause *c)
 	while (state_get(&q->s, id));
 	r = state_add(&q->s, id);
 	r->seq = ++q->seq;
+	r->clause = c - q->cl + 1;
 	r->alias = c->alias;
 	put(r, ROLE, c->verb);
 	put(r, STATE, c->future ? "future" : "current");
@@ -580,6 +581,105 @@ static char *hints(struct request *q)
 	return strbuf_detach(&sb, NULL);
 }
 
+/* a word of a hint command: quoted for the shell when it holds a character the shell reads (5.9a) */
+static void word(struct strbuf *sb, const char *w)
+{
+	strbuf_addch(sb, ' ');
+	sq_quote_buf_pretty(sb, w);
+}
+
+/* clause C names K: it made K, or it amends or cancels K by its ID or alias */
+static int names(struct clause *c, int i, struct record *k)
+{
+	return k->clause == i + 1 || (c->k[0] && (!strcmp(c->verb, "amend") || !strcmp(c->verb, "cancel")) &&
+				      (!strcmp(c->k[0], k->id) || (k->alias && !strcmp(c->k[0], k->alias))));
+}
+
+/*
+ * 5.9a: the helper request again, with the clause of each contract in KS
+ * changed: 'f' makes it a promise or reopens it ("future demand", "future
+ * amend"), 'm' gives it KEPT,<new scope> as provider; a contract no clause
+ * names gets one added. Options give way to "-m <why>".
+ */
+static char *again(struct request *q, struct string_list *ks, char mode)
+{
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list done = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	size_t i;
+	int w;
+
+	strbuf_addstr(&sb, "ait");
+	if (q->cl[0].at)
+		word(&sb, q->args.v[0]);
+	for (i = 0; i < q->ncl; i++) {
+		struct clause *c = &q->cl[i];
+		struct record *k = NULL;
+
+		for_each_string_list_item(item, ks)
+			if (names(c, i, item->util))
+				k = item->util;
+		if (k)
+			string_list_insert(&done, k->id);
+		if (k && mode == 'f' && !c->future)
+			strbuf_addstr(&sb, " future");
+		for (w = c->at; w < c->at + c->n; w++)
+			if (k && mode == 'f' && q->args.v[w] == c->verb && !strcmp(c->verb, "cancel"))
+				strbuf_addstr(&sb, " amend");
+			else if (k && mode == 'm' && q->args.v[w] == c->b)
+				strbuf_addf(&sb, " %s", moved_arg(k, q->ht));
+			else
+				word(&sb, q->args.v[w]);
+		if (k && mode == 'm' && !c->b)
+			strbuf_addf(&sb, " %s%s -", *k->id == 'D' ? "- " : "", moved_arg(k, q->ht));
+	}
+	for_each_string_list_item(item, ks)
+		if (!string_list_has_string(&done, item->string))
+			strbuf_addf(&sb, mode == 'f' ? " future amend %s" : " amend %s %s%s -", item->string,
+				    *item->string == 'D' ? "- " : "", mode == 'f' ? "" : moved_arg(item->util, q->ht));
+	strbuf_addstr(&sb, " -m <why>");
+	return strbuf_detach(&sb, NULL);
+}
+
+/* 5.9a: this fulfill or commit again, with ID given SCOPES ("ID=SCOPES"), or without ID's argument when SCOPES is NULL */
+static char *rerun(struct request *q, const char *id, const char *scopes)
+{
+	struct strbuf sb = STRBUF_INIT;
+	int given = 0;
+	size_t i;
+
+	strbuf_addf(&sb, "ait %s", q->fulfill ? "fulfill" : "commit");
+	for (i = 0; i < q->args.nr; i++) {
+		const char *a = q->args.v[i];
+		size_t len = strcspn(a, "=");
+
+		if (strncmp(a, id, len) || id[len]) {
+			word(&sb, a);
+			continue;
+		}
+		given = 1;
+		if (scopes)
+			strbuf_addf(&sb, " %s=%s", id, scopes);
+	}
+	if (!given && scopes)
+		strbuf_addf(&sb, " %s=%s", id, scopes);
+	strbuf_addstr(&sb, " -m <why>");
+	return strbuf_detach(&sb, NULL);
+}
+
+/* the reopen hint of 5.9a: inside the helper's request, or run first before fulfill or commit again */
+static char *reopen_hint(struct request *q, struct record *k)
+{
+	struct string_list set = STRING_LIST_INIT_DUP;
+
+	reopen_set(&q->s, k, &set);
+	if (q->gate)
+		return xstrfmt("to change '%s' without a check, reopen it: '%s'", k->id, again(q, &set, 'f'));
+	return xstrfmt("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>', then %s", k->id,
+		       reopen_ids(&q->s, k), unsorted_string_list_has_string(&q->scoped, k->id) ?
+		       xstrfmt("rerun '%s'", rerun(q, k->id, NULL)) : "rerun this command");
+}
+
 /*
  * 5.9a, after the fix: a contract the helper registers as current can be made a
  * promise instead, and one current in HEAD can be reopened (except a demand
@@ -592,13 +692,21 @@ static void next_hints(struct request *q, struct string_list *ids)
 	for_each_string_list_item(item, ids) {
 		struct record *r = item->util;
 
-		if (q->gate && !r->old)
-			add_hint(q, xstrfmt("or make it a promise: 'ait future %s %s%s%s %s -m <why>'", val(r, ROLE),
-					    scope_args(r, CONSUMER), *r->id == 'D' ? " " : "", scope_args(r, PROVIDER),
-					    def_paths(r)));
-		else if (was_current(r) && !carried(q, r))
-			add_hint(q, xstrfmt("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'",
-					    r->id, r->id));
+		if (q->gate && !r->old) {
+			struct string_list set = STRING_LIST_INIT_DUP;
+			size_t i;
+
+			/* a demand this request has current offers undertake makes them promises too (5.9 d) */
+			string_list_append(&set, r->id)->util = r;
+			for (i = 0; i < q->s.nr; i++)
+				if (undertaken(q->s.r[i]) && link_end(&q->s, q->s.r[i], 0) == r &&
+				    is_current(link_end(&q->s, q->s.r[i], 1)))
+					string_list_append(&set, link_end(&q->s, q->s.r[i], 1)->id)->util =
+						link_end(&q->s, q->s.r[i], 1);
+			add_hint(q, xstrfmt("if it does not hold yet, make it a promise: '%s'", again(q, &set, 'f')));
+		} else if (was_current(r) && !carried(q, r)) {
+			add_hint(q, reopen_hint(q, r));
+		}
 	}
 }
 
@@ -763,7 +871,9 @@ static void also_undertaken(struct request *q, struct record *l)
 		if (m == l || !undertaken(m) || link_end(&q->s, m, 0) != d)
 			continue;
 		o2 = link_end(&q->s, m, 1);
-		if (!in_state(o2, "future") || !strcmp(val(o2, CREATOR), val(o, CREATOR)))
+		/* H4 is for my future offer, and the other one is someone else's (rule 7) */
+		if (!in_state(o, "future") || strcmp(scope_path(val(o, CREATOR)), agent) || !in_state(o2, "future") ||
+		    !strcmp(scope_path(val(o2, CREATOR)), agent))
 			continue;
 		warning("'%s' is also undertaken by '%s'", d->id, o2->id);
 		suggest("if your work can go on without it, run 'ait future cancel %s -m <why>' (or 'ait release %s %s -m <why>' "
@@ -816,8 +926,7 @@ static void transitions(struct request *q)
 				       "not allowed: '%s' is %s", end->id, val(end, STATE));
 		}
 		if (!allowed(q, r, from, to))
-			reject(1, was_current(r) && *r->id != 'u' ?
-			       xstrfmt("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", r->id, r->id) : NULL,
+			reject(1, was_current(r) && *r->id != 'u' ? reopen_hint(q, r) : NULL,
 			       "not allowed: '%s' cannot go from %s to %s", r->id, from, to);
 	}
 }
@@ -852,21 +961,31 @@ static void code_present(struct request *q)
 	struct string_list_item *item, *sc;
 
 	for_each_string_list_item(item, &q->conf) {
-		if (is_abstract(item->util))
-			reject(128, xstrfmt("give it the scope you implemented: 'ait fulfill %s=<scope> -m <why>'", item->string),
-			       "bad scope: '%s' becomes current without a scope", item->string);
-		for_each_string_list_item(sc, &((struct record *)item->util)->f[PROVIDER]) {
+		struct record *k = item->util;
+
+		if (is_abstract(k))
+			reject(128, xstrfmt("give it the scope you implemented: '%s'", rerun(q, k->id, "<scope>")),
+			       "bad scope: '%s' becomes current without a scope", k->id);
+		for_each_string_list_item(sc, &k->f[PROVIDER]) {
 			char *file = scope_path(sc->string);
 			int written = !access(xstrfmt("%s/%s", top, file), F_OK), new = starts_with(sc->string, "new:");
+			struct string_list one = STRING_LIST_INIT_DUP;
 
 			if (blob_at(q->v, file))
 				continue;
+			string_list_append(&one, k->id)->util = k;
+			/* 5.8 E_CODE_REQUIRED: the code that is there to stage, or where it went; the gate commits code first */
 			if (!written && new)
 				add_hint(q, xstrfmt("write '%s'", file));
-			if (written || new)
+			if ((written || new) && q->gate)
+				add_hint(q, xstrfmt("commit code that meets it first: stage '%s' and run 'ait commit -m <why>', "
+						    "then rerun this command", file));
+			else if (written || new)
 				add_hint(q, xstrfmt("stage '%s', then rerun this command", file));
-			else
-				add_hint(q, xstrfmt("if it was moved, rerun with '%s=<new scope>'", item->string));
+			else if (k->old && q->gate)
+				add_hint(q, xstrfmt("if it was moved, run '%s'", again(q, &one, 'm')));
+			else if (k->old)
+				add_hint(q, xstrfmt("if it was moved, rerun with '%s=%s'", k->id, moved_arg(k, q->v)));
 			if (!unsorted_string_list_has_string(&q->missing, item->string))
 				string_list_append(&q->missing, item->string)->util = item->util;
 		}

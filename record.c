@@ -496,7 +496,7 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 		if (is_live(s->r[i]) && !files_match(s->r[i], t))
 			return fail_with(v, 1, "incomplete", xstrfmt("make the spec files of '%s' match it, or reopen it "
 								      "with them: 'ait future amend %s -m <why>'",
-								      s->r[i]->id, s->r[i]->id),
+								      s->r[i]->id, reopen_ids(s, s->r[i])),
 					 xstrfmt("spec files do not match the contract: '%s'", s->r[i]->id));
 	return 0;
 }
@@ -665,6 +665,39 @@ char *moved_arg(struct record *r, struct tree *t)
 	}
 	strbuf_addstr(&arg, "<new scope>");
 	return strbuf_detach(&arg, NULL);
+}
+
+/*
+ * spec 5.9a and 5.9 d: what reopening K reopens with it, as HEAD has them: K,
+ * and when K is a current demand, each current offer that undertakes it
+ */
+void reopen_set(struct state *s, struct record *k, struct string_list *out)
+{
+	size_t i;
+
+	string_list_append(out, k->id)->util = k;
+	for (i = 0; i < s->nr; i++) {
+		struct record *l = s->r[i], *o;
+
+		if (!l->old || !undertaken(l->old) || link_end(s, l, 0) != k || !k->old || !is_current(k->old))
+			continue;
+		o = link_end(s, l, 1);
+		if (o->old && is_current(o->old))
+			string_list_append(out, o->id)->util = o;
+	}
+}
+
+/* "K future amend O..." of the reopen command run on its own */
+char *reopen_ids(struct state *s, struct record *k)
+{
+	struct string_list set = STRING_LIST_INIT_DUP;
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+
+	reopen_set(s, k, &set);
+	for_each_string_list_item(item, &set)
+		strbuf_addf(&sb, "%s%s", sb.len ? " future amend " : "", item->string);
+	return strbuf_detach(&sb, NULL);
 }
 
 /* the provider of R can be found in T: each scope is a file there (spec 1.5c, 7.7.3-4) */

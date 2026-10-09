@@ -87,6 +87,8 @@ char *pins(struct record *r);
 char *pin_lines(struct record *r);
 int code_found(struct record *r, struct tree *t);
 char *moved_arg(struct record *r, struct tree *t);
+void reopen_set(struct state *s, struct record *k, struct string_list *out);
+char *reopen_ids(struct state *s, struct record *k);
 int touches(struct record *r, struct tree *a, struct tree *b);
 void repin(struct record *r, enum key k, struct tree *t, int new_only);
 void body_lines(struct strbuf *sb, struct string_list *kv, const char *indent);

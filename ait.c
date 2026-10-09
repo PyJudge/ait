@@ -651,7 +651,8 @@ static int cmd_hook(int argc, const char **argv)
 	warning("their receivers are notified after this commit");
 	suggest("next time, to check and commit in one step, use 'ait commit' instead of 'git commit'");
 	for_each_string_list_item(item, &gone) {
-		suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", item->string, item->string);
+		suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", item->string,
+			reopen_ids(&hs, item->util));
 		recheck_hint(item->util, t, t);
 	}
 	return 0;
