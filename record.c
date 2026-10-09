@@ -658,12 +658,12 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 	const char *rest;
 	struct entry *e;
 
-	if (skip_prefix(arg, "new:", &rest) && allow_new && path_ok(rest) && !tree_get(t, rest))
+	/* the shape of ARG was checked before (scope_shape, 5.13-1); here is what T has */
+	if (skip_prefix(arg, "new:", &rest) && allow_new && !tree_get(t, rest))
 		return xstrdup(arg);
 	if (!strcmp(arg, "/") && allow_abs)
 		return xstrfmt("/ %s", t->oid);
-	no_range(arg);
-	e = path_ok(dir) ? tree_get(t, dir) : NULL;
+	e = tree_get(t, dir);
 	if (e && ends_with(arg, "/") && allow_abs && !strcmp(e->mode, "040000"))
 		return xstrfmt("%s %s", arg, e->oid);
 	if (e && !ends_with(arg, "/") && blob_at(t, arg))
@@ -1200,10 +1200,31 @@ static int yaml_end(struct yaml *y, const char *p, int no)
 	return *p && *p != '\n' && *p != '#' ? yaml_fail(y, "trailing text in line %d", no) : 0;
 }
 
+/* a level of block structure: where it is indented, its list items so far, its key and value */
+struct yframe {
+	int indent, items, map_only;
+	char *prefix;
+	struct yval *v;
+};
+
+/* a map or list opening under KEY one level deeper, as deep as ait reads (16 levels) */
+static int yaml_push(struct yaml *y, struct yframe *st, int *sp, int indent, int map_only, char *key, const char *at,
+		     char kind, int no)
+{
+	if (*sp >= 15)
+		return yaml_fail(y, "nested too deeply in line %d", no);
+	(*sp)++;
+	st[*sp] = (struct yframe){ indent, 0, map_only, key, yaml_put(y, key, xstrdup(""), at) };
+	if (!st[*sp].v)
+		return -1;
+	st[*sp].v->kind = kind;
+	return 0;
+}
+
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err)
 {
 	struct yaml y = { text, what, kv, NULL };
-	struct { int indent, items, map_only; char *prefix; struct yval *v; } st[16] = { { -1, 0, 1, NULL, NULL } };
+	struct yframe st[16] = { { -1, 0, 1, NULL, NULL } };
 	const char *line, *next;
 	int sp = 0, no = 0;
 
@@ -1237,19 +1258,8 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 				next = flow_end(p, next, &no);
 				continue;
 			}
-			if (sp >= 15) {
-				yaml_fail(&y, "nested too deeply in line %d", no);
+			if (yaml_push(&y, st, &sp, indent - 2, 1, prefix, p, 'm', no))
 				break;
-			}
-			sp++;
-			st[sp].indent = indent - 2;
-			st[sp].items = 0;
-			st[sp].map_only = 1;
-			st[sp].prefix = prefix;
-			st[sp].v = yaml_put(&y, prefix, xstrdup(""), p);
-			if (!st[sp].v)
-				break;
-			st[sp].v->kind = 'm';
 		}
 		/* YAML 1.2: the root may be a flow map, and then it is the whole document */
 		if (!prefix && !sp && *p == '{' && !kv->nr) {
@@ -1267,18 +1277,8 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 		key = prefix ? yaml_child(prefix, key) : key;
 		p += strspn(p, " ");
 		if (p == e || *p == '#') {
-			if (sp >= 15) {
-				yaml_fail(&y, "nested too deeply in line %d", no);
+			if (yaml_push(&y, st, &sp, indent, 0, key, p, '?', no))
 				break;
-			}
-			sp++;
-			st[sp].indent = indent;
-			st[sp].items = 0;
-			st[sp].map_only = 0;
-			st[sp].prefix = key;
-			st[sp].v = yaml_put(&y, key, xstrdup(""), p);
-			if (st[sp].v)
-				st[sp].v->kind = '?';
 		} else if (*p == '|') {
 			/* a literal block: the more indented lines below, clipped to one final newline */
 			struct strbuf sb = STRBUF_INIT;

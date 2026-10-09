@@ -553,18 +553,27 @@ static void apply(struct request *q, struct clause *c)
 	}
 }
 
-/* spec 8.4: in the task values of a result file, the new contract +SEQ becomes ID */
-static void rename_tasks(struct strbuf *sb, int seq, const char *id)
+/*
+ * spec 8.4: in the task values of a result file, a new contract's +SEQ becomes
+ * its ID, read once and spliced from the last task back so the places hold
+ */
+static void rename_tasks(struct request *q, struct strbuf *sb)
 {
 	struct string_list kv = STRING_LIST_INIT_DUP;
-	char *from = xstrfmt("+%d:", seq), *err;
 	const char *t;
+	char *err;
+	size_t i;
 	int n;
 
 	yaml_parse(sb->buf, &kv, "results", &err);
-	for (n = kv.nr; n >= 0; n--)
-		if ((t = yget(&kv, xstrfmt("results.%d.task", n))) && starts_with(t, from))
-			strbuf_splice(sb, yat(&kv, xstrfmt("results.%d.task", n)), strlen(from) - 1, id, strlen(id));
+	for (n = kv.nr; n >= 0; n--) {
+		if (!(t = yget(&kv, xstrfmt("results.%d.task", n))) || *t != '+')
+			continue;
+		for (i = 0; i < q->s.nr; i++)
+			if (!q->s.r[i]->old && q->s.r[i]->seq && q->s.r[i]->seq == atoi(t + 1))
+				strbuf_splice(sb, yat(&kv, xstrfmt("results.%d.task", n)), strcspn(t, ":"),
+					      q->s.r[i]->id, strlen(q->s.r[i]->id));
+	}
 }
 
 static int unchanged(struct record *r)
@@ -1254,9 +1263,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 	for_each_string_list_item(item, &q->conf)
 		repin(item->util, PROVIDER, q->v, 0);
 	tree = judged_tree(q, &changed);
-	for_each_string_list_item(item, &changed)
-		if (!((struct record *)item->util)->old && ((struct record *)item->util)->seq)
-			rename_tasks(results, ((struct record *)item->util)->seq, item->string);
+	rename_tasks(q, results);
 	if (!strcmp(tree, q->ht->oid) && !q->conf.nr) {
 		puts("noop");
 		return;
