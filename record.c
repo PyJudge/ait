@@ -102,16 +102,21 @@ const char *blob_text(const char *oid)
 char *tree_with(const char *base, const char *index_info)
 {
 	char *dir = xstrfmt("%s/ait-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
-	char *index, *tree;
+	char *index, *tree = NULL;
+	int rc;
 
 	if (!mkdtemp(dir))
 		die_errno("could not create '%s'", dir);
 	index = xstrfmt("%s/index", dir);
-	git_run(NULL, index, NULL, "read-tree %s", base);
-	git_run(index_info, index, NULL, "update-index --add --index-info");
-	tree = line1(git_run(NULL, index, NULL, "write-tree"));
+	git_run(NULL, index, &rc, "read-tree %s", base);
+	if (!rc)
+		git_run(index_info, index, &rc, "update-index --add --index-info");
+	if (!rc)
+		tree = line1(git_run(NULL, index, &rc, "write-tree"));
 	unlink(index);
 	rmdir(dir);
+	if (rc)
+		reject(128, NULL, "git failed: %s", git_error);
 	return tree;
 }
 
@@ -150,6 +155,15 @@ char *scope_path(const char *v)
 const char *scope_oid(const char *v)
 {
 	return strchr(v, ' ') ? strchr(v, ' ') + 1 : NULL;
+}
+
+/* WORD is one of the words of SET (NULL-terminated) */
+int one_of(const char *word, const char *const *set)
+{
+	for (; *set; set++)
+		if (!strcmp(word, *set))
+			return 1;
+	return 0;
 }
 
 int is_def(const char *file)
@@ -427,6 +441,9 @@ static int bad_record(struct verdict *v, struct record *r, const char *why)
 			 xstrfmt("bad format: '.ait/%s': %s", r->id, why));
 }
 
+static const char *const contract_states[] = { "future", "current", "cancelled", "withdrawn", NULL };
+static const char *const link_states[] = { "undertaken", "released", NULL };
+
 /* validate(state) of spec 5.9 a-e: invariants of one state, no parents involved; 0 when it holds */
 int check_state(struct state *s, struct tree *t, struct verdict *v)
 {
@@ -452,8 +469,7 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 					return bad_record(v, r, xstrfmt("bad '%s' line '%s'", keys[k], item->string));
 		}
 		if (strcmp(val(r, ROLE), *r->id == 'D' ? "demand" : *r->id == 'O' ? "offer" : "") ||
-		    !strstr(*r->id == 'u' ? " undertaken released " : " future current cancelled withdrawn ",
-			    xstrfmt(" %s ", val(r, STATE))))
+		    !one_of(val(r, STATE), *r->id == 'u' ? link_states : contract_states))
 			return bad_record(v, r, "role or state does not fit the record");
 		if (*r->id != 'u' && !strstr(record_text(r, 1), " def\n"))
 			return bad_record(v, r, "no spec definition");
@@ -478,6 +494,16 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 								      s->r[i]->id, s->r[i]->id),
 					 xstrfmt("spec files do not match the contract: '%s'", s->r[i]->id));
 	return 0;
+}
+
+/* why R cannot be shown as it is in T: malformed, or its spec files are not there (NULL when it can) */
+const char *unusable(struct record *r, struct tree *t)
+{
+	if (r->bad)
+		return r->bad;
+	if (is_live(r) && !files_match(r, t))
+		return "its spec files do not match it";
+	return NULL;
 }
 
 /* spec 5.10: a request on a state with a malformed record stops with that record's error */
@@ -1070,9 +1096,11 @@ struct string_list *def_get(struct tree *t, const char *path)
 	static const char *const prompt[] = { "body s", "engine s", "inputs l", "inputs.N s", NULL };
 	static struct string_list parsed = STRING_LIST_INIT_DUP;
 	const char *oid = blob_at(t, path), *engine;
-	struct string_list_item *hit = string_list_lookup(&parsed, oid);
+	struct string_list_item *hit = oid ? string_list_lookup(&parsed, oid) : NULL;
 	struct string_list *kv;
 
+	if (!oid)
+		reject(1, NULL, "spec files do not match the contract: missing '%s'", path);
 	if (hit)
 		return hit->util;
 	if (!blob_text(oid))

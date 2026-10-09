@@ -36,7 +36,7 @@ tick; expect_err "a too deeply nested definition is a bad format" E_FORMAT ait f
 rm -f specs/q.yaml specs/deep.yaml
 tick; expect_ok "a demand to link" ait future demand src/order.c src/stock.c specs/p.yaml as d -m m; D=$(new_id)
 check "the demand has an ID" test -n "$D"
-printf 'state undertaken\nprev -\n' > .ait/undertake/$D-O000000000000 && git add .ait && tick && git commit -q --no-verify -m dangling
+mkdir -p .ait/undertake && printf 'state undertaken\nprev -\n' > .ait/undertake/$D-O000000000000 && git add .ait && tick && git commit -q --no-verify -m dangling
 expect_ok "todo with a dangling link" ait todo $D
 check "the dangling link is reported as malformed" err_has "warning: skipping malformed '.ait/undertake/$D-O000000000000' at 'HEAD'"
 git reset -q --hard HEAD~1

@@ -62,7 +62,7 @@ printf 'input: %s\nresults: [{task: "+1:specs/pass.yaml", outcome: pass, basis: 
 tick; expect_ok "a flow-form result" ait offer src/order.c specs/pass.yaml -m o -r "$W"
 check "its +1 takes the ID too" sh -c "git log -1 --format=%B | grep -q 'task: \"O[0-9a-f]*:specs/pass.yaml\"'"
 git reset -q --hard "$H"
-printf 'state undertaken\nprev -\n' > .ait/undertake/D000000000000-$O && git add .ait && tick && git commit -q --no-verify -m dangling
+mkdir -p .ait/undertake && printf 'state undertaken\nprev -\n' > .ait/undertake/D000000000000-$O && git add .ait && tick && git commit -q --no-verify -m dangling
 echo y >> src/stock.c && git add src/stock.c
 expect_err "fulfill with a link whose demand is missing" E_FORMAT ait fulfill $O -m x --force
 git reset -q --hard "$H"

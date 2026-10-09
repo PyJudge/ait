@@ -262,10 +262,14 @@ static int cmd_session(int argc, const char **argv)
 	mkdir(state_path(""), 0777);
 	mkdir(state_path("sessions"), 0777);
 	mkdir(state_path("worktrees"), 0777);
+	/* each session read once: ID -> "AGENT\nWORKTREE" */
 	dir = opendir(state_path("sessions"));
-	while (dir && (de = readdir(dir)))
-		if (*de->d_name == 'S' && session_read(de->d_name, NULL))
-			string_list_insert(&ids, de->d_name);
+	while (dir && (de = readdir(dir))) {
+		char *wt = *de->d_name == 'S' ? session_read(de->d_name, other) : NULL;
+
+		if (wt)
+			string_list_insert(&ids, de->d_name)->util = xstrfmt("%s\n%s", other, wt);
+	}
 	if (dir)
 		closedir(dir);
 	if (argc == 4 && !strcmp(argv[1], "open") && !strcmp(argv[2], "--agent")) {
@@ -277,9 +281,9 @@ static int cmd_session(int argc, const char **argv)
 		newid(sid, 'S');
 		write_state(state_path(xstrfmt("sessions/%s", sid)), xstrfmt("agent %s\nworktree %s\n", name, top));
 		for (i = 0; i < ids.nr; i++) {
-			const char *wt = session_read(ids.items[i].string, other);
+			const char *who = ids.items[i].util, *wt = strchr(who, '\n') + 1;
 
-			if (strcmp(other, name))
+			if (strncmp(who, name, wt - 1 - who) || strlen(name) != (size_t)(wt - 1 - who))
 				continue;
 			warning("agent name '%s' is also used by session '%s' (worktree '%s')", name, ids.items[i].string, wt);
 			advise("if '%s' is yours, close this one: 'ait session close %s', and use '%s' in '%s' with "
@@ -299,10 +303,10 @@ static int cmd_session(int argc, const char **argv)
 		printf("%s\n", sid);
 	} else if (argc == 2 && !strcmp(argv[1], "list")) {
 		for (i = 0; i < ids.nr; i++) {
-			const char *wt = session_read(ids.items[i].string, other), *d = default_of(wt);
+			const char *who = ids.items[i].util, *wt = strchr(who, '\n') + 1, *d = default_of(wt);
 
-			printf("session %s\nagent %s\nworktree %s\ndefault %s\nsubs 0\nlistening no\n\n", ids.items[i].string,
-			       other, wt, d && !strcmp(d, ids.items[i].string) ? "yes" : "no");
+			printf("session %s\nagent %.*s\nworktree %s\ndefault %s\nsubs 0\nlistening no\n\n", ids.items[i].string,
+			       (int)(wt - 1 - who), who, wt, d && !strcmp(d, ids.items[i].string) ? "yes" : "no");
 		}
 	} else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "close")) {
 		const char *s = argc == 3 ? argv[2] : session(1);
@@ -378,7 +382,6 @@ static int cmd_init(int argc, const char **argv)
 {
 	char *dir = hooks_dir();
 	int in_repo = inside(dir, top) && !inside(dir, commondir);
-	struct string_list paths = STRING_LIST_INIT_DUP;
 	struct tree *t;
 	int i, bad = 0;
 
@@ -420,10 +423,19 @@ static int cmd_init(int argc, const char **argv)
 		return 0;
 	}
 	precondition(1);
-	mkdir(xstrfmt("%s/.ait", top), 0777);
-	write_file(xstrfmt("%s/.ait/init", top), "version 1");
-	string_list_append(&paths, ".ait/init");
-	printf("init created %s\n", publish(&paths, 1, "[CONTRACT] ait init\n"));
+	/* spec 7.1.1-5: if another init won the race, its init file is ours too */
+	if (publish(tree_with(t->oid, xstrfmt("100644 %s\t.ait/init\n", line1(git_run("version 1\n", NULL, NULL,
+		    "hash-object -w --stdin")))), "[CONTRACT] ait init\n")) {
+		struct strbuf now = STRBUF_INIT;
+		int rc;
+
+		strbuf_addstr(&now, git_run(NULL, NULL, &rc, "cat-file blob HEAD:.ait/init"));
+		if (rc || strcmp(now.buf, "version 1\n"))
+			reject(1, "rerun this command", "HEAD moved while running; nothing changed");
+		puts("init exists");
+		return 0;
+	}
+	printf("init created %s\n", line1(git("rev-parse HEAD")));
 	return 0;
 }
 
@@ -475,23 +487,47 @@ static int pre_push(void)
 	return 0;
 }
 
-/* spec 5.5: the branch is still where ait judged it, under git's ref lock */
+/*
+ * spec 5.5: under git's ref lock, the commit that lands is the one ait judged:
+ * its tree, on the branch ait judged, whose only parent is the commit ait
+ * judged. Any other branch or a detached HEAD is refused.
+ */
 static int ref_transaction(const char *phase)
 {
 	const char *expect = getenv("AIT_EXPECT");
+	char want_old[72], want_tree[72], want_ref[1024], moved[4096];
 	struct strbuf in = STRBUF_INIT;
 	struct string_list lines = STRING_LIST_INIT_DUP;
-	size_t i;
+	struct string_list_item *item;
 
 	if (!expect || strcmp(phase, "prepared"))
 		return 0;
+	/* "OLD TREE REF MOVED": what ait judged, and where to say the transaction was refused */
+	if (sscanf(expect, "%71s %71s %1023s %4095s", want_old, want_tree, want_ref, moved) != 4) {
+		error("bad AIT_EXPECT '%s'", expect);
+		return 1;
+	}
 	strbuf_read(&in, 0, 0);
 	string_list_split(&lines, in.buf, "\n", -1);
-	for (i = 0; i < lines.nr; i++) {
-		const char *l = lines.items[i].string;
+	for_each_string_list_item(item, &lines) {
+		char old[72], new[72], ref[1024];
+		int same = 1, rc;
 
-		if (strlen(l) > 82 && !strcmp(l + 82, strchr(expect, ' ') + 1) && strncmp(l, expect, 40))
+		if (sscanf(item->string, "%71s %71s %1023s", old, new, ref) != 3)
+			continue;
+		if (!strcmp(ref, want_ref)) {
+			char *got = git_run(NULL, NULL, &rc, "rev-parse %s %s", xstrfmt("%s^{tree}", new), xstrfmt("%s^@", new));
+			/* an unborn branch is all zeros, and its commit has no parent */
+			int root = !want_old[strspn(want_old, "0")];
+			char *want = xstrfmt("%s\n%s%s", want_tree, root ? "" : want_old, root ? "" : "\n");
+
+			same = !rc && !strcmp(old, want_old) && !strcmp(got, want);
+		} else if (!strcmp(ref, "HEAD") || starts_with(ref, "refs/heads/"))
+			same = 0;
+		if (!same) {
+			write_file(moved, "%s", ref);
 			return 1;
+		}
 	}
 	return 0;
 }
@@ -505,7 +541,6 @@ static int cmd_hook(int argc, const char **argv)
 	struct string_list paths = STRING_LIST_INIT_DUP, checks = STRING_LIST_INIT_DUP, gone = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct tree *ht, *t;
-	int no_merge;
 	size_t i;
 
 	if (argc > 1 && !strcmp(argv[1], "pre-push"))
@@ -513,8 +548,7 @@ static int cmd_hook(int argc, const char **argv)
 	if (argc < 2 || (strcmp(argv[1], "pre-commit") && strcmp(argv[1], "pre-merge-commit")))
 		return 0;
 	t = tree_load(line1(git_run(NULL, gindex, NULL, "write-tree")));
-	git_run(NULL, NULL, &no_merge, "rev-parse -q --verify MERGE_HEAD");
-	if (!strcmp(argv[1], "pre-merge-commit") || !no_merge) {
+	if (!strcmp(argv[1], "pre-merge-commit") || git_op_in_progress()) {
 		state_load(&ts, t);
 		validate(&ts, t);
 		return 0;
@@ -529,7 +563,8 @@ static int cmd_hook(int argc, const char **argv)
 			       "contract files cannot be changed by a plain commit: '%s'", paths.items[i].string);
 	checks_load(&checks);
 	for (i = 0; i < hs.nr; i++)
-		if (is_current(hs.r[i]) && !unverified(hs.r[i], ht, &checks) && unverified(hs.r[i], t, &checks))
+		if (is_current(hs.r[i]) && !unusable(hs.r[i], ht) && !unverified(hs.r[i], ht, &checks) &&
+		    unverified(hs.r[i], t, &checks))
 			string_list_append(&gone, hs.r[i]->id)->util = hs.r[i];
 	if (!gone.nr)
 		return 0;
@@ -609,13 +644,9 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 	for (j = 0; j < s->nr; j++) {
 		struct record *l = s->r[j], *other;
 
-		if (*l->id != 'u' || !in_state(l, "undertaken") || !strstr(l->id, r->id))
+		if (*l->id != 'u' || l->bad || !in_state(l, "undertaken") || !strstr(l->id, r->id))
 			continue;
 		other = link_end(s, l, *r->id == 'D');
-		if (!other) {
-			warning("skipping malformed '.ait/%s' at 'HEAD'", l->id);
-			continue;
-		}
 		printf("%s %s %s %s\n", *r->id == 'O' ? "undertakes" : "undertaken-by", other->id, val(other, STATE),
 		       scope_path(val(other, CREATOR)));
 		if (*r->id != 'O' || !in_state(other, "future"))
@@ -656,6 +687,10 @@ static int cmd_todo(int argc, const char **argv)
 
 		if (r->bad) {
 			warning("skipping malformed '.ait/%s' at 'HEAD'", r->id);
+			continue;
+		}
+		if (unusable(r, ht)) {
+			warning("skipping '.ait/%s' at 'HEAD': %s", r->id, unusable(r, ht));
 			continue;
 		}
 		if (*r->id == 'u' || !strcmp(r->id, "init"))

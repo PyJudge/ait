@@ -35,26 +35,51 @@ struct request {
 	.missing = STRING_LIST_INIT_DUP, .tasks = STRING_LIST_INIT_DUP, .hints = STRING_LIST_INIT_DUP, \
 	.carried = STRING_LIST_INIT_DUP, .mixed = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
 
-/* spec 2.3: the allowed transitions; 'x' is a demand or an offer, 'u' a link */
-static const char *gate_moves = " x-:future x-:current xfuture:future xfuture:cancelled xcurrent:current"
-				" xcurrent:future u-:undertaken ureleased:undertaken uundertaken:released ";
-static const char *fulfill_moves = " xfuture:current xcurrent:current ";
+/* spec 2.3: the allowed transitions of a demand or offer ('x') and of a link ('u'), and who makes them */
+static const struct move {
+	char kind;
+	const char *from, *to;
+	unsigned gate : 1, fulfill : 1;
+} moves[] = {
+	{ 'x', "-", "future", 1, 0 }, { 'x', "-", "current", 1, 0 }, { 'x', "future", "future", 1, 0 },
+	{ 'x', "future", "cancelled", 1, 0 }, { 'x', "future", "current", 0, 1 }, { 'x', "current", "current", 1, 1 },
+	{ 'x', "current", "future", 1, 0 }, { 'u', "-", "undertaken", 1, 0 }, { 'u', "released", "undertaken", 1, 0 },
+	{ 'u', "undertaken", "released", 1, 0 },
+};
+
+static int allowed(struct request *q, struct record *r, const char *from, const char *to)
+{
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(moves); i++)
+		if (moves[i].kind == (*r->id == 'u' ? 'u' : 'x') && !strcmp(moves[i].from, from) &&
+		    !strcmp(moves[i].to, to))
+			return q->gate ? moves[i].gate : moves[i].fulfill;
+	return 0;
+}
+
+/* spec 5.2-2: a merge, cherry-pick, revert, rebase or am is in progress (git v2.53.0 wt-status.c:1791) */
+int git_op_in_progress(void)
+{
+	static const char *const files[] = { "MERGE_HEAD", "rebase-merge", "rebase-apply", "sequencer/todo", NULL };
+	static const char *const refs[] = { "CHERRY_PICK_HEAD", "REVERT_HEAD", NULL };
+	int i, rc;
+
+	for (i = 0; files[i]; i++)
+		if (!access(xstrfmt("%s/%s", gitdir, files[i]), F_OK))
+			return 1;
+	for (i = 0; refs[i]; i++) {
+		git_run(NULL, NULL, &rc, "rev-parse -q --verify %s", refs[i]);
+		if (!rc)
+			return 1;
+	}
+	return 0;
+}
 
 /* spec 5.2 */
 void precondition(int allow_unborn)
 {
-	static const char *files[] = { "MERGE_HEAD", "rebase-merge", "rebase-apply", "sequencer/todo", NULL };
-	static const char *refs[] = { "CHERRY_PICK_HEAD", "REVERT_HEAD", NULL };
-	int i, busy = 0, rc;
-
-	/* spec 5.2-2, after git v2.53.0 wt-status.c:1791 wt_status_get_state() */
-	for (i = 0; files[i]; i++)
-		busy |= !access(xstrfmt("%s/%s", gitdir, files[i]), F_OK);
-	for (i = 0; refs[i] && !busy; i++) {
-		git_run(NULL, NULL, &rc, "rev-parse -q --verify %s", refs[i]);
-		busy = !rc;
-	}
-	if (busy)
+	if (git_op_in_progress())
 		reject(128, "finish or abort it as 'git status' says, then rerun this command",
 		       "cannot run now: a git operation is in progress");
 	if (!headref)
@@ -67,47 +92,87 @@ void precondition(int allow_unborn)
 }
 
 /*
- * spec 5.5 through git commit: PATHS come from the work tree; ONLY commits
- * just them and leaves whatever else is staged, otherwise the whole index.
- * ait's own hooks are skipped (11.2) except reference-transaction, which
- * aborts the commit if the branch moved (AIT_EXPECT); then .ait/ goes back to HEAD.
+ * spec 5.5-4: after the commit, the index takes C's version of each changed path
+ * where it still held HEAD's, and .ait/ in the work tree follows; anything else
+ * staged meanwhile is left alone and reported.
  */
-char *publish(struct string_list *paths, int only, const char *msg)
+static void follow(struct tree *h, const char *c)
 {
-	struct strvec add = STRVEC_INIT, commit = STRVEC_INIT;
+	struct tree *ct = tree_load(c), *it = tree_load(line1(git("write-tree")));
+	struct string_list paths = STRING_LIST_INIT_DUP, ait = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	int rc;
+	struct strbuf info = STRBUF_INIT;
 
-	strvec_pushl(&add, "add", "--", NULL);
-	strvec_pushl(&commit, "commit", "--no-verify", "--cleanup=verbatim", "-q", "-F", "-", NULL);
-	/* a check with no changed file is still a commit: its record is the Ait-Check trailer (6.5) */
-	if (only && !paths->nr)
-		strvec_pushl(&commit, "--allow-empty", "--only", "--", ".ait/init", NULL);
-	else if (only)
-		strvec_pushl(&commit, "--only", "--", NULL);
-	for_each_string_list_item(item, paths) {
-		strvec_push(&add, item->string);
-		if (only)
-			strvec_push(&commit, item->string);
+	tree_diff(h, ct, &paths);
+	for_each_string_list_item(item, &paths) {
+		struct entry *x = tree_get(it, item->string), *was = tree_get(h, item->string);
+		struct entry *now = tree_get(ct, item->string);
+
+		if (x && now && !strcmp(x->oid, now->oid) && !strcmp(x->mode, now->mode))
+			continue;
+		if (x ? !was || strcmp(x->oid, was->oid) || strcmp(x->mode, was->mode) : was != NULL) {
+			warning("committed '%s' to '%s', but '%s' was staged meanwhile; it is left as it is",
+				c, headref, item->string);
+			continue;
+		}
+		strbuf_addf(&info, "%s %s\t%s\n", now->mode, now->oid, item->string);
+		if (starts_with(item->string, ".ait/"))
+			string_list_append(&ait, item->string);
 	}
-	git_args(&add, NULL, NULL, &rc);
-	setenv("AIT_EXPECT", xstrfmt("%s %s", head ? head : "0000000000000000000000000000000000000000", headref), 1);
+	git_run(info.buf, NULL, NULL, "update-index --index-info");
+	for_each_string_list_item(item, &ait)
+		git("checkout-index -f -q -- %s", item->string);
+}
+
+/*
+ * spec 5.5 through git commit: TREE, the tree ait judged, is committed from a
+ * throwaway index, so a refused commit leaves the user's index and work tree
+ * as they were. ait's own hooks are skipped (11.2) except reference-transaction,
+ * which aborts the commit if the branch is not where ait judged it (AIT_EXPECT).
+ * Returns 1 when HEAD moved; other failures stop with git's reason.
+ */
+int publish(const char *tree, const char *msg)
+{
+	struct tree *h = tree_load(head ? head : EMPTY_TREE);
+	char *dir = xstrfmt("%s/ait-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp"), *index;
+	struct strvec commit = STRVEC_INIT;
+	char *moved, *why;
+	int rc, refused, gone;
+
+	if (!mkdtemp(dir))
+		die_errno("could not create '%s'", dir);
+	index = xstrfmt("%s/index", dir);
+	moved = xstrfmt("%s/moved", dir);
+	/*
+	 * whether TREE is worth a commit was judged against HEAD as ait read it
+	 * (noop, or 6.5's check with no changed file), so git does not judge it again
+	 */
+	strvec_pushl(&commit, "commit", "--no-verify", "--allow-empty", "--cleanup=verbatim", "-q", "-F", "-", NULL);
+	git_run(NULL, index, &rc, "read-tree %s", tree);
+	/* the hook leaves MOVED when it refuses the transaction: the CAS itself says HEAD moved */
+	setenv("AIT_EXPECT", xstrfmt("%s %s %s %s", head ? head : "0000000000000000000000000000000000000000", tree,
+				     headref, moved), 1);
 	if (!rc)
-		git_args(&commit, msg, NULL, &rc);
+		git_args(&commit, msg, index, &rc);
 	unsetenv("AIT_EXPECT");
-	if (rc) {
-		char *why = xstrdup(git_error);
-		int moved = strcmp(head ? head : "", line1(git_run(NULL, NULL, &rc, "rev-parse -q --verify HEAD")));
-
-		git(head ? "reset -q -- .ait" : "rm -r -q --cached -- .ait");
-		if (head)
-			git("checkout -q HEAD -- .ait");
-		git("clean -f -q -- .ait");
-		if (moved)
-			reject(1, "rerun this command", "HEAD moved while running; nothing changed");
+	why = xstrdup(git_error);
+	/*
+	 * two locks guard the branch: ait's hook, which leaves MOVED, and git's own
+	 * ref lock, which refuses before any hook runs (git v2.53.0 refs.c:2564-2566)
+	 * and so only when the branch already left the commit ait judged
+	 */
+	refused = !access(moved, F_OK) ||
+		  (rc && (strcmp(head ? head : "", line1(git_run(NULL, NULL, &gone, "rev-parse -q --verify HEAD"))) ||
+			  strcmp(headref, line1(git_run(NULL, NULL, &gone, "symbolic-ref -q HEAD")))));
+	unlink(moved);
+	unlink(index);
+	rmdir(dir);
+	if (refused)
+		return 1;
+	if (rc)
 		reject(128, NULL, "git failed: %s", why);
-	}
-	return line1(git("rev-parse HEAD"));
+	follow(h, line1(git("rev-parse HEAD")));
+	return 0;
 }
 
 /* a file given to ait is read as text (E_READ, or E_FORMAT when it holds a NUL) */
@@ -200,8 +265,10 @@ static const char *arg(struct request *q, int *i)
 /* the words of the helper grammar (7.3.1) and the reserved aliases (1.9) */
 static int is_word(const char *a)
 {
-	return strstr(" demand offer future amend undertake release as drop cancel contract ct fulfill ",
-		      xstrfmt(" %s ", a)) != NULL;
+	static const char *const words[] = { "demand", "offer", "future", "amend", "undertake", "release", "as",
+					     "drop", "cancel", "contract", "ct", "fulfill", NULL };
+
+	return one_of(a, words);
 }
 
 static struct record *resolve(struct request *q, const char *k)
@@ -486,6 +553,7 @@ static void write_check_files(struct request *q, const char *in, const char *req
 static int read_results(struct request *q, const char *input, struct strbuf *text, struct strbuf *failed,
 			struct string_list *failing, int *unknown)
 {
+	static const char *const outcomes[] = { "pass", "fail", "unknown", NULL };
 	static const char *const schema[] = { "input s", "results l", "results.N m", "results.N.task s",
 					      "results.N.outcome s", "results.N.basis s", "results.N.reason s", NULL };
 	struct string_list kv = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP;
@@ -505,7 +573,7 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 		const char *basis = yget(&kv, xstrfmt("results.%d.basis", n));
 
 		if (!string_list_has_string(&q->tasks, t) || unsorted_string_list_has_string(&seen, t) || !outcome ||
-		    !strstr(" pass fail unknown ", xstrfmt(" %s ", outcome)) ||
+		    !one_of(outcome, outcomes) ||
 		    (!strcmp(outcome, "pass") && (!basis || !basis[strspn(basis, " \n")])))
 			reject(128, hint, "bad format: '%s': task '%s'", q->result, t);
 		string_list_append(&seen, t);
@@ -589,7 +657,7 @@ static void transitions(struct request *q)
 						      scope_args(d, PROVIDER), def_paths(d), d->id) : NULL,
 				       "not allowed: '%s' is %s", end->id, val(end, STATE));
 		}
-		if (!strstr(q->gate ? gate_moves : fulfill_moves, xstrfmt(" %c%s:%s ", *r->id == 'u' ? 'u' : 'x', from, to)))
+		if (!allowed(q, r, from, to))
 			reject(1, was_current(r) && *r->id != 'u' ?
 			       xstrfmt("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", r->id, r->id) : NULL,
 			       "not allowed: '%s' cannot go from %s to %s", r->id, from, to);
@@ -711,12 +779,13 @@ static void report(struct request *q, const char *req, const char *res, int with
 		puts(q->missing.nr || q->mixed.nr || q->invalid.code ? "ready no" : "ready yes");
 }
 
-/* spec 7.7.4 and 6.5: pin the check set at the judged tree, write what changed and commit it */
+/* spec 7.7.4 and 6.5: pin the check set at the judged tree, add what changed to it and commit */
 static void commit_request(struct request *q, struct strbuf *results)
 {
-	struct string_list written = STRING_LIST_INIT_DUP;
+	struct string_list changed = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	char rid[16];
+	struct strbuf info = STRBUF_INIT;
+	char rid[16], *tree;
 	size_t i;
 
 	newid(rid, 'R');
@@ -724,38 +793,32 @@ static void commit_request(struct request *q, struct strbuf *results)
 		repin(item->util, PROVIDER, q->v, 0);
 	for (i = 0; i < q->s.nr; i++) {
 		struct record *r = q->s.r[i];
-		char *text;
 
 		if (unchanged(r))
 			continue;
 		put(r, PREV, r->old ? blob_at(q->ht, xstrfmt(".ait/%s", r->id)) : "-");
-		text = record_text(r, 1);
-		mkdir(xstrfmt("%s/.ait", top), 0777);
-		mkdir(xstrfmt("%s/.ait/undertake", top), 0777);
-		write_file_buf(xstrfmt("%s/.ait/%s", top, r->id), text, strlen(text));
-		string_list_append(&written, xstrfmt(".ait/%s", r->id))->util = r;
+		strbuf_addf(&info, "100644 %s\t.ait/%s\n", line1(git_run(record_text(r, 1), NULL, NULL, "hash-object -w --stdin")),
+			    r->id);
+		string_list_append(&changed, r->id)->util = r;
 		if (!r->old && r->seq)
 			rename_tasks(results, r->seq, r->id);
 	}
-	if (!written.nr && !q->conf.nr && !strcmp(q->v->oid, q->ht->oid)) {
+	tree = tree_with(q->v->oid, info.buf);
+	if (!strcmp(tree, q->ht->oid) && !q->conf.nr) {
 		puts("noop");
 		return;
 	}
-	for_each_string_list_item(item, &q->files)
-		if (q->gate)
-			string_list_append(&written, item->string);
 	if (results->len)
 		strbuf_addf(&q->msg, "\n%s", results->buf);
 	strbuf_addf(&q->msg, "\nAit-Request: %s\nAit-Agent: %s\nAit-Session: %s\n", rid, agent, sid);
 	for_each_string_list_item(item, &q->conf)
 		strbuf_addf(&q->msg, "Ait-Check: %s %s %s\n", item->string, q->force ? "forced" : "reported", pins(item->util));
-	publish(&written, q->gate, q->msg.buf);
+	if (publish(tree, q->msg.buf))
+		reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 	printf("request %s\n", rid);
-	for_each_string_list_item(item, &written) {
+	for_each_string_list_item(item, &changed) {
 		struct record *r = item->util;
 
-		if (!r)
-			continue;
 		if (!r->old && *r->id != 'u')
 			printf("new %s%s%s\n", r->id, r->alias ? " " : "", r->alias ? r->alias : "");
 		else if (*r->id == 'u')
@@ -767,9 +830,8 @@ static void commit_request(struct request *q, struct strbuf *results)
 	}
 	for_each_string_list_item(item, &q->conf)
 		printf("check %s %s\n", item->string, q->force ? "forced" : "reported");
-	for_each_string_list_item(item, &written)
-		if (item->util)
-			also_undertaken(q, item->util);
+	for_each_string_list_item(item, &changed)
+		also_undertaken(q, item->util);
 }
 
 static int finish(struct request *q)
@@ -783,13 +845,11 @@ static int finish(struct request *q)
 	transitions(q);
 	check_set(q);
 	if (!q->gate && !q->fulfill && !q->conf.nr && !q->first.code) {
-		struct string_list none = STRING_LIST_INIT_DUP;
-
 		/* 7.7a.1: nothing to check is a plain commit, without validate, session or trailers */
-		if (strcmp(q->v->oid, q->ht->oid))
-			publish(&none, 0, q->msg.buf);
-		else
+		if (!strcmp(q->v->oid, q->ht->oid))
 			puts("noop");
+		else if (publish(q->v->oid, q->msg.buf))
+			reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 		return 0;
 	}
 	if (!q->gate && !q->fulfill)
@@ -974,6 +1034,7 @@ static struct tree *candidate(struct request *q)
 /* spec 7.3: clauses apply in order to the records loaded from HEAD */
 int cmd_request(int argc, const char **argv)
 {
+	static const char *const direct[] = { "new", "add", "commit", "push", "pull", NULL };
 	struct request q = REQUEST_INIT;
 	const char **v;
 	int n, i;
@@ -984,7 +1045,7 @@ int cmd_request(int argc, const char **argv)
 	v = q.args.v;
 	n = q.args.nr;
 	i = !strcmp(v[0], "contract") || !strcmp(v[0], "ct");
-	if (i && n > 1 && strstr(" new add commit push pull ", xstrfmt(" %s ", v[1])))
+	if (i && n > 1 && one_of(v[1], direct))
 		unsupported(xstrfmt("contract %s", v[1]));
 	message(&q, "[CONTRACT] ");
 	session(1);
