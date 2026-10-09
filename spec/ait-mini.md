@@ -6,7 +6,7 @@ ait-mini는 `ait-phase1-spec.md` v14의 부분집합이다. 쓰는 레코드, �
 
 | 명령 | 규격 |
 | --- | --- |
-| `ait init` | 7.1.1 (hook 네 개와 `.ait/init`. merge driver는 설치하지 않는다) |
+| `ait init` | 7.1.1 (hook 다섯 개와 `.ait/init`. merge driver는 설치하지 않는다) |
 | `ait session open --agent NAME` · `list` · `close [SID]` | 7.2.1–7.2.3 |
 | `ait [future] demand A B DEFS [as N]` · `ait [future] offer B DEFS [as N]` | 7.3 |
 | `ait [future] amend K [ARGS]` · `ait future cancel K` · `ait undertake D O` · `ait release D O` | 7.3 |
@@ -15,7 +15,7 @@ ait-mini는 `ait-phase1-spec.md` v14의 부분집합이다. 쓰는 레코드, �
 | `ait todo [ID…]` | 7.8 |
 | 그 밖의 `ait <git 명령>` | git으로 넘긴다(7.14) |
 
-커밋은 ait가 직접 만들지 않고 `git commit`을 불러서 만든다. 규격 5.5의 CAS(판정한 HEAD 위에만 커밋한다)는 git의 `reference-transaction` hook으로 지킨다. ait는 커밋할 때 판정한 HEAD를 `AIT_EXPECT`로 넘기고, hook은 git이 ref 잠금 안에서 본 옛 값이 그것과 다르면 transaction을 취소한다. 그러면 요청은 `E_HEAD_MOVED`로 끝나고 `.ait/`는 HEAD 그대로 돌아간다. 그래서 `ait init`은 hook을 규격의 네 개에 더해 `reference-transaction`까지 다섯 개 설치한다.
+커밋은 ait가 직접 만들지 않고 `git commit`을 불러서 만든다. ait는 판정한 tree를 임시 index에 담아 커밋하므로, 커밋이 막혀도 index와 작업 폴더는 그대로다. 커밋된 뒤에는 바뀐 경로 중 index가 아직 HEAD 판을 가진 것만 새 판으로 맞추고, `.ait/`는 작업 폴더도 맞춘다(5.5-4). 그 사이에 stage된 다른 변경은 건드리지 않고 경고한다. 규격 5.5의 CAS(판정한 HEAD 위에만 커밋한다)는 git의 `reference-transaction` hook으로 지킨다. ait는 판정한 HEAD와 tree와 브랜치를 `AIT_EXPECT`로 넘기고, hook은 git의 ref 잠금 안에서 들어오는 커밋이 그 브랜치 위의, 그 tree를 가진, 부모가 그 HEAD 하나뿐인 커밋인지 본다. 아니면 transaction을 취소하고 요청은 `E_HEAD_MOVED`로 끝난다. git 자신의 ref 잠금이 먼저 막은 경우(브랜치가 이미 움직였다)도 같다. 그래서 `ait init`은 hook을 규격의 네 개에 더해 `reference-transaction`까지 다섯 개 설치한다.
 
 git은 2.48 이상이어야 한다. `reference-transaction` hook이 reflog만 바뀌는 transaction에도 불리던 문제가 2.48에서 고쳐졌기 때문이다(2.48 RelNotes). 그보다 낮으면 ait는 `fatal:`로 멈춘다.
 
@@ -23,7 +23,7 @@ git은 2.48 이상이어야 한다. `reference-transaction` hook이 reflog만 �
 
 | 없는 것 | 대신 |
 | --- | --- |
-| `ait contract pull RID` (받기) | `git fetch` 다음 `git merge <브랜치>`로 받는다. merge 커밋은 pre-merge-commit hook이 레코드를 검증하고, 틀리면 막는다 |
+| `ait contract pull RID` (받기) | `git fetch` 다음 `git merge <브랜치>`로 받는다. merge 커밋은 pre-merge-commit hook이 레코드를 검증하고, 틀리면 막는다. 충돌을 풀어 마치는 커밋(merge·cherry-pick·revert)은 pre-commit hook이 같은 검증을 한다 |
 | `ait contract push` | `git push` |
 | `ait peek` | `ait todo ID` (계약 하나를 볼 때), 또는 `.ait/ID`를 직접 읽는다 |
 | `ait listen` · `sub` · `unsub` (알림) | 없다. `git fetch`로 받은 뒤 `ait todo`로 내 약속과 미확인인 내 요구를 본다 |
