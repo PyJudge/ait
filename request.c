@@ -135,8 +135,12 @@ static void follow(struct tree *h, struct tree *noted, const char *c)
 	struct strbuf info = STRBUF_INIT;
 	int fd = lock_worktree(top), rc = fd < 0 || !at(c);
 
-	if (!rc)
-		it = tree_load(line1(git_run(NULL, NULL, &rc, "write-tree")));
+	if (!rc) {
+		char *index = line1(git_run(NULL, NULL, &rc, "write-tree"));
+
+		/* another process holds the index, or it has unmerged entries: 5.5-5 */
+		it = rc ? NULL : tree_load(index);
+	}
 	tree_diff(h, ct, &paths);
 	for_each_string_list_item(item, &paths) {
 		struct entry *now = tree_get(ct, item->string);
@@ -1341,12 +1345,19 @@ static struct tree *candidate(struct request *q)
 		struct strbuf text = STRBUF_INIT;
 		struct string_list kv = STRING_LIST_INIT_DUP;
 		struct string_list_item *item;
-		const char *staged;
-		struct stat st;
+		const char *staged, *c;
+		struct stat st, dir;
 		char *oid;
+		int regular;
 
-		if (lstat(xstrfmt("%s/%s", top, p), &st) || !S_ISREG(st.st_mode))
+		if (lstat(xstrfmt("%s/%s", top, p), &st))
 			reject(1, xstrfmt("create '%s' or stop declaring it", p), "spec files do not match the contract: missing '%s'", p);
+		/* 7.3.3: a regular file of the work tree, as git sees one: not a symlink, nor reached through one */
+		regular = S_ISREG(st.st_mode);
+		for (c = strchr(p, '/'); regular && c; c = strchr(c + 1, '/'))
+			regular = !lstat(xstrfmt("%s/%.*s", top, (int)(c - p), p), &dir) && S_ISDIR(dir.st_mode);
+		if (!regular)
+			reject(1, NULL, "spec files do not match the contract: '%s' is not a regular file", p);
 		oid = line1(git("hash-object -w -- %s", p));
 		staged = git("ls-files -s -- %s", p);
 		if (*staged && !strstr(staged, oid) && (!blob_at(q->ht, p) || !strstr(staged, blob_at(q->ht, p))))

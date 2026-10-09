@@ -63,6 +63,19 @@ void unsupported(const char *what)
 }
 
 /*
+ * spec 5.12: git runs in the worktree ait found; a bare repository, where only
+ * hooks run, is named by its git directory, since discovery may be refused
+ * there (safe.bareRepository); before setup, git finds it from here
+ */
+static void at_repository(struct strvec *args)
+{
+	if (top)
+		strvec_pushl(args, "-C", top, NULL);
+	else if (gitdir)
+		strvec_pushf(args, "--git-dir=%s", gitdir);
+}
+
+/*
  * Run git with ARGS (spec 5.12). IN feeds stdin and INDEX sets GIT_INDEX_FILE.
  * Without RC a failure is E_GIT with git's first stderr line.
  */
@@ -73,7 +86,8 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 	int code;
 
 	strvec_pushl(&cmd.args, "git", "-c", "core.quotePath=false", "-c", "trailer.separators=:",
-		     "-c", "core.commentChar=#", "-C", top ? top : ".", NULL);
+		     "-c", "core.commentChar=#", NULL);
+	at_repository(&cmd.args);
 	strvec_pushv(&cmd.args, args->v);
 	if (index)
 		strvec_pushf(&cmd.env, "GIT_INDEX_FILE=%s", index);
@@ -119,7 +133,9 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 	size_t n;
 
 	if (!out) {
-		strvec_pushl(&cat.args, "git", "-C", top ? top : ".", "cat-file", "--batch-command", NULL);
+		strvec_push(&cat.args, "git");
+		at_repository(&cat.args);
+		strvec_pushl(&cat.args, "cat-file", "--batch-command", NULL);
 		cat.in = cat.out = -1;
 		if (start_command(&cat))
 			reject(128, NULL, "git failed: cannot run 'git cat-file'");
@@ -388,8 +404,7 @@ static int cmd_session(int argc, const char **argv)
 	if (argc == 4 && !strcmp(argv[1], "open") && !strcmp(argv[2], "--agent")) {
 		const char *name = argv[3];
 
-		if (!*name || strlen(name) > 64 || !strcmp(name, "unknown") ||
-		    name[strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")])
+		if (!agent_ok(name))
 			reject(129, NULL, "bad agent name '%s'", name);
 		newid(sid, 'S');
 		write_state(state_path(xstrfmt("sessions/%s", sid)), xstrfmt("agent %s\nworktree %s\n", name, top));
@@ -589,7 +604,7 @@ static int pre_push(void)
 	return 0;
 }
 
-static void recheck_hint(struct record *r, struct tree *t, struct tree *at);
+static void recheck_hint(struct state *s, struct record *r, struct tree *h);
 
 /*
  * spec 7.1.3: git stopped while bringing another commit into HEAD and has
@@ -657,22 +672,29 @@ static int cmd_hook(int argc, const char **argv)
 	}
 	warning("their receivers are notified after this commit");
 	suggest("next time, to check and commit in one step, use 'ait commit' instead of 'git commit'");
+	/* the reopen hint, then H7; H8 brings its own reopen hint after it */
 	for_each_string_list_item(item, &gone) {
-		suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", item->string,
-			reopen_ids(&hs, item->util));
-		recheck_hint(item->util, t, t);
+		if (code_found(item->util, t))
+			suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", item->string,
+				reopen_ids(&hs, item->util));
+		recheck_hint(&hs, item->util, t);
 	}
 	return 0;
 }
 
-/* H7 and H8: check an unverified contract again, at its scope in T or where its code went; amend reads KEPT in AT */
-static void recheck_hint(struct record *r, struct tree *t, struct tree *at)
+/*
+ * H7 and H8: check an unverified contract again, judged at HEAD's tree H
+ * where the amend will run: at its scope, or where its code went, then reopen it
+ */
+static void recheck_hint(struct state *s, struct record *r, struct tree *h)
 {
-	if (code_found(r, t))
+	if (code_found(r, h)) {
 		suggest("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
-	else
-		suggest("'%s' has no code under its scope; if it was moved, run 'ait amend %s %s%s - -m <why>' to get the tasks",
-			r->id, r->id, *r->id == 'D' ? "- " : "", moved_arg(r, at));
+		return;
+	}
+	suggest("'%s' has no code under its scope; if it was moved, run 'ait amend %s %s%s - -m <why>' to get the tasks",
+		r->id, r->id, *r->id == 'D' ? "- " : "", moved_arg(r, h));
+	suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", r->id, reopen_ids(s, r));
 }
 
 /* H10: fulfil my promise P, with a scope for P and each abstract future demand it undertakes, or where its code went */
@@ -813,8 +835,9 @@ static int cmd_todo(int argc, const char **argv)
 		link_lines(&s, r, t);
 		putchar('\n');
 		if (unver)
-			recheck_hint(r, t, ht);
-		else if (future && mine)
+			recheck_hint(&hs, state_get(&hs, r->id) ? state_get(&hs, r->id) : r, ht);
+		/* H10: my future offer, or my demand that was reopened (mini counts what I made, 1.3) */
+		else if (future && mine && (*r->id == 'O' || reopened(r)))
 			fulfill_hint(&s, r, t);
 	}
 	/* 7.7.6: the current contracts of HEAD whose provider the staged change touches */

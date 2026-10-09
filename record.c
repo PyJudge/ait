@@ -214,6 +214,19 @@ int is_current(struct record *r)
 	return *r->id != 'u' && in_state(r, "current");
 }
 
+/* R was current in one of its earlier versions, which its prev chain names (2.2.4): it was reopened (1.5d) */
+int reopened(struct record *r)
+{
+	const char *prev = val(r, PREV), *text;
+
+	while (strcmp(prev, "-") && (text = blob_text(prev))) {
+		if (strstr(text, "\nstate current\n"))
+			return 1;
+		prev = strstr(text, "\nprev ") ? line1(xstrdup(strstr(text, "\nprev ") + 6)) : "-";
+	}
+	return 0;
+}
+
 /* current in HEAD: only such a provider shows "?changed" (spec 3.8) */
 int was_current(struct record *r)
 {
@@ -417,6 +430,13 @@ static int scope_ok(const char *v, int allow_new, int allow_abs)
 	return path_ok(path);
 }
 
+/* spec 7.2.1: an agent name, [A-Za-z0-9._-]{1,64} and not "unknown" */
+int agent_ok(const char *name)
+{
+	return *name && strlen(name) <= 64 && strcmp(name, "unknown") &&
+	       !name[strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")];
+}
+
 static int value_ok(struct record *r, enum key k, const char *v)
 {
 	char a[4096], b[4096], c[4096], d[4096];
@@ -431,7 +451,9 @@ static int value_ok(struct record *r, enum key k, const char *v)
 		return n == 4 && path_ok(a) && (!strcmp(b, "100644") || !strcmp(b, "100755")) && oid_ok(c) &&
 		       (!strcmp(d, "def") || !strcmp(d, "input")) && !strcmp(v, xstrfmt("%s %s %s %s", a, b, c, d));
 	case CREATOR:
-		return n == 2 && (!strcmp(b, "-") || (*b == 'S' && strlen(b) == 13 && strspn(b + 1, "0123456789abcdef") == 12));
+		/* 2.2.2: "AGENT SID", or "unknown -" for a record an integration made without a session */
+		return n == 2 && !strcmp(v, xstrfmt("%s %s", a, b)) && (!strcmp(v, "unknown -") ||
+		       (agent_ok(a) && *b == 'S' && strlen(b) == 13 && strspn(b + 1, "0123456789abcdef") == 12));
 	case PREV:
 		return !strcmp(v, "-") || oid_ok(v);
 	default:
@@ -823,7 +845,8 @@ static struct string_list *checks(void)
 		static const char *const how[] = { "reported", "forced", NULL };
 		char id[48], word[16], p[48], more;
 
-		if (sscanf(item->string, "%47s %15s %47s %c", id, word, p, &more) == 3 && one_of(word, how) && oid_ok(p))
+		if (sscanf(item->string, "%47s %15s %47s %c", id, word, p, &more) == 3 && one_of(word, how) && oid_ok(p) &&
+		    !strcmp(item->string, xstrfmt("%s %s %s", id, word, p)))
 			string_list_insert(&confirmed, xstrfmt("%s %s", id, p));
 	}
 	return &confirmed;
@@ -928,7 +951,7 @@ int read_text(struct strbuf *sb, const char *path)
 struct yval {
 	char *s;
 	size_t at;
-	char kind;	/* 'l' a list, 'm' a map, 0 a scalar */
+	char kind;	/* 'l' a list, 'm' a map, '?' a key with nothing under it yet, 0 a scalar */
 };
 
 struct yaml {
@@ -954,7 +977,7 @@ static int yaml_fail(struct yaml *y, const char *fmt, ...)
 /* V holds a list ('l') or a map ('m'), never both */
 static int yaml_kind(struct yaml *y, struct yval *v, char kind, const char *key)
 {
-	if (v->kind && v->kind != kind)
+	if (v->kind != '?' && v->kind != kind)
 		return yaml_fail(y, "'%s' is both a list and a map", key);
 	v->kind = kind;
 	return 0;
@@ -1004,7 +1027,18 @@ static int yaml_scalar(struct yaml *y, const char **p, const char *stop, char *k
 	return yaml_put(y, key, strbuf_detach(&sb, NULL), at) ? 0 : -1;
 }
 
-/* a flow list "[a, b]" or flow map "{k: v}" at *P, nested as deep as written */
+/* the blanks, line ends and comments between the items of a flow collection */
+static const char *flow_gap(const char *p)
+{
+	for (;;) {
+		p += strspn(p, " \n");
+		if (*p != '#')
+			return p;
+		p = strchrnul(p, '\n');
+	}
+}
+
+/* a flow list "[a, b]" or flow map "{k: v}" at *P, over as many lines as written, nested as deep */
 static int yaml_flow(struct yaml *y, const char **p, char *key, int depth)
 {
 	char close = **p == '[' ? ']' : '}';
@@ -1016,7 +1050,7 @@ static int yaml_flow(struct yaml *y, const char **p, char *key, int depth)
 	if (depth > 15)
 		return yaml_fail(y, "'%s' is nested too deeply", key);
 	v->kind = close == ']' ? 'l' : 'm';
-	*p += 1 + strspn(*p + 1, " ");
+	*p = flow_gap(*p + 1);
 	for (n = 0; **p != close; n++) {
 		char *sub = xstrfmt("%s.%d", key, n);
 
@@ -1026,18 +1060,31 @@ static int yaml_flow(struct yaml *y, const char **p, char *key, int depth)
 			if (!len || (*p)[len] != ':')
 				return yaml_fail(y, "not a key in '%s'", key);
 			sub = xstrfmt("%s.%.*s", key, (int)len, *p);
-			*p += len + 1 + strspn(*p + len + 1, " ");
+			*p = flow_gap(*p + len + 1);
 		}
 		if (**p == '[' || **p == '{' ? yaml_flow(y, p, sub, depth + 1) : yaml_scalar(y, p, ",]}", sub))
 			return -1;
-		*p += strspn(*p, " ");
+		*p = flow_gap(*p);
 		if (**p == ',')
-			*p += 1 + strspn(*p + 1, " ");
+			*p = flow_gap(*p + 1);
 		else if (**p != close)
 			return yaml_fail(y, "expected ',' or '%c' in '%s'", close, key);
 	}
 	(*p)++;
 	return 0;
+}
+
+/* the line after the one P stands on, when a flow collection went past NEXT; NO counts the lines */
+static const char *flow_end(const char *p, const char *next, int *no)
+{
+	const char *c;
+
+	if (p < next)
+		return next;
+	for (c = next; c < p; c++)
+		*no += *c == '\n';
+	c = strchrnul(p, '\n');
+	return c + (*c == '\n');
 }
 
 /* blanks, then the line's end or a comment */
@@ -1056,6 +1103,8 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 
 	if (!is_utf8(text))
 		yaml_fail(&y, "not UTF-8");
+	if (strpbrk(text, "\t\r"))
+		yaml_fail(&y, "a tab or CR");
 	for (line = text; *line && !y.err; line = next) {
 		const char *p = line, *colon, *e = strchrnul(line, '\n');
 		int indent = strspn(line, " "), item;
@@ -1064,10 +1113,6 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 		next = e + (*e == '\n');
 		no++;
 		p += indent;
-		if (memchr(line, '\t', e - line) || memchr(line, '\r', e - line)) {
-			yaml_fail(&y, "tab or CR in line %d", no);
-			break;
-		}
 		if (p == e || *p == '#')
 			continue;
 		item = *p == '-' && (p + 1 == e || p[1] == ' ');
@@ -1083,6 +1128,7 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 			if (p[strspn(p, "abcdefghijklmnopqrstuvwxyz_")] != ':') {
 				if (!(*p == '[' || *p == '{' ? yaml_flow(&y, &p, prefix, sp) : yaml_scalar(&y, &p, "", prefix)))
 					yaml_end(&y, p, no);
+				next = flow_end(p, next, &no);
 				continue;
 			}
 			if (sp >= 15) {
@@ -1117,6 +1163,8 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 			st[sp].map_only = 0;
 			st[sp].prefix = key;
 			st[sp].v = yaml_put(&y, key, xstrdup(""), p);
+			if (st[sp].v)
+				st[sp].v->kind = '?';
 		} else if (*p == '|') {
 			/* a literal block: the more indented lines below, clipped to one final newline */
 			struct strbuf sb = STRBUF_INIT;
@@ -1151,6 +1199,7 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 		} else if (*p == '[' || *p == '{') {
 			if (!yaml_flow(&y, &p, key, sp))
 				yaml_end(&y, p, no);
+			next = flow_end(p, next, &no);
 		} else if (!yaml_scalar(&y, &p, "", key)) {
 			yaml_end(&y, p, no);
 		}
@@ -1206,8 +1255,9 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 				kind = (*e)[pattern.len + 1];
 		if (!kind)
 			reject(128, NULL, "bad format: '%s': unknown key '%s'", what, item->string);
-		if (strchr("lm", kind) ? (v->kind ? v->kind != kind : *v->s != 0) :
-		    v->kind || (kind == 'i' && (!*v->s || v->s[strspn(v->s, "0123456789")])))
+		/* a key with nothing under it is an empty list, map or scalar; "" is a scalar only */
+		if (strchr("lm", kind) ? v->kind != kind && v->kind != '?' :
+		    (v->kind && v->kind != '?') || (kind == 'i' && (!*v->s || v->s[strspn(v->s, "0123456789")])))
 			reject(128, NULL, "bad format: '%s': bad value of '%s'", what, item->string);
 	}
 }
