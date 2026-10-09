@@ -1,0 +1,323 @@
+#include "git-compat-util.h"
+#include "strbuf.h"
+
+int BUG_exit_code;
+int bug_called_must_BUG;
+
+/* git v2.53.0 usage.c:12 */
+static void vfreportf(FILE *f, const char *prefix, const char *err, va_list params)
+{
+	char msg[4096];
+	char *p, *pend = msg + sizeof(msg);
+	size_t prefix_len = strlen(prefix);
+
+	if (sizeof(msg) <= prefix_len) {
+		fprintf(stderr, "BUG!!! too long a prefix '%s'\n", prefix);
+		abort();
+	}
+	memcpy(msg, prefix, prefix_len);
+	p = msg + prefix_len;
+	if (vsnprintf(p, pend - p, err, params) < 0) {
+		fprintf(stderr, _("error: unable to format message: %s\n"),
+			err);
+		*p = '\0'; /* vsnprintf() failed, clip at prefix */
+	}
+
+	for (; p != pend - 1 && *p; p++) {
+		if (iscntrl(*p) && *p != '\t' && *p != '\n')
+			*p = '?';
+	}
+
+	*(p++) = '\n'; /* we no longer need a NUL */
+	fflush(f);
+	write_in_full(fileno(f), msg, p - msg);
+}
+
+/* git v2.53.0 usage.c:40 */
+static void vreportf(const char *prefix, const char *err, va_list params)
+{
+	vfreportf(stderr, prefix, err, params);
+}
+
+/* git v2.53.0 usage.c:45 */
+static NORETURN void usage_builtin(const char *err, va_list params)
+{
+	vreportf(_("usage: "), err, params);
+
+	/*
+	 * When we detect a usage error *before* the command dispatch in
+	 * cmd_main(), we don't know what verb to report.  Force it to this
+	 * to facilitate post-processing.
+	 */
+	trace2_cmd_name("_usage_");
+
+	/*
+	 * Currently, the (err, params) are usually just the static usage
+	 * string which isn't very useful here.  Usually, the call site
+	 * manually calls fprintf(stderr,...) with the actual detailed
+	 * syntax error before calling usage().
+	 *
+	 * TODO It would be nice to update the call sites to pass both
+	 * the static usage string and the detailed error message.
+	 */
+
+	exit(129);
+}
+
+/* git v2.53.0 usage.c:69 */
+static void die_message_builtin(const char *err, va_list params)
+{
+	if (!err)
+		return;
+	trace2_cmd_error_va(err, params);
+	vreportf(_("fatal: "), err, params);
+}
+
+/* git v2.53.0 usage.c:82 */
+static NORETURN void die_builtin(const char *err, va_list params)
+{
+	report_fn die_message_fn = get_die_message_routine();
+
+	die_message_fn(err, params);
+	exit(128);
+}
+
+/* git v2.53.0 usage.c:90 */
+static void error_builtin(const char *err, va_list params)
+{
+	trace2_cmd_error_va(err, params);
+
+	vreportf(_("error: "), err, params);
+}
+
+/* git v2.53.0 usage.c:97 */
+static void warn_builtin(const char *warn, va_list params)
+{
+	trace2_cmd_error_va(warn, params);
+
+	vreportf(_("warning: "), warn, params);
+}
+
+/* git v2.53.0 usage.c:104 */
+static int die_is_recursing_builtin(void)
+{
+	static int dying;
+	/*
+	 * Just an arbitrary number X where "a < x < b" where "a" is
+	 * "maximum number of pthreads we'll ever plausibly spawn" and
+	 * "b" is "something less than Inf", since the point is to
+	 * prevent infinite recursion.
+	 */
+	static const int recursion_limit = 1024;
+
+	dying++;
+	if (dying > recursion_limit) {
+		return 1;
+	} else if (dying == 2) {
+		warning("die() called many times. Recursion error or racy threaded death!");
+		return 0;
+	} else {
+		return 0;
+	}
+}
+
+/* git v2.53.0 usage.c:126-133 */
+/* If we are in a dlopen()ed .so write to a global variable would segfault
+ * (ugh), so keep things static. */
+static NORETURN_PTR report_fn usage_routine = usage_builtin;
+static NORETURN_PTR report_fn die_routine = die_builtin;
+static report_fn die_message_routine = die_message_builtin;
+static report_fn error_routine = error_builtin;
+static report_fn warn_routine = warn_builtin;
+static int (*die_is_recursing)(void) = die_is_recursing_builtin;
+
+/* git v2.53.0 usage.c:135 */
+void set_die_routine(NORETURN_PTR report_fn routine)
+{
+	die_routine = routine;
+}
+
+/* git v2.53.0 usage.c:140 */
+report_fn get_die_message_routine(void)
+{
+	return die_message_routine;
+}
+
+/* git v2.53.0 usage.c:145 */
+void set_error_routine(report_fn routine)
+{
+	error_routine = routine;
+}
+
+/* git v2.53.0 usage.c:150 */
+report_fn get_error_routine(void)
+{
+	return error_routine;
+}
+
+/* git v2.53.0 usage.c:155 */
+void set_warn_routine(report_fn routine)
+{
+	warn_routine = routine;
+}
+
+/* git v2.53.0 usage.c:170 */
+void NORETURN usagef(const char *err, ...)
+{
+	va_list params;
+
+	va_start(params, err);
+	usage_routine(err, params);
+	va_end(params);
+}
+
+/* git v2.53.0 usage.c:179 */
+void NORETURN usage(const char *err)
+{
+	usagef("%s", err);
+}
+
+/* git v2.53.0 usage.c:201 */
+void NORETURN die(const char *err, ...)
+{
+	va_list params;
+
+	if (die_is_recursing()) {
+		fputs("fatal: recursion detected in die handler\n", stderr);
+		exit(128);
+	}
+
+	va_start(params, err);
+	die_routine(err, params);
+	va_end(params);
+}
+
+/* git v2.53.0 usage.c:215 */
+static const char *fmt_with_err(char *buf, int n, const char *fmt)
+{
+	char str_error[256], *err;
+	size_t i, j;
+
+	err = strerror(errno);
+	for (i = j = 0; err[i] && j < sizeof(str_error) - 1; ) {
+		if ((str_error[j++] = err[i++]) != '%')
+			continue;
+		if (j < sizeof(str_error) - 1) {
+			str_error[j++] = '%';
+		} else {
+			/* No room to double the '%', so we overwrite it with
+			 * '\0' below */
+			j--;
+			break;
+		}
+	}
+	str_error[j] = 0;
+	/* Truncation is acceptable here */
+	snprintf(buf, n, "%s: %s", fmt, str_error);
+	return buf;
+}
+
+/* git v2.53.0 usage.c:239 */
+void NORETURN die_errno(const char *fmt, ...)
+{
+	char buf[1024];
+	va_list params;
+
+	if (die_is_recursing()) {
+		fputs("fatal: recursion detected in die_errno handler\n",
+			stderr);
+		exit(128);
+	}
+
+	va_start(params, fmt);
+	die_routine(fmt_with_err(buf, sizeof(buf), fmt), params);
+	va_end(params);
+}
+
+/* git v2.53.0 usage.c:256 */
+int die_message(const char *err, ...)
+{
+	va_list params;
+
+	va_start(params, err);
+	die_message_routine(err, params);
+	va_end(params);
+	return 128;
+}
+
+/* git v2.53.0 usage.c:279 */
+int error_errno(const char *fmt, ...)
+{
+	char buf[1024];
+	va_list params;
+
+	va_start(params, fmt);
+	error_routine(fmt_with_err(buf, sizeof(buf), fmt), params);
+	va_end(params);
+	return -1;
+}
+
+/* git v2.53.0 usage.c:291 */
+int error(const char *err, ...)
+{
+	va_list params;
+
+	va_start(params, err);
+	error_routine(err, params);
+	va_end(params);
+	return -1;
+}
+
+/* git v2.53.0 usage.c:311 */
+void warning(const char *warn, ...)
+{
+	va_list params;
+
+	va_start(params, warn);
+	warn_routine(warn, params);
+	va_end(params);
+}
+
+/* git v2.53.0 usage.c:323 */
+static void BUG_vfl_common(const char *file, int line, const char *fmt,
+			   va_list params)
+{
+	char prefix[256];
+
+	/* truncation via snprintf is OK here */
+	snprintf(prefix, sizeof(prefix), "BUG: %s:%d: ", file, line);
+
+	vreportf(prefix, fmt, params);
+}
+
+/* git v2.53.0 usage.c:334 */
+static NORETURN void BUG_vfl(const char *file, int line, const char *fmt, va_list params)
+{
+	va_list params_copy;
+	static int in_bug;
+
+	va_copy(params_copy, params);
+	BUG_vfl_common(file, line, fmt, params);
+
+	if (in_bug)
+		abort();
+	in_bug = 1;
+
+	trace2_cmd_error_va(fmt, params_copy);
+
+	if (BUG_exit_code)
+		exit(BUG_exit_code);
+	abort();
+}
+
+/* git v2.53.0 usage.c:353 */
+NORETURN void BUG_fl(const char *file, int line, const char *fmt, ...)
+{
+	va_list ap;
+
+	bug_called_must_BUG = 0;
+
+	va_start(ap, fmt);
+	BUG_vfl(file, line, fmt, ap);
+	va_end(ap);
+}
