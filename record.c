@@ -1047,6 +1047,25 @@ static struct yval *yaml_put(struct yaml *y, char *key, char *s, const char *at)
 	return v;
 }
 
+/* a quoted scalar at *P into SB: '...' with '' for ', or "..." escaping only \" and \\ (2.5.1) */
+static int yaml_quoted(struct yaml *y, const char **p, struct strbuf *sb, const char *key)
+{
+	const char *v = *p;
+	char q = *v;
+
+	for (v++; *v && *v != '\n' && (*v != q || (q == '\'' && v[1] == '\'')); v++) {
+		if (q == '"' && *v == '\\' && v[1] != '"' && v[1] != '\\')
+			return yaml_fail(y, "an escape other than \\\" or \\\\ in '%s'", key);
+		if ((q == '"' && *v == '\\') || (q == '\'' && *v == '\''))
+			v++;
+		strbuf_addch(sb, *v);
+	}
+	if (*v != q)
+		return yaml_fail(y, "unterminated quote in '%s'", key);
+	*p = v + 1;
+	return 0;
+}
+
 /* a scalar at *P, quoted or plain up to a character of STOP, a comment or the line's end */
 static int yaml_scalar(struct yaml *y, const char **p, const char *stop, char *key)
 {
@@ -1060,20 +1079,52 @@ static int yaml_scalar(struct yaml *y, const char **p, const char *stop, char *k
 		while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == '#' && v > at && v[-1] == ' '))
 			strbuf_addch(&sb, *v++);
 		strbuf_rtrim(&sb);
+	} else if (yaml_quoted(y, &v, &sb, key)) {
+		return -1;
 	} else {
-		for (at = ++v; *v && *v != '\n' && (*v != q || (q == '\'' && v[1] == '\'')); v++) {
-			if (q == '"' && *v == '\\' && v[1] != '"' && v[1] != '\\')
-				return yaml_fail(y, "an escape other than \\\" or \\\\ in '%s'", key);
-			if ((q == '"' && *v == '\\') || (q == '\'' && *v == '\''))
-				v++;
-			strbuf_addch(&sb, *v);
-		}
-		if (*v != q)
-			return yaml_fail(y, "unterminated quote in '%s'", key);
-		v++;
+		at++;
 	}
 	*p = v;
 	return yaml_put(y, key, strbuf_detach(&sb, NULL), at) ? 0 : -1;
+}
+
+/*
+ * where the map key at P ends, at its ':' (YAML 1.2: a quoted scalar, or a
+ * plain one up to ':' and a blank, a line's end or a character of STOP); NULL when P holds no key
+ */
+static const char *key_end(const char *p, const char *stop)
+{
+	const char *v = p;
+
+	if (*v == '"' || *v == '\'') {
+		for (v++; *v && *v != '\n' && (*v != *p || (*p == '\'' && v[1] == '\'')); v++)
+			if ((*p == '"' && *v == '\\') || (*p == '\'' && *v == '\''))
+				v++;
+		if (*v != *p)
+			return NULL;
+		v += 1 + strspn(v + 1, " ");
+	} else {
+		while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == ':' && (!v[1] || strchr(" \n,]}", v[1]))))
+			v++;
+	}
+	return *v == ':' && v > p && (!v[1] || strchr(" \n,]}", v[1])) ? v : NULL;
+}
+
+/* the map key at *P, read up to its ':' and past it; NULL when there is none */
+static char *yaml_key(struct yaml *y, const char **p, const char *stop)
+{
+	const char *end = key_end(*p, stop), *v = *p;
+	struct strbuf sb = STRBUF_INIT;
+
+	if (!end)
+		return NULL;
+	if (*v == '"' || *v == '\'')
+		yaml_quoted(y, &v, &sb, "a key");
+	else
+		strbuf_add(&sb, v, end - v);
+	strbuf_rtrim(&sb);
+	*p = end + 1;
+	return strbuf_detach(&sb, NULL);
 }
 
 /* the blanks, line ends and comments between the items of a flow collection */
@@ -1087,29 +1138,35 @@ static const char *flow_gap(const char *p)
 	}
 }
 
-/* a flow list "[a, b]" or flow map "{k: v}" at *P, over as many lines as written, nested as deep */
+/* the key of a value under KEY: "KEY.NAME", or NAME at the document's root (KEY NULL) */
+static char *yaml_child(const char *key, const char *name)
+{
+	return key ? xstrfmt("%s.%s", key, name) : xstrdup(name);
+}
+
+/* a flow list "[a, b]" or flow map "{k: v}" at *P, over as many lines as written, nested as deep; KEY NULL is the root map */
 static int yaml_flow(struct yaml *y, const char **p, char *key, int depth)
 {
 	char close = **p == '[' ? ']' : '}';
-	struct yval *v = yaml_put(y, key, xstrdup(""), *p);
+	struct yval *v = key ? yaml_put(y, key, xstrdup(""), *p) : NULL;
 	int n;
 
-	if (!v)
+	if (key && !v)
 		return -1;
 	if (depth > 15)
 		return yaml_fail(y, "'%s' is nested too deeply", key);
-	v->kind = close == ']' ? 'l' : 'm';
+	if (v)
+		v->kind = close == ']' ? 'l' : 'm';
 	*p = flow_gap(*p + 1);
 	for (n = 0; **p != close; n++) {
-		char *sub = xstrfmt("%s.%d", key, n);
+		char *sub = yaml_child(key, xstrfmt("%d", n)), *name;
 
 		if (close == '}') {
-			size_t len = strcspn(*p, ":,]}\n");
-
-			if (!len || (*p)[len] != ':')
-				return yaml_fail(y, "not a key in '%s'", key);
-			sub = xstrfmt("%s.%.*s", key, (int)len, *p);
-			*p = flow_gap(*p + len + 1);
+			name = yaml_key(y, p, ",]}");
+			if (!name)
+				return yaml_fail(y, "not a key in '%s'", key ? key : "the document");
+			sub = yaml_child(key, name);
+			*p = flow_gap(*p);
 		}
 		if (**p == '[' || **p == '{' ? yaml_flow(y, p, sub, depth + 1) : yaml_scalar(y, p, ",]}", sub))
 			return -1;
@@ -1155,7 +1212,7 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 	if (strpbrk(text, "\t\r"))
 		yaml_fail(&y, "a tab or CR");
 	for (line = text; *line && !y.err; line = next) {
-		const char *p = line, *colon, *e = strchrnul(line, '\n');
+		const char *p = line, *e = strchrnul(line, '\n');
 		int indent = strspn(line, " "), item;
 		char *key, *prefix;
 
@@ -1174,7 +1231,7 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 			prefix = xstrfmt("%s.%d", prefix, st[sp].items++);
 			p += p + 1 == e ? 1 : 2;
 			indent += 2;
-			if (p[strspn(p, "abcdefghijklmnopqrstuvwxyz_")] != ':') {
+			if (!key_end(p, "")) {
 				if (!(*p == '[' || *p == '{' ? yaml_flow(&y, &p, prefix, sp) : yaml_scalar(&y, &p, "", prefix)))
 					yaml_end(&y, p, no);
 				next = flow_end(p, next, &no);
@@ -1194,13 +1251,21 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 				break;
 			st[sp].v->kind = 'm';
 		}
-		colon = p + strspn(p, "abcdefghijklmnopqrstuvwxyz_");
-		if (colon == p || *colon != ':' || (colon[1] != ' ' && colon + 1 != e)) {
+		/* YAML 1.2: the root may be a flow map, and then it is the whole document */
+		if (!prefix && !sp && *p == '{' && !kv->nr) {
+			if (!yaml_flow(&y, &p, NULL, 0))
+				p = flow_gap(p);
+			if (!y.err && *p)
+				yaml_fail(&y, "text after the document's flow map");
+			break;
+		}
+		key = yaml_key(&y, &p, "");
+		if (!key) {
 			yaml_fail(&y, "not a key in line %d", no);
 			break;
 		}
-		key = prefix ? xstrfmt("%s.%.*s", prefix, (int)(colon - p), p) : xstrndup(p, colon - p);
-		p = colon + 1 + strspn(colon + 1, " ");
+		key = prefix ? yaml_child(prefix, key) : key;
+		p += strspn(p, " ");
 		if (p == e || *p == '#') {
 			if (sp >= 15) {
 				yaml_fail(&y, "nested too deeply in line %d", no);

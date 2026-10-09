@@ -36,6 +36,15 @@ def '' "an empty definition"
 printf 'body: x\nenvironment: [a]\n' > specs/f.yaml
 bad MINI "environment" ait future offer src/order.c specs/f.yaml -m m
 rm -f specs/f.yaml
+# YAML 1.2: a flow map may be the whole document, and keys may be quoted scalars
+for ok in '{body: x, inputs: []}\n' '# a note\n{"body": "x"}\n' "'body': x\n" '"body": x\ninputs: [tests/pass.sh]\n' \
+	'{"body": x, '"'"'inputs'"'"': [tests/pass.sh]}\n' 'body: see http://x.y/z\n'; do
+	printf "$ok" > specs/f.yaml
+	tick; expect_ok "standard YAML: $(printf "$ok" | tr '\n' ' ')" ait future offer src/order.c specs/f.yaml -m m
+	git reset -q --hard "$H"
+done
+def '{body: x}\nmore: y\n' "text after a flow map document"
+def '"body: x\n' "an unterminated quoted key"
 for ok in 'body: |\n  a\n  b\n' "body: 'it''s'\n" 'body: "a\\"b\\\\c"\n' 'body: x # note\n' 'body: x\ninputs: []\n' \
 	'body: x\nengine: exec\ncommand:\n  - ./tests/pass.sh\nsuccess: [0, 1]\ninputs: [tests/pass.sh]\n'; do
 	printf "$ok" > specs/f.yaml
