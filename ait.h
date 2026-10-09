@@ -21,6 +21,7 @@ char *object(const char *name, int contents, char *oid, size_t *size);
 char *line1(char *s);
 void newid(char *out, int prefix);
 const char *session(int need);
+int lock_worktree(const char *wt);
 extern char agent[72], sid[16];
 
 /* record.c: trees, records and the judgements computed from them */
@@ -100,6 +101,6 @@ struct string_list *def_get(struct tree *t, const char *path);
 int cmd_request(int argc, const char **argv);
 int cmd_fulfill(int argc, const char **argv);
 void precondition(int allow_unborn);
-int publish(const char *tree, const char *msg);
+int publish(const char *tree, const char *msg, struct tree *noted);
 int git_op_in_progress(void);
 #endif

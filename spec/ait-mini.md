@@ -6,7 +6,7 @@ ait-mini는 `ait-phase1-spec.md` v14의 부분집합이다. 쓰는 레코드, �
 
 | 명령 | 규격 |
 | --- | --- |
-| `ait init` | 7.1.1 (hook 다섯 개와 `.ait/init`. merge driver는 설치하지 않는다) |
+| `ait init` | 7.1.1 (hook 네 개와 `.ait/init`. merge driver는 설치하지 않는다) |
 | `ait session open --agent NAME` · `list` · `close [SID]` | 7.2.1–7.2.3 |
 | `ait [future] demand A B DEFS [as N]` · `ait [future] offer B DEFS [as N]` | 7.3 |
 | `ait [future] amend K [ARGS]` · `ait future cancel K` · `ait undertake D O` · `ait release D O` | 7.3 |
@@ -15,9 +15,9 @@ ait-mini는 `ait-phase1-spec.md` v14의 부분집합이다. 쓰는 레코드, �
 | `ait todo [ID…]` | 7.8 |
 | 그 밖의 `ait <git 명령>` | git으로 넘긴다(7.14) |
 
-커밋은 ait가 직접 만들지 않고 `git commit`을 불러서 만든다. ait는 판정한 tree를 임시 index에 담아 커밋하므로, 커밋이 막혀도 index와 작업 폴더는 그대로다. 커밋된 뒤에는 바뀐 경로 중 index가 아직 HEAD 판을 가진 것만 새 판으로 맞추고, `.ait/`는 작업 폴더도 맞춘다(5.5-4). 그 사이에 stage된 다른 변경은 건드리지 않고 경고한다. 규격 5.5의 CAS(판정한 HEAD 위에만 커밋한다)는 git의 `reference-transaction` hook으로 지킨다. ait는 판정한 HEAD와 tree와 브랜치를 `AIT_EXPECT`로 넘기고, hook은 git의 ref 잠금 안에서 들어오는 커밋이 그 브랜치 위의, 그 tree를 가진, 부모가 그 HEAD 하나뿐인 커밋인지 본다. 아니면 transaction을 취소하고 요청은 `E_HEAD_MOVED`로 끝난다. git 자신의 ref 잠금이 먼저 막은 경우(브랜치가 이미 움직였다)도 같다. 그래서 `ait init`은 hook을 규격의 네 개에 더해 `reference-transaction`까지 다섯 개 설치한다.
+커밋은 규격 5.5대로 만든다. `git commit-tree`로 판정한 tree의 커밋을 만들고, `git update-ref R C H`로 브랜치를 옮긴다. update-ref가 git의 ref 잠금 안에서 브랜치가 아직 H인지 보는 CAS이므로, 그사이 브랜치가 움직였으면 요청은 `E_HEAD_MOVED`로 끝나고 아무것도 바뀌지 않는다. 사용자의 git hook은 ait의 커밋을 거치지 않는다(11.2). 커밋한 뒤에는 바뀐 경로 중 index가 요청을 시작할 때의 판 그대로인 것만 새 판으로 맞추고, `.ait/`는 작업 폴더도 맞춘다(5.5-4). 그 사이 stage된 다른 변경은 건드리지 않고 경고한다(5.5-5).
 
-git은 2.48 이상이어야 한다. `reference-transaction` hook이 reflog만 바뀌는 transaction에도 불리던 문제가 2.48에서 고쳐졌기 때문이다(2.48 RelNotes). 그보다 낮으면 ait는 `fatal:`로 멈춘다.
+git은 2.36 이상이어야 한다. ait는 객체를 `git cat-file --batch-command`(2.36) 하나로 읽는다. 그보다 낮으면 ait는 `fatal:`로 멈춘다.
 
 ## 없는 명령과 대신 할 것
 

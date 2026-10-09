@@ -46,8 +46,6 @@ for h in pre-commit pre-merge-commit commit-msg pre-push; do
 	check "1: hook $h has the 7.1.1-1 body" sh -c "hook_body() { printf '#!/bin/sh\ncommand -v ait >/dev/null 2>&1 || exit 0\nexec ait hook %s \"\$@\"\n' \"\$1\"; }; hook_body $h | cmp -s - '$H/$h'"
 	check "1: hook $h is executable" test -x "$H/$h"
 done
-# mini: ait-mini also installs reference-transaction for the compare-and-swap of 5.5 (spec/ait-mini.md)
-check "1: reference-transaction hook (mini)" test -x "$H/reference-transaction"
 # mini: `ait init` does not install the merge driver; the attributes line and merge.ait.* config are not checked
 
 # 2

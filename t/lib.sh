@@ -52,6 +52,24 @@ exec_def() {
 	printf 'body: %s\nengine: exec\ncommand: [./tests/%s.sh]\ninputs: [tests/%s.sh]\n' "$1" "$1" "$1" > "specs/$1.yaml"
 }
 
+# a git that first runs "$T/before-SUB" once when it is about to run SUB (commit-tree, update-ref, ...):
+# a deterministic race or failure at that point; `run env PATH="$T/bin:$PATH" ait ...` uses it
+racing_git() {
+	mkdir -p "$T/bin"
+	cat > "$T/bin/git" <<'GIT'
+#!/bin/sh
+real=$(PATH=$(echo "$PATH" | sed "s|$T/bin:||") command -v git)
+for a; do
+	case $a in -*|*=*|/*) continue ;; esac
+	f="$T/before-$a"
+	[ -f "$f" ] && { mv "$f" "$f.done"; sh "$f.done" || exit 1; }
+	break
+done
+exec "$real" "$@"
+GIT
+	chmod +x "$T/bin/git"
+}
+
 # run a command, keeping stdout, stderr and the exit code
 run() { "$@" >"$T/out" 2>"$T/err"; rc=$?; }
 

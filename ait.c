@@ -174,8 +174,9 @@ static void setup(void)
 	char *paths, oid[48];
 
 	sscanf(git("version"), "git version %d.%d", &major, &minor);
-	if (major < 2 || (major == 2 && minor < 48))
-		reject(128, "install git 2.48 or later", "git %d.%d is too old for ait", major, minor);
+	/* "git cat-file --batch-command" came in 2.36 (git v2.53.0 Documentation/RelNotes/2.36.0.adoc:75) */
+	if (major < 2 || (major == 2 && minor < 36))
+		reject(128, "install git 2.36 or later", "git %d.%d is too old for ait", major, minor);
 	paths = git("rev-parse --show-toplevel --absolute-git-dir --path-format=absolute --git-common-dir");
 	top = xstrndup(paths, strcspn(paths, "\n"));
 	paths += strlen(top) + 1;
@@ -223,14 +224,30 @@ static NORETURN void write_error(const char *path)
 	       "write error: '%s': %s", path, strerror(errno));
 }
 
-/* spec 4.6: the shared state of the worktree WT changes only under worktrees/<KEY>.lock */
-static int lock_worktree(const char *wt)
+/*
+ * spec 4.6: the shared state of the worktree WT changes only under
+ * worktrees/<KEY>.lock; the directories are made when missing (4.1). -1 when it cannot be held.
+ */
+int lock_worktree(const char *wt)
 {
-	char *path = xstrfmt("%s.lock", pointer_path(wt));
-	int fd = open(path, O_RDWR | O_CREAT, 0666);
+	int fd;
 
-	if (fd < 0 || flock(fd, LOCK_EX))
-		write_error(path);
+	mkdir(state_path(""), 0777);
+	mkdir(state_path("worktrees"), 0777);
+	fd = open(xstrfmt("%s.lock", pointer_path(wt)), O_RDWR | O_CREAT, 0666);
+	if (fd >= 0 && flock(fd, LOCK_EX)) {
+		close(fd);
+		fd = -1;
+	}
+	return fd;
+}
+
+static int held(const char *wt)
+{
+	int fd = lock_worktree(wt);
+
+	if (fd < 0)
+		write_error(xstrfmt("%s.lock", pointer_path(wt)));
 	return fd;
 }
 
@@ -283,7 +300,7 @@ const char *session(int need)
 		env = ptr;
 	wt = session_read(env, agent);
 	if (env && !wt && env == ptr) {
-		int fd = lock_worktree(top);
+		int fd = held(top);
 		char *now = default_of(top);
 
 		if (now && !strcmp(now, ptr))
@@ -344,7 +361,7 @@ static int cmd_session(int argc, const char **argv)
 			       "AIT_SESSION=%s; otherwise close this one and open again with another name",
 			       ids.items[i].string, sid, ids.items[i].string, wt, ids.items[i].string);
 		}
-		fd = lock_worktree(top);
+		fd = held(top);
 		mine = default_of(top);
 		if (session_read(mine, other) && strcmp(other, name)) {
 			warning("this worktree is used by session '%s' (agent '%s')", mine, other);
@@ -369,7 +386,7 @@ static int cmd_session(int argc, const char **argv)
 
 		if (!string_list_has_string(&ids, s))
 			reject(128, "ait session list", "no usable ait session: unknown session '%s'", s);
-		fd = lock_worktree(wt);
+		fd = held(wt);
 		if (unlink(state_path(xstrfmt("sessions/%s", s))))
 			write_error(state_path("sessions"));
 		if (default_of(wt) && !strcmp(default_of(wt), s) && unlink(pointer_path(wt)))
@@ -407,11 +424,8 @@ static int has_ait_hook(const char *path, const char *name)
 	return found;
 }
 
-/*
- * spec 7.1.1 and, for the compare-and-swap of 5.5, reference-transaction: the
- * hook rejects a commit whose branch moved since ait judged it (AIT_EXPECT)
- */
-static const char *hooks[] = { "pre-commit", "pre-merge-commit", "commit-msg", "pre-push", "reference-transaction", NULL };
+/* spec 7.1.1 */
+static const char *hooks[] = { "pre-commit", "pre-merge-commit", "commit-msg", "pre-push", NULL };
 
 /* PATH is DIR or under it */
 static int inside(const char *path, const char *dir)
@@ -440,8 +454,7 @@ static int cmd_init(int argc, const char **argv)
 		int rc = 0;
 
 		if (access(path, F_OK) && !in_repo) {
-			write_file(path, "#!/bin/sh\n%scommand -v ait >/dev/null 2>&1 || exit 0\nexec ait hook %s \"$@\"\n",
-				   i == 4 ? "[ -n \"$AIT_EXPECT\" ] || exit 0\n" : "", hooks[i]);
+			write_file(path, "#!/bin/sh\ncommand -v ait >/dev/null 2>&1 || exit 0\nexec ait hook %s \"$@\"\n", hooks[i]);
 			chmod(path, 0755);
 			continue;
 		}
@@ -472,7 +485,7 @@ static int cmd_init(int argc, const char **argv)
 	precondition(1);
 	/* spec 7.1.1-5: if another init won the race, its init file is ours too */
 	if (publish(tree_with(t->oid, xstrfmt("100644 %s\t.ait/init\n", line1(git_run("version 1\n", NULL, NULL,
-		    "hash-object -w --stdin")))), "[CONTRACT] ait init\n")) {
+		    "hash-object -w --stdin")))), "[CONTRACT] ait init\n", tree_load(line1(git("write-tree"))))) {
 		const char *now = object("HEAD:.ait/init", 1, NULL, NULL);
 
 		if (!now || strcmp(now, "version 1\n"))
@@ -521,52 +534,6 @@ static int pre_push(void)
 		    !object(xstrfmt("%s^{commit}", oid), 0, NULL, NULL))
 			continue;
 		validate_at(tree_load(oid));
-	}
-	return 0;
-}
-
-/*
- * spec 5.5: under git's ref lock, the commit that lands is the one ait judged:
- * its tree, on the branch ait judged, whose only parent is the commit ait
- * judged. Any other branch or a detached HEAD is refused.
- */
-static int ref_transaction(const char *phase)
-{
-	const char *expect = getenv("AIT_EXPECT");
-	char want_old[72], want_tree[72], want_ref[1024], moved[4096];
-	struct strbuf in = STRBUF_INIT;
-	struct string_list lines = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-
-	if (!expect || strcmp(phase, "prepared"))
-		return 0;
-	/* "OLD TREE REF MOVED": what ait judged, and where to say the transaction was refused */
-	if (sscanf(expect, "%71s %71s %1023s %4095s", want_old, want_tree, want_ref, moved) != 4) {
-		error("bad AIT_EXPECT '%s'", expect);
-		return 1;
-	}
-	strbuf_read(&in, 0, 0);
-	string_list_split(&lines, in.buf, "\n", -1);
-	for_each_string_list_item(item, &lines) {
-		char old[72], new[72], ref[1024];
-		int same = 1;
-
-		if (sscanf(item->string, "%71s %71s %1023s", old, new, ref) != 3)
-			continue;
-		if (!strcmp(ref, want_ref)) {
-			/* the commit's header starts "tree T\n", then a "parent P\n" line per parent */
-			const char *got = object(new, 1, NULL, NULL);
-			/* an unborn branch is all zeros, and its commit has no parent */
-			int root = !want_old[strspn(want_old, "0")];
-			char *want = xstrfmt("tree %s\n%s%s%s", want_tree, root ? "" : "parent ", root ? "" : want_old, root ? "" : "\n");
-
-			same = got && !strcmp(old, want_old) && starts_with(got, want) && !starts_with(got + strlen(want), "parent ");
-		} else if (!strcmp(ref, "HEAD") || starts_with(ref, "refs/heads/"))
-			same = 0;
-		if (!same) {
-			write_file(moved, "%s", ref);
-			return 1;
-		}
 	}
 	return 0;
 }
@@ -841,8 +808,6 @@ int main(int argc, const char **argv)
 			continue;
 		if (!commands[i].fn)
 			unsupported(argv[1]);
-		if (argc > 3 && !strcmp(argv[1], "hook") && !strcmp(argv[2], "reference-transaction"))
-			return ref_transaction(argv[3]);
 		setup();
 		if (strcmp(argv[1], "init") && strcmp(argv[1], "hook"))
 			check_hooks();
