@@ -22,6 +22,10 @@ check "a provider line per scope" sh -c "grep -qx 'provider $O src/order.c' '$T/
 tick; ait future offer src/ specs/pass.yaml as a -m a >"$T/out"; AO=$(new_id)
 expect_err "ID=SCOPES with a scope twice" E_SCOPE ait fulfill $AO=src/stock.c,src/stock.c --force -m x
 
+# FILES: a path given twice is one, as git takes 'git add a a'
+tick; expect_ok "a definition given twice" ait future offer src/order.c specs/pass.yaml,specs/pass.yaml -m f; F=$(new_id)
+check "is recorded once" [ "$(grep -c '^file specs/pass.yaml ' .ait/$F)" = 1 ]
+
 # 2.5: an input that mentions 'body:' is not read as a definition
 mkdir -p tests
 printf '#!/bin/sh\n# checks the body: of the order\nexit 0\n' > tests/x.sh; chmod 755 tests/x.sh
