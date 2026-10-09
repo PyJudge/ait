@@ -87,6 +87,7 @@ void repin(struct record *r, enum key k, struct tree *t, int new_only);
 void body_lines(struct strbuf *sb, struct string_list *kv, const char *indent);
 char *def_text(struct tree *t, const char *path, const char *indent);
 const char *engine_of(struct tree *t, const char *def);
+const char *input_path(const char *def, const char *p);
 int expand_files(struct record *r, struct tree *t);
 int unverified(struct record *r, struct tree *t);
 int read_text(struct strbuf *sb, const char *path);

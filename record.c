@@ -4,6 +4,7 @@
  */
 #include "ait.h"
 #include "quote.h"
+#include "utf8.h"
 #include <regex.h>
 
 static int cmp_entry(const void *a, const void *b)
@@ -314,6 +315,9 @@ static int id_ok(const char *id)
 	return ok;
 }
 
+static char *record_check(struct record *r);
+
+/* the records of T; a malformed one carries why in ->bad (spec 5.9 a-c, 5.10) */
 void state_load(struct state *s, struct tree *t)
 {
 	size_t i;
@@ -340,6 +344,8 @@ void state_load(struct state *s, struct tree *t)
 			r->bad = xstrdup("not a text file");
 		else
 			record_parse(r, text);
+		if (!r->bad)
+			r->bad = record_check(r);
 		r->old = record_copy(r);
 	}
 	for (i = 0; i < s->nr; i++) {
@@ -364,9 +370,11 @@ int path_ok(const char *p)
 {
 	struct string_list parts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	int ok = *p && *p != '/' && *p != '-' && !p[strcspn(p, " :,\t\r\n")] &&
-		 strcmp(p, ".ait") && !starts_with(p, ".ait/");
+	int ok = *p && *p != '/' && *p != '-' && strcmp(p, ".ait") && !starts_with(p, ".ait/");
+	const char *c;
 
+	for (c = p; *c; c++)
+		ok &= *c != ' ' && *c != ':' && *c != ',' && (unsigned char)*c >= 0x20 && *c != 0x7f;
 	string_list_split(&parts, p, "/", -1);
 	for_each_string_list_item(item, &parts)
 		ok &= *item->string && strcmp(item->string, ".") && strcmp(item->string, "..");
@@ -429,35 +437,43 @@ static int bad_record(struct verdict *v, struct record *r, const char *why)
 static const char *const contract_states[] = { "future", "current", "cancelled", "withdrawn", NULL };
 static const char *const link_states[] = { "undertaken", "released", NULL };
 
-/* validate(state) of spec 5.9 a-e: invariants of one state, no parents involved; 0 when it holds */
-int check_state(struct state *s, struct tree *t, struct verdict *v)
+/* spec 5.9 a-c for one record: how many values each key has, each value, role and state; NULL when it holds */
+static char *record_check(struct record *r)
 {
 	/* how many values each key takes, per kind: '1' one, '+' one or more, '0' none */
 	static const char *counts[] = { "11++0+1+", "110+0+1+", "01000001" };
+	const char *c = counts[*r->id == 'D' ? 0 : *r->id == 'O' ? 1 : 2];
 	struct string_list_item *item;
-	size_t i;
 	int k;
+
+	for (k = 0; k < NKEYS; k++) {
+		if (c[k] == '+' ? !r->f[k].nr : r->f[k].nr != (size_t)(c[k] - '0'))
+			return xstrfmt("wrong number of '%s' lines", keys[k]);
+		for_each_string_list_item(item, &r->f[k])
+			if (!value_ok(r, k, item->string))
+				return xstrfmt("bad '%s' line '%s'", keys[k], item->string);
+	}
+	if (strcmp(val(r, ROLE), *r->id == 'D' ? "demand" : *r->id == 'O' ? "offer" : "") ||
+	    !one_of(val(r, STATE), *r->id == 'u' ? link_states : contract_states))
+		return xstrdup("role or state does not fit the record");
+	if (*r->id != 'u' && !strstr(record_text(r, 1), " def\n"))
+		return xstrdup("no spec definition");
+	return NULL;
+}
+
+/* validate(state) of spec 5.9 a-e: invariants of one state, no parents involved; 0 when it holds */
+int check_state(struct state *s, struct tree *t, struct verdict *v)
+{
+	size_t i;
 
 	for (i = 0; i < s->nr; i++) {
 		struct record *r = s->r[i], *d, *o;
-		const char *c = counts[*r->id == 'D' ? 0 : *r->id == 'O' ? 1 : 2];
+		char *why = r->bad ? r->bad : strcmp(r->id, "init") ? record_check(r) : NULL;
 
-		if (r->bad)
-			return bad_record(v, r, r->bad);
+		if (why)
+			return bad_record(v, r, why);
 		if (!strcmp(r->id, "init"))
 			continue;
-		for (k = 0; k < NKEYS; k++) {
-			if (c[k] == '+' ? !r->f[k].nr : r->f[k].nr != (size_t)(c[k] - '0'))
-				return bad_record(v, r, xstrfmt("wrong number of '%s' lines", keys[k]));
-			for_each_string_list_item(item, &r->f[k])
-				if (!value_ok(r, k, item->string))
-					return bad_record(v, r, xstrfmt("bad '%s' line '%s'", keys[k], item->string));
-		}
-		if (strcmp(val(r, ROLE), *r->id == 'D' ? "demand" : *r->id == 'O' ? "offer" : "") ||
-		    !one_of(val(r, STATE), *r->id == 'u' ? link_states : contract_states))
-			return bad_record(v, r, "role or state does not fit the record");
-		if (*r->id != 'u' && !strstr(record_text(r, 1), " def\n"))
-			return bad_record(v, r, "no spec definition");
 		if (in_state(r, "withdrawn"))
 			return fail_with(v, 1, "state", NULL, xstrfmt("not allowed: '%s' is withdrawn without a drop", r->id));
 		if (*r->id != 'u')
@@ -757,6 +773,14 @@ int unverified(struct record *r, struct tree *t)
 	return 0;
 }
 
+/* spec 2.5.2: an input of the definition DEF is a PATH of 3.1 */
+const char *input_path(const char *def, const char *p)
+{
+	if (!path_ok(p))
+		reject(128, NULL, "bad format: '%s': bad input '%s'", def, p);
+	return p;
+}
+
 /* spec 2.4: the file lines are the defs and what the defs declare, pinned at T */
 int expand_files(struct record *r, struct tree *t)
 {
@@ -775,10 +799,8 @@ int expand_files(struct record *r, struct tree *t)
 		for_each_string_list_item(in, def_get(t, e->path)) {
 			const char *p = yget(def_get(t, e->path), in->string);
 
-			if (!starts_with(in->string, "inputs.") || string_list_has_string(&defs, p))
+			if (!starts_with(in->string, "inputs.") || string_list_has_string(&defs, input_path(item->string, p)))
 				continue;
-			if (!path_ok(p))
-				reject(128, NULL, "bad format: '%s': bad input '%s'", item->string, p);
 			if (!blob_at(t, p))
 				return -1;
 			string_list_insert(&out, xstrfmt("%s %s %s input", p, tree_get(t, p)->mode, blob_at(t, p)));
@@ -896,7 +918,9 @@ static int yaml_scalar(struct yaml *y, const char **p, const char *stop, char *k
 		strbuf_rtrim(&sb);
 	} else {
 		for (at = ++v; *v && *v != '\n' && (*v != q || (q == '\'' && v[1] == '\'')); v++) {
-			if ((q == '"' && *v == '\\' && (v[1] == '"' || v[1] == '\\')) || (q == '\'' && *v == '\''))
+			if (q == '"' && *v == '\\' && v[1] != '"' && v[1] != '\\')
+				return yaml_fail(y, "an escape other than \\\" or \\\\ in '%s'", key);
+			if ((q == '"' && *v == '\\') || (q == '\'' && *v == '\''))
 				v++;
 			strbuf_addch(&sb, *v);
 		}
@@ -958,6 +982,8 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 	const char *line, *next;
 	int sp = 0, no = 0;
 
+	if (!is_utf8(text))
+		yaml_fail(&y, "not UTF-8");
 	for (line = text; *line && !y.err; line = next) {
 		const char *p = line, *colon, *e = strchrnul(line, '\n');
 		int indent = strspn(line, " "), item;

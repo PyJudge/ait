@@ -1079,7 +1079,8 @@ static struct tree *candidate(struct request *q)
 		text_or_die(&text, xstrfmt("%s/%s", top, p));
 		yaml(text.buf, &kv, p);
 		for_each_string_list_item(item, &kv)
-			if (starts_with(item->string, "inputs.") && !unsorted_string_list_has_string(&q->files, yget(&kv, item->string)))
+			if (starts_with(item->string, "inputs.") &&
+			    !unsorted_string_list_has_string(&q->files, input_path(p, yget(&kv, item->string))))
 				string_list_append(&q->files, yget(&kv, item->string));
 	}
 	return tree_load(tree_with(q->ht->oid, info.buf));

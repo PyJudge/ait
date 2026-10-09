@@ -111,6 +111,12 @@ write('wrapper.c', '#include "git-compat-util.h"\n#include "strbuf.h"\n', [
     fn('wrapper.c', 95), fn('wrapper.c', 111), fn('wrapper.c', 116), fn('wrapper.c', 130), fn('wrapper.c', 146),
     fn('wrapper.c', 171), fn('wrapper.c', 205), fn('wrapper.c', 228), fn('wrapper.c', 250), fn('wrapper.c', 286),
     fn('wrapper.c', 305), fn('wrapper.c', 375), fn('wrapper.c', 682), fn('wrapper.c', 691), fn('compat/nonblock.c', 6), fn('compat/qsort_s.c', 9), fn('compat/qsort_s.c', 48)])
+# utf8: validity only; is_utf8 steps with pick_one_utf8_char instead of utf8_width, which also measures the column width
+write('utf8.c', '#include "git-compat-util.h"\n#include "utf8.h"\n', [
+    fn('utf8.c', 122), fn('utf8.c', 241)],
+    [('utf8_width(&text, NULL);', 'pick_one_utf8_char(&text, NULL);')])
+write('utf8.h', '#ifndef UTF8_H\n#define UTF8_H\n', [
+    rng('utf8.h', 6, 6), 'int is_utf8(const char *text);\n#endif'])
 write('quote.c', '#include "git-compat-util.h"\n#include "strbuf.h"\n#include "quote.h"\n', [
     fn('quote.c', 11), fn('quote.c', 28), fn('quote.c', 50)])
 write('quote.h', '#ifndef QUOTE_H\n#define QUOTE_H\nstruct strbuf;\n', [
