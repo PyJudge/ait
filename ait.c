@@ -692,12 +692,9 @@ static void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 		}
 	strbuf_addf(&args, "%s%s", p->id, is_abstract(p) ? "=<scope>" : "");
 	for (j = 0; j < s->nr; j++) {
-		struct record *l = s->r[j], *d;
+		struct record *d = partner(s, s->r[j], p);
 
-		if (!undertaken(l) || link_end(s, l, 1) != p)
-			continue;
-		d = link_end(s, l, 0);
-		if (in_state(d, "future") && is_abstract(d))
+		if (d && in_state(d, "future") && is_abstract(d))
 			strbuf_addf(&args, " %s=<scope>", d->id);
 	}
 	suggest("when ready, stage the code and run 'ait fulfill %s -m <why>' to get the tasks", args.buf);
@@ -746,11 +743,10 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 	size_t j;
 
 	for (j = 0; j < s->nr; j++) {
-		struct record *l = s->r[j], *other;
+		struct record *other = partner(s, s->r[j], r);
 
-		if (!undertaken(l) || !strstr(l->id, r->id))
+		if (!other)
 			continue;
-		other = link_end(s, l, *r->id == 'D');
 		printf("%s %s %s %s\n", *r->id == 'O' ? "undertakes" : "undertaken-by", other->id, val(other, STATE),
 		       scope_path(val(other, CREATOR)));
 		if (*r->id != 'O' || !is_live(other))

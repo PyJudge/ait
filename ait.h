@@ -60,10 +60,14 @@ char *scope_path(const char *v);
 const char *scope_oid(const char *v);
 int is_def(const char *file);
 int one_of(const char *word, const char *const *set);
-char *record_text(struct record *r, int with_prev);
+#define ALL_KEYS ((1u << NKEYS) - 1)
+#define PIN_KEYS ((1u << PROVIDER) | (1u << FILES))	/* the lines PINS hashes (5.4) */
+#define MEANING_KEYS (ALL_KEYS & ~(1u << PREV))		/* what a change of a record is (6.2) */
+char *record_text(struct record *r, unsigned keys_wanted);
 int is_abstract(struct record *r);
 int is_live(struct record *r);
 int undertaken(struct record *l);
+struct record *partner(struct state *s, struct record *l, struct record *r);
 int is_current(struct record *r);
 int was_current(struct record *r);
 struct verdict { int code; const char *word; char *hint, *msg; };
@@ -85,7 +89,6 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs);
 char *show(const char *scope, struct tree *t, int current);
 char *shows(struct record *r, enum key k, struct tree *t, int current);
 char *pins(struct record *r);
-char *pin_lines(struct record *r);
 int code_found(struct record *r, struct tree *t);
 char *moved_arg(struct record *r, struct tree *t);
 void reopen_set(struct state *s, struct record *k, struct string_list *out);

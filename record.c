@@ -14,22 +14,29 @@ static int cmp_entry(const void *a, const void *b)
 
 /*
  * One sorted listing per tree: lookups are a bsearch, a diff is a merge walk.
- * Callers name trees by object ID, so a listing is read once per command.
+ * Callers name trees by object ID; a commit and its tree share one listing.
  */
 struct tree *tree_load(const char *treeish)
 {
-	static struct string_list loaded = STRING_LIST_INIT_DUP;
-	struct string_list_item *hit = string_list_lookup(&loaded, treeish);
+	static struct string_list named = STRING_LIST_INIT_DUP, listed = STRING_LIST_INIT_DUP;
+	struct string_list_item *hit = string_list_lookup(&named, treeish);
 	struct tree *t;
 	size_t alloc = 0;
-	char *p, *end;
+	char *p, *end, oid[48];
 
 	if (hit)
 		return hit->util;
-	t = xcalloc(1, sizeof(*t));
-	string_list_insert(&loaded, treeish)->util = t;
-	if (!object(xstrfmt("%s^{tree}", treeish), 0, t->oid, NULL))
+	if (!object(xstrfmt("%s^{tree}", treeish), 0, oid, NULL))
 		reject(128, NULL, "git failed: not a tree: '%s'", treeish);
+	hit = string_list_lookup(&listed, oid);
+	if (hit) {
+		string_list_insert(&named, treeish)->util = hit->util;
+		return hit->util;
+	}
+	t = xcalloc(1, sizeof(*t));
+	strcpy(t->oid, oid);
+	string_list_insert(&named, treeish)->util = t;
+	string_list_insert(&listed, oid)->util = t;
 	for (p = git("ls-tree -r -t -z --full-tree %s", t->oid); *p; p = end + 1) {
 		struct entry *e;
 
@@ -85,6 +92,8 @@ char *tree_with(const char *base, const char *index_info)
 	char *index, *tree = NULL;
 	int rc;
 
+	if (!*index_info)
+		return xstrdup(base);
 	if (!mkdtemp(dir))
 		die_errno("could not create '%s'", dir);
 	index = xstrfmt("%s/index", dir);
@@ -192,6 +201,14 @@ int undertaken(struct record *l)
 	return *l->id == 'u' && !l->bad && in_state(l, "undertaken");
 }
 
+/* the other end of L when L is a readable undertaken link with R at one end, else NULL */
+struct record *partner(struct state *s, struct record *l, struct record *r)
+{
+	if (!l || !undertaken(l) || (link_end(s, l, 0) != r && link_end(s, l, 1) != r))
+		return NULL;
+	return link_end(s, l, link_end(s, l, 0) == r);
+}
+
 int is_current(struct record *r)
 {
 	return *r->id != 'u' && in_state(r, "current");
@@ -222,18 +239,18 @@ static void record_sort(struct record *r)
 		QSORT(r->f[k].items, r->f[k].nr, cmp_value);
 }
 
-char *record_text(struct record *r, int with_prev)
+/* the canonical lines of R (2.2.1) for the keys in KEYS (a bit per enum key) */
+char *record_text(struct record *r, unsigned keys_wanted)
 {
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
 	int k;
 
 	record_sort(r);
-	for (k = 0; k < NKEYS; k++) {
+	for (k = 0; k < NKEYS; k++)
 		for_each_string_list_item(item, &r->f[k])
-			if (with_prev || k != PREV)
+			if (keys_wanted & (1u << k))
 				strbuf_addf(&sb, "%s %s\n", keys[k], item->string);
-	}
 	return strbuf_detach(&sb, NULL);
 }
 
@@ -305,7 +322,7 @@ static void record_parse(struct record *r, const char *text)
 		}
 		string_list_append(&r->f[k], v + 1);
 	}
-	if (strcmp(record_text(r, 1), text))
+	if (strcmp(record_text(r, ALL_KEYS), text))
 		r->bad = xstrdup("not in canonical form");
 }
 
@@ -460,7 +477,7 @@ static char *record_check(struct record *r)
 	if (strcmp(val(r, ROLE), *r->id == 'D' ? "demand" : *r->id == 'O' ? "offer" : "") ||
 	    !one_of(val(r, STATE), *r->id == 'u' ? link_states : contract_states))
 		return xstrdup("role or state does not fit the record");
-	if (*r->id != 'u' && !strstr(record_text(r, 1), " def\n"))
+	if (*r->id != 'u' && !strstr(record_text(r, 1u << FILES), " def\n"))
 		return xstrdup("no spec definition");
 	return NULL;
 }
@@ -677,12 +694,9 @@ void reopen_set(struct state *s, struct record *k, struct string_list *out)
 
 	string_list_append(out, k->id)->util = k;
 	for (i = 0; i < s->nr; i++) {
-		struct record *l = s->r[i], *o;
+		struct record *o = partner(s, s->r[i]->old, k);
 
-		if (!l->old || !undertaken(l->old) || link_end(s, l, 0) != k || !k->old || !is_current(k->old))
-			continue;
-		o = link_end(s, l, 1);
-		if (o->old && is_current(o->old))
+		if (*k->id == 'D' && k->old && is_current(k->old) && o && o->old && is_current(o->old))
 			string_list_append(out, o->id)->util = o;
 	}
 }
@@ -778,25 +792,11 @@ const char *engine_of(struct tree *t, const char *def)
 	return yget(kv, "engine") && *yget(kv, "engine") ? "exec" : "prompt";
 }
 
-/* spec 5.4: the provider and file lines in record order */
-char *pin_lines(struct record *r)
-{
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
-
-	record_sort(r);
-	for_each_string_list_item(item, &r->f[PROVIDER])
-		strbuf_addf(&sb, "provider %s\n", item->string);
-	for_each_string_list_item(item, &r->f[FILES])
-		strbuf_addf(&sb, "file %s\n", item->string);
-	return strbuf_detach(&sb, NULL);
-}
-
 /* spec 5.4: their hash, the PINS of an Ait-Check line; each text is hashed once */
 char *pins(struct record *r)
 {
 	static struct string_list hashed = STRING_LIST_INIT_DUP;
-	char *text = pin_lines(r);
+	char *text = record_text(r, PIN_KEYS);
 	struct string_list_item *hit = string_list_lookup(&hashed, text);
 
 	if (!hit) {
@@ -887,7 +887,7 @@ int files_match(struct record *r, struct tree *t)
 {
 	struct record *x = record_copy(r);
 
-	return !expand_files(x, t) && !strcmp(record_text(x, 1), record_text(r, 1));
+	return !expand_files(x, t) && !strcmp(record_text(x, 1u << FILES), record_text(r, 1u << FILES));
 }
 
 /* R is a future or current demand or offer that has PATH as a spec file */

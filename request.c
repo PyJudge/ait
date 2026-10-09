@@ -15,7 +15,7 @@ struct request {
 	struct tree *noted;	/* the index when the request began (5.5-1) */
 	int gate, fulfill, force, seq;
 	const char *result;
-	struct strbuf msg, cmdline;	/* the message; the helper request without options, for hints */
+	struct strbuf msg;
 	struct string_list files;	/* spec files given to the helpers */
 	struct string_list scoped;	/* IDs given with =SCOPES */
 	struct string_list selected;	/* the promises fulfill was asked to keep */
@@ -33,13 +33,13 @@ struct request {
 	size_t ncl, alloc_cl;
 };
 
-/* a helper clause of 7.3.1: args.v[at..at+n), what it names and what it gives ("-" keeps, NULL not given) */
+/* a helper clause of 7.3.1: what it names and what it gives ("-" keeps, NULL not given) */
 struct clause {
 	const char *verb, *k[2], *a, *b, *f, *alias;
-	int future, at, n;
+	int future;
 };
 
-#define REQUEST_INIT { .msg = STRBUF_INIT, .cmdline = STRBUF_INIT, .files = STRING_LIST_INIT_DUP, \
+#define REQUEST_INIT { .msg = STRBUF_INIT, .files = STRING_LIST_INIT_DUP, \
 	.scoped = STRING_LIST_INIT_DUP, .selected = STRING_LIST_INIT_DUP, .conf = STRING_LIST_INIT_DUP, \
 	.missing = STRING_LIST_INIT_DUP, .tasks = STRING_LIST_INIT_DUP, .hints = STRING_LIST_INIT_DUP, \
 	.carried = STRING_LIST_INIT_DUP, .mixed = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
@@ -441,7 +441,6 @@ static void parse_clauses(struct request *q)
 
 		ALLOC_GROW(q->cl, q->ncl + 1, q->alloc_cl);
 		c = memset(&q->cl[q->ncl++], 0, sizeof(*c));
-		c->at = i;
 		c->future = !strcmp(v[i], "future");
 		if (c->future && i + 1 == n)
 			unsupported("future");
@@ -485,7 +484,6 @@ static void parse_clauses(struct request *q)
 		shapes(c->a, 0);
 		shapes(c->b, 0);
 		shapes(c->f, 1);
-		c->n = i - c->at;
 	}
 }
 
@@ -546,7 +544,7 @@ static void rename_tasks(struct strbuf *sb, int seq, const char *id)
 
 static int unchanged(struct record *r)
 {
-	return r->old ? !strcmp(record_text(r, 0), record_text(r->old, 0)) :
+	return r->old ? !strcmp(record_text(r, MEANING_KEYS), record_text(r->old, MEANING_KEYS)) :
 	       *r->id == 'u' && in_state(r, "released");
 }
 
@@ -595,48 +593,64 @@ static int names(struct clause *c, int i, struct record *k)
 				      (!strcmp(c->k[0], k->id) || (k->alias && !strcmp(c->k[0], k->alias))));
 }
 
+/* the words of clause C as a helper takes them; MOVED, when given, is its provider argument as it stands */
+static void clause_words(struct strbuf *sb, struct clause *c, const char *moved)
+{
+	const char *const words[] = { c->k[0], c->k[1], c->a, moved ? NULL : c->b, c->f };
+	size_t i;
+
+	strbuf_addf(sb, "%s %s", c->future ? " future" : "", c->verb);
+	for (i = 0; i < ARRAY_SIZE(words); i++) {
+		if (i == 4 && moved)
+			strbuf_addf(sb, " %s", moved);
+		if (words[i])
+			word(sb, words[i]);
+	}
+	if (c->alias)
+		strbuf_addf(sb, " as %s", c->alias);
+}
+
 /*
  * 5.9a: the helper request again, with the clause of each contract in KS
  * changed: 'f' makes it a promise or reopens it ("future demand", "future
  * amend"), 'm' gives it KEPT,<new scope> as provider; a contract no clause
- * names gets one added. Options give way to "-m <why>".
+ * names gets one added, and so does the clause ADD. Options give way to "-m <why>".
  */
-static char *again(struct request *q, struct string_list *ks, char mode)
+static char *again(struct request *q, struct string_list *ks, char mode, const char *add)
 {
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list done = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	size_t i;
-	int w;
 
 	strbuf_addstr(&sb, "ait");
-	if (q->cl[0].at)
+	if (!strcmp(q->args.v[0], "contract") || !strcmp(q->args.v[0], "ct"))
 		word(&sb, q->args.v[0]);
 	for (i = 0; i < q->ncl; i++) {
-		struct clause *c = &q->cl[i];
+		struct clause c = q->cl[i];
 		struct record *k = NULL;
 
 		for_each_string_list_item(item, ks)
-			if (names(c, i, item->util))
+			if (names(&q->cl[i], i, item->util))
 				k = item->util;
 		if (k)
 			string_list_insert(&done, k->id);
-		if (k && mode == 'f' && !c->future)
-			strbuf_addstr(&sb, " future");
-		for (w = c->at; w < c->at + c->n; w++)
-			if (k && mode == 'f' && q->args.v[w] == c->verb && !strcmp(c->verb, "cancel"))
-				strbuf_addstr(&sb, " amend");
-			else if (k && mode == 'm' && q->args.v[w] == c->b)
-				strbuf_addf(&sb, " %s", moved_arg(k, q->ht));
-			else
-				word(&sb, q->args.v[w]);
-		if (k && mode == 'm' && !c->b)
-			strbuf_addf(&sb, " %s%s -", *k->id == 'D' ? "- " : "", moved_arg(k, q->ht));
+		if (k && mode == 'f') {
+			c.future = 1;
+			c.verb = !strcmp(c.verb, "cancel") ? "amend" : c.verb;
+		}
+		if (k && mode == 'm' && !c.b) {
+			c.a = *k->id == 'D' ? "-" : NULL;
+			c.f = "-";
+		}
+		clause_words(&sb, &c, k && mode == 'm' ? moved_arg(k, q->ht) : NULL);
 	}
 	for_each_string_list_item(item, ks)
 		if (!string_list_has_string(&done, item->string))
 			strbuf_addf(&sb, mode == 'f' ? " future amend %s" : " amend %s %s%s -", item->string,
 				    *item->string == 'D' ? "- " : "", mode == 'f' ? "" : moved_arg(item->util, q->ht));
+	if (add)
+		strbuf_addf(&sb, " %s", add);
 	strbuf_addstr(&sb, " -m <why>");
 	return strbuf_detach(&sb, NULL);
 }
@@ -674,7 +688,7 @@ static char *reopen_hint(struct request *q, struct record *k)
 
 	reopen_set(&q->s, k, &set);
 	if (q->gate)
-		return xstrfmt("to change '%s' without a check, reopen it: '%s'", k->id, again(q, &set, 'f'));
+		return xstrfmt("to change '%s' without a check, reopen it: '%s'", k->id, again(q, &set, 'f', NULL));
 	return xstrfmt("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>', then %s", k->id,
 		       reopen_ids(&q->s, k), unsorted_string_list_has_string(&q->scoped, k->id) ?
 		       xstrfmt("rerun '%s'", rerun(q, k->id, NULL)) : "rerun this command");
@@ -698,12 +712,13 @@ static void next_hints(struct request *q, struct string_list *ids)
 
 			/* a demand this request has current offers undertake makes them promises too (5.9 d) */
 			string_list_append(&set, r->id)->util = r;
-			for (i = 0; i < q->s.nr; i++)
-				if (undertaken(q->s.r[i]) && link_end(&q->s, q->s.r[i], 0) == r &&
-				    is_current(link_end(&q->s, q->s.r[i], 1)))
-					string_list_append(&set, link_end(&q->s, q->s.r[i], 1)->id)->util =
-						link_end(&q->s, q->s.r[i], 1);
-			add_hint(q, xstrfmt("if it does not hold yet, make it a promise: '%s'", again(q, &set, 'f')));
+			for (i = 0; i < q->s.nr; i++) {
+				struct record *o = partner(&q->s, q->s.r[i], r);
+
+				if (*r->id == 'D' && o && is_current(o))
+					string_list_append(&set, o->id)->util = o;
+			}
+			add_hint(q, xstrfmt("if it does not hold yet, make it a promise: '%s'", again(q, &set, 'f', NULL)));
 		} else if (was_current(r) && !carried(q, r)) {
 			add_hint(q, reopen_hint(q, r));
 		}
@@ -713,6 +728,7 @@ static void next_hints(struct request *q, struct string_list *ids)
 /* 5.9a, the fix for a failed check: the code, or the spec file that is the provider */
 static void fix_hints(struct request *q, struct string_list *ids)
 {
+	struct string_list none = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *sc;
 	size_t k;
 
@@ -730,11 +746,13 @@ static void fix_hints(struct request *q, struct string_list *ids)
 					 "without -r to get the new tasks");
 			else if (q->gate && unsorted_string_list_has_string(&q->files, path))
 				add_hint(q, xstrfmt("fix '%s', then rerun this command", path));
+			else if (q->gate)
+				add_hint(q, xstrfmt("fix '%s' and carry it in this request: '%s'", path,
+						    again(q, &none, 0, xstrfmt("amend %s %s%s", owner->id,
+										*owner->id == 'D' ? "- - " : "- ", def_paths(owner->old)))));
 			else
-				add_hint(q, xstrfmt(q->gate ? "fix '%s' and carry it in this request: '%s amend %s %s%s -m <why>'" :
-						    "fix '%s' and commit it first: '%sait amend %s %s%s -m <why>', then rerun this command",
-						    path, q->gate ? q->cmdline.buf : "", owner->id, *owner->id == 'D' ? "- - " : "- ",
-						    def_paths(owner->old)));
+				add_hint(q, xstrfmt("fix '%s' and commit it first: 'ait amend %s %s%s -m <why>', then rerun this command",
+						    path, owner->id, *owner->id == 'D' ? "- - " : "- ", def_paths(owner->old)));
 		}
 	}
 }
@@ -866,11 +884,10 @@ static void also_undertaken(struct request *q, struct record *l)
 	o = link_end(&q->s, l, 1);
 
 	for (i = 0; i < q->s.nr; i++) {
-		struct record *m = q->s.r[i], *o2;
+		struct record *o2 = q->s.r[i] == l ? NULL : partner(&q->s, q->s.r[i], d);
 
-		if (m == l || !undertaken(m) || link_end(&q->s, m, 0) != d)
+		if (!o2)
 			continue;
-		o2 = link_end(&q->s, m, 1);
 		/* H4 is for my future offer, and the other one is someone else's (rule 7) */
 		if (!in_state(o, "future") || strcmp(scope_path(val(o, CREATOR)), agent) || !in_state(o2, "future") ||
 		    !strcmp(scope_path(val(o2, CREATOR)), agent))
@@ -946,7 +963,7 @@ static void check_set(struct request *q)
 		}
 		if (is_current(r) && (!was_current(r) || r->recheck || touches(r->old, q->ht, q->v) ||
 				      carried(q, r) ||
-				      (!unsorted_string_list_has_string(&q->scoped, r->id) && strcmp(pin_lines(r), pin_lines(r->old)))))
+				      (!unsorted_string_list_has_string(&q->scoped, r->id) && strcmp(record_text(r, PIN_KEYS), record_text(r->old, PIN_KEYS)))))
 			string_list_append(&q->conf, r->id)->util = r;
 	}
 	string_list_sort(&q->conf);
@@ -983,7 +1000,7 @@ static void code_present(struct request *q)
 			else if (written || new)
 				add_hint(q, xstrfmt("stage '%s', then rerun this command", file));
 			else if (k->old && q->gate)
-				add_hint(q, xstrfmt("if it was moved, run '%s'", again(q, &one, 'm')));
+				add_hint(q, xstrfmt("if it was moved, run '%s'", again(q, &one, 'm', NULL)));
 			else if (k->old)
 				add_hint(q, xstrfmt("if it was moved, rerun with '%s=%s'", k->id, moved_arg(k, q->v)));
 			if (!unsorted_string_list_has_string(&q->missing, item->string))
@@ -1099,7 +1116,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 		if (unchanged(r))
 			continue;
 		put(r, PREV, r->old ? blob_at(q->ht, xstrfmt(".ait/%s", r->id)) : "-");
-		strbuf_addf(&info, "100644 %s\t.ait/%s\n", line1(git_run(record_text(r, 1), NULL, NULL, "hash-object -w --stdin")),
+		strbuf_addf(&info, "100644 %s\t.ait/%s\n", line1(git_run(record_text(r, ALL_KEYS), NULL, NULL, "hash-object -w --stdin")),
 			    r->id);
 		string_list_append(&changed, r->id)->util = r;
 		if (!r->old && r->seq)
@@ -1242,15 +1259,12 @@ static void carry(struct request *q, struct string_list *ids)
 	size_t i;
 
 	for (i = 0; i < q->s.nr; i++) {
-		struct record *l = q->s.r[i], *o;
+		struct record *l = q->s.r[i], *o = undertaken(l) ? link_end(&q->s, l, 1) : NULL;
 		struct string_list_item *d;
 
-		if (!undertaken(l))
-			continue;
-		o = link_end(&q->s, l, 1);
 		if (!o || !unsorted_string_list_has_string(ids, o->id) || !in_state(o, "future"))
 			continue;
-		d = string_list_insert(&q->carried, link_end(&q->s, l, 0)->id);
+		d = string_list_insert(&q->carried, partner(&q->s, l, o)->id);
 		d->util = xstrfmt("%s %s", d->util ? (char *)d->util : " via", o->id);
 	}
 }
@@ -1365,11 +1379,6 @@ int cmd_request(int argc, const char **argv)
 	parse_clauses(&q);
 	session(1);
 	load(&q);
-	strbuf_addstr(&q.cmdline, "ait");
-	for (k = 0; k < q.args.nr; k++) {
-		strbuf_addch(&q.cmdline, ' ');
-		sq_quote_buf_pretty(&q.cmdline, q.args.v[k]);
-	}
 	for (k = 0; k < q.ncl; k++)
 		apply(&q, &q.cl[k]);
 	q.v = candidate(&q);
