@@ -267,8 +267,15 @@ static void write_state(const char *path, const char *text)
 	char *tmp = xstrfmt("%s.%d.tmp", path, (int)getpid());
 	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 
-	if (fd < 0 || write_in_full(fd, text, strlen(text)) < 0 || close(fd) || rename(tmp, path))
-		write_error(fd < 0 ? xstrndup(path, strrchr(path, '/') - path) : path);
+	if (fd < 0)
+		write_error(xstrndup(path, strrchr(path, '/') - path));
+	if (write_in_full(fd, text, strlen(text)) < 0 || close(fd) || rename(tmp, path)) {
+		int saved = errno;
+
+		unlink(tmp);
+		errno = saved;
+		write_error(path);
+	}
 }
 
 /* the worktrees of this repository, as git lists them */
@@ -589,7 +596,7 @@ static void recheck_hint(struct record *r, struct tree *t, struct tree *at);
  * not committed the result: a merge, cherry-pick, revert, or a rebase that
  * stopped at a commit. Any other operation in progress is no integration.
  */
-static int integrating(void)
+int integrating(void)
 {
 	struct strbuf safe = STRBUF_INIT;
 	char oid[48];

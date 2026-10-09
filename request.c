@@ -67,16 +67,16 @@ static int allowed(struct request *q, struct record *r, const char *from, const 
 	return 0;
 }
 
-/* spec 5.2-2: a merge, cherry-pick, revert, rebase or am is in progress (git v2.53.0 wt-status.c:1791) */
+/* spec 5.2-2: an integration (7.1.3), or a rebase, am or sequencer that has not stopped at a commit (git v2.53.0 wt-status.c:1791) */
 static int git_op_in_progress(void)
 {
-	static const char *const files[] = { "MERGE_HEAD", "rebase-merge", "rebase-apply", "sequencer/todo", NULL };
+	static const char *const files[] = { "rebase-merge", "rebase-apply", "sequencer/todo", NULL };
 	int i;
 
 	for (i = 0; files[i]; i++)
 		if (!access(xstrfmt("%s/%s", gitdir, files[i]), F_OK))
 			return 1;
-	return object("CHERRY_PICK_HEAD", 0, NULL, NULL) || object("REVERT_HEAD", 0, NULL, NULL);
+	return integrating();
 }
 
 /* spec 5.2 */
@@ -1057,14 +1057,38 @@ static void report(struct request *q, const char *req, const char *res, int with
 		puts(q->missing.nr || q->mixed.nr || q->invalid.code ? "ready no" : "ready yes");
 }
 
+/* the kind of output line a changed record of this request gets (6.7, 7.7.5); "" when none */
+static const char *kind_of(struct request *q, struct record *r)
+{
+	if (*r->id == 'u')
+		return val(r, STATE);
+	if (!r->old)
+		return "new";
+	if (q->gate)
+		return "changed";
+	return is_current(r) && in_state(r->old, "future") ? "fulfilled" : "";
+}
+
+static void print_change(struct request *q, struct record *r)
+{
+	if (*r->id == 'u')
+		printf("%s %.13s %s\n", val(r, STATE), r->id + 10, r->id + 24);
+	else if (!r->old)
+		printf("new %s%s%s\n", r->id, r->alias ? " " : "", r->alias ? r->alias : "");
+	else
+		printf("%s %s%s\n", kind_of(q, r), r->id, q->gate ? "" : via(q, r));
+}
+
 /* spec 7.7.4 and 6.5: pin the check set at the judged tree, add what changed to it and commit */
 static void commit_request(struct request *q, struct strbuf *results)
 {
-	struct string_list changed = STRING_LIST_INIT_DUP;
+	static const char *const kinds[] = { "new", "changed", "fulfilled", "undertaken", "released", NULL };
+	struct string_list changed = STRING_LIST_INIT_DUP, sorted = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct strbuf info = STRBUF_INIT, trailers = STRBUF_INIT;
 	char rid[16], *tree;
 	size_t i;
+	int kind;
 
 	newid(rid, 'R');
 	for_each_string_list_item(item, &q->conf)
@@ -1104,18 +1128,13 @@ static void commit_request(struct request *q, struct strbuf *results)
 	if (publish(tree, q->msg.buf, q->noted))
 		reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 	printf("request %s\n", rid);
-	for_each_string_list_item(item, &changed) {
-		struct record *r = item->util;
-
-		if (!r->old && *r->id != 'u')
-			printf("new %s%s%s\n", r->id, r->alias ? " " : "", r->alias ? r->alias : "");
-		else if (*r->id == 'u')
-			printf("%s %.13s %s\n", val(r, STATE), r->id + 10, r->id + 24);
-		else if (q->gate)
-			printf("changed %s\n", r->id);
-		else if (is_current(r) && in_state(r->old, "future"))
-			printf("fulfilled %s%s\n", r->id, via(q, r));
-	}
+	/* 6.7 and 7.7.5: one kind after another, by ID within a kind, but new in the order made */
+	for (i = 0; i < changed.nr; i++)
+		string_list_insert(&sorted, changed.items[i].string)->util = changed.items[i].util;
+	for (kind = 0; kinds[kind]; kind++)
+		for_each_string_list_item(item, kind ? &sorted : &changed)
+			if (!strcmp(kind_of(q, item->util), kinds[kind]))
+				print_change(q, item->util);
 	for_each_string_list_item(item, &q->conf)
 		printf("check %s %s\n", item->string, q->force ? "forced" : "reported");
 	for_each_string_list_item(item, &changed)

@@ -22,6 +22,7 @@ char *line1(char *s);
 void newid(char *out, int prefix);
 const char *session(int need);
 int lock_worktree(const char *wt);
+int integrating(void);
 extern char agent[72], sid[16];
 
 /* record.c: trees, records and the judgements computed from them */
