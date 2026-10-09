@@ -1010,350 +1010,410 @@ int read_text(struct strbuf *sb, const char *path)
 }
 
 /*
- * The YAML subset of spec 2.5.1, flattened into KV: "a: x" is "a", list items
- * are "a.0", "a.1", map keys inside them "a.0.b". Every value keeps where it
- * starts in the text and whether it holds a list or map.
+ * The YAML subset of spec 2.5.1, read by recursive descent as YAML 1.2 places
+ * its forms: block maps and lists by indentation, flow collections, plain and
+ * quoted scalars, literal blocks and comments. One function reads each form,
+ * and the boundaries of tokens are decided in scalar() and line_end() alone.
+ * The values are flattened into KV: "a: x" is "a", list items are "a.0",
+ * keys inside them "a.0.b"; '.' and '\' in a key are escaped, so a path names
+ * one value. Every value keeps where it starts in the text and its kind.
  */
 struct yval {
 	char *s;
 	size_t at;
-	char kind;	/* 'l' a list, 'm' a map, '?' a key with nothing under it yet, 0 a scalar */
+	char kind;	/* 'l' a list, 'm' a map, '?' a key with nothing under it, 0 a scalar */
 };
 
 struct yaml {
-	const char *text, *what;
+	const char *text, *p, *what;
 	struct string_list *kv;
 	char *err;
+	int depth;
 };
 
 static int yaml_fail(struct yaml *y, const char *fmt, ...)
 {
 	struct strbuf sb = STRBUF_INIT;
+	const char *c;
 	va_list ap;
+	int line = 1;
 
+	for (c = y->text; c < y->p; c++)
+		line += *c == '\n';
 	strbuf_addf(&sb, "bad format: '%s': ", y->what);
 	va_start(ap, fmt);
 	strbuf_vaddf(&sb, fmt, ap);
 	va_end(ap);
+	strbuf_addf(&sb, " in line %d", line);
 	if (!y->err)
 		y->err = strbuf_detach(&sb, NULL);
 	return -1;
 }
 
-/* V holds a list ('l') or a map ('m'), never both */
-static int yaml_kind(struct yaml *y, struct yval *v, char kind, const char *key)
-{
-	if (v->kind != '?' && v->kind != kind)
-		return yaml_fail(y, "'%s' is both a list and a map", key);
-	v->kind = kind;
-	return 0;
-}
-
-static struct yval *yaml_put(struct yaml *y, char *key, char *s, const char *at)
-{
-	struct yval *v;
-
-	if (unsorted_string_list_has_string(y->kv, key)) {
-		yaml_fail(y, "duplicate key '%s'", key);
-		return NULL;
-	}
-	v = xcalloc(1, sizeof(*v));
-	v->s = s;
-	v->at = at - y->text;
-	string_list_append(y->kv, key)->util = v;
-	return v;
-}
-
-/* a quoted scalar at *P into SB: '...' with '' for ', or "..." escaping only \" and \\ (2.5.1) */
-static int yaml_quoted(struct yaml *y, const char **p, struct strbuf *sb, const char *key)
-{
-	const char *v = *p;
-	char q = *v;
-
-	for (v++; *v && *v != '\n' && (*v != q || (q == '\'' && v[1] == '\'')); v++) {
-		if (q == '"' && *v == '\\' && v[1] != '"' && v[1] != '\\')
-			return yaml_fail(y, "an escape other than \\\" or \\\\ in '%s'", key);
-		if ((q == '"' && *v == '\\') || (q == '\'' && *v == '\''))
-			v++;
-		strbuf_addch(sb, *v);
-	}
-	if (*v != q)
-		return yaml_fail(y, "unterminated quote in '%s'", key);
-	*p = v + 1;
-	return 0;
-}
-
-/* a scalar at *P, quoted or plain up to a character of STOP, a comment or the line's end */
-static int yaml_scalar(struct yaml *y, const char **p, const char *stop, char *key)
+/* the path of KEY (a map key, or a list index) under PATH, NULL being the root */
+static char *yaml_path(const char *path, const char *key)
 {
 	struct strbuf sb = STRBUF_INIT;
-	const char *v = *p, *at = v;
-	char q = *v;
 
-	if (q && strchr("&*!|>%@`", q))
-		return yaml_fail(y, "unsupported YAML in '%s'", key);
-	if (q != '"' && q != '\'') {
-		while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == '#' && v > at && v[-1] == ' ')) {
-			/* YAML 1.2: ": " ends a key, so a plain scalar cannot hold it */
-			if (*v == ':' && (!v[1] || v[1] == ' ' || v[1] == '\n'))
-				return yaml_fail(y, "': ' inside the plain scalar of '%s'", key);
-			strbuf_addch(&sb, *v++);
-		}
-		strbuf_rtrim(&sb);
-	} else if (yaml_quoted(y, &v, &sb, key)) {
-		return -1;
-	} else {
-		at++;
-	}
-	*p = v;
-	return yaml_put(y, key, strbuf_detach(&sb, NULL), at) ? 0 : -1;
-}
-
-/*
- * where the map key at P ends, at its ':' (YAML 1.2: a quoted scalar, or a
- * plain one up to ':' and a blank, a line's end or a character of STOP); NULL when P holds no key
- */
-static const char *key_end(const char *p, const char *stop)
-{
-	const char *v = p;
-
-	if (*v == '"' || *v == '\'') {
-		for (v++; *v && *v != '\n' && (*v != *p || (*p == '\'' && v[1] == '\'')); v++)
-			if ((*p == '"' && *v == '\\') || (*p == '\'' && *v == '\''))
-				v++;
-		if (*v != *p)
-			return NULL;
-		v += 1 + strspn(v + 1, " ");
-		/* after a quoted key, ':' needs no blank (YAML 1.2, as in JSON) */
-		return *v == ':' ? v : NULL;
-	}
-	while (*v && *v != '\n' && !strchr(stop, *v) && !(*v == ':' && (!v[1] || strchr(" \n,]}", v[1]))))
-		v++;
-	return *v == ':' && v > p ? v : NULL;
-}
-
-/* the map key at *P, read up to its ':' and past it; NULL when there is none */
-static char *yaml_key(struct yaml *y, const char **p, const char *stop)
-{
-	const char *end = key_end(*p, stop), *v = *p;
-	struct strbuf sb = STRBUF_INIT;
-
-	if (!end)
-		return NULL;
-	if (*v == '"' || *v == '\'')
-		yaml_quoted(y, &v, &sb, "a key");
-	else
-		strbuf_add(&sb, v, end - v);
-	strbuf_rtrim(&sb);
-	*p = end + 1;
-	/* a key is one step of a path ("a.0.b"): no schema key holds '.', and one that did would read as a path */
-	if (strchr(sb.buf, '.')) {
-		yaml_fail(y, "unknown key '%s'", sb.buf);
-		return NULL;
+	if (path)
+		strbuf_addf(&sb, "%s.", path);
+	for (; *key; key++) {
+		if (*key == '.' || *key == '\\')
+			strbuf_addch(&sb, '\\');
+		strbuf_addch(&sb, *key);
 	}
 	return strbuf_detach(&sb, NULL);
 }
 
-/* the blanks, line ends and comments between the items of a flow collection */
-static const char *flow_gap(const char *p)
+static int yaml_put(struct yaml *y, const char *path, char *s, size_t at, char kind)
+{
+	struct yval *v;
+
+	if (!path)
+		return 0;
+	if (unsorted_string_list_has_string(y->kv, path))
+		return yaml_fail(y, "duplicate key '%s'", path);
+	v = xcalloc(1, sizeof(*v));
+	*v = (struct yval){ s, at, kind };
+	string_list_append(y->kv, path)->util = v;
+	return 0;
+}
+
+/* a comment: '#' at the start of a line or after a blank */
+static int comment(struct yaml *y)
+{
+	return *y->p == '#' && (y->p == y->text || y->p[-1] == ' ' || y->p[-1] == '\n');
+}
+
+/* the rest of the line holds blanks and maybe a comment; then past its end */
+static int line_end(struct yaml *y)
+{
+	y->p += strspn(y->p, " ");
+	if (comment(y))
+		y->p = strchrnul(y->p, '\n');
+	if (*y->p && *y->p != '\n')
+		return yaml_fail(y, "unexpected '%c'", *y->p);
+	y->p += !!*y->p;
+	return 0;
+}
+
+/* from a line's start, past blank and comment lines to the next content: its indentation, or -1 at the end */
+static int next_line(struct yaml *y)
 {
 	for (;;) {
-		p += strspn(p, " \n");
-		if (*p != '#')
-			return p;
-		p = strchrnul(p, '\n');
+		int n = strspn(y->p, " ");
+
+		y->p += n;
+		if (comment(y))
+			y->p = strchrnul(y->p, '\n');
+		if (*y->p != '\n')
+			return *y->p ? n : -1;
+		y->p++;
 	}
 }
 
-/* the key of a value under KEY: "KEY.NAME", or NAME at the document's root (KEY NULL) */
-static char *yaml_child(const char *key, const char *name)
+/* in a flow collection, past blanks, line ends and comments */
+static void flow_gap(struct yaml *y)
 {
-	return key ? xstrfmt("%s.%s", key, name) : xstrdup(name);
+	for (;;) {
+		y->p += strspn(y->p, " \n");
+		if (!comment(y))
+			return;
+		y->p = strchrnul(y->p, '\n');
+	}
 }
 
-/* a flow list "[a, b]" or flow map "{k: v}" at *P, over as many lines as written, nested as deep; KEY NULL is the root map */
-static int yaml_flow(struct yaml *y, const char **p, char *key, int depth)
+/*
+ * a scalar: '...' (with '' for '), "..." (escaping only \" and \\), or plain;
+ * a plain scalar starts with no indicator and ends at ": ", " #", the line's
+ * end, and in FLOW also at ",[]{}"; AT gets where its text starts
+ */
+static char *scalar(struct yaml *y, int flow, size_t *at)
 {
-	char close = **p == '[' ? ']' : '}';
-	struct yval *v = key ? yaml_put(y, key, xstrdup(""), *p) : NULL;
+	struct strbuf sb = STRBUF_INIT;
+	const char *v = y->p, *stop = flow ? " \n,[]{}" : " \n";
+	char q = *v;
+
+	if (q == '\'' || q == '"') {
+		*at = v + 1 - y->text;
+		for (v++; *v && *v != '\n' && (*v != q || (q == '\'' && v[1] == '\'')); v++) {
+			if (q == '"' && *v == '\\' && v[1] != '"' && v[1] != '\\') {
+				y->p = v;
+				yaml_fail(y, "an escape other than \\\" or \\\\");
+				return NULL;
+			}
+			if ((q == '"' && *v == '\\') || (q == '\'' && *v == '\''))
+				v++;
+			strbuf_addch(&sb, *v);
+		}
+		if (*v != q) {
+			yaml_fail(y, "an unterminated quote");
+			return NULL;
+		}
+		y->p = v + 1;
+		return strbuf_detach(&sb, NULL);
+	}
+	if (!*v || strchr(",[]{}#&*!|>'\"%@`", *v) || (strchr("-?:", *v) && strchr(stop, v[1] ? v[1] : ' '))) {
+		yaml_fail(y, "no value at '%c'", *v && *v != '\n' ? *v : ' ');
+		return NULL;
+	}
+	*at = v - y->text;
+	while (*v && *v != '\n' && !(*v == ':' && strchr(stop, v[1] ? v[1] : ' ')) && !(*v == '#' && v[-1] == ' ') &&
+	       !(flow && strchr(",[]{}", *v)))
+		strbuf_addch(&sb, *v++);
+	strbuf_rtrim(&sb);
+	y->p = v;
+	return strbuf_detach(&sb, NULL);
+}
+
+/* a map key and its ':' at the point: the key, or NULL with the point kept when there is none */
+static char *key(struct yaml *y, int flow)
+{
+	const char *start = y->p;
+	char *err = y->err, *k;
+	size_t at;
+
+	k = scalar(y, flow, &at);
+	y->p += strspn(y->p, " ");
+	if (k && *y->p == ':') {
+		y->p++;
+		return k;
+	}
+	y->p = start;
+	y->err = err;
+	return NULL;
+}
+
+/* where the point stands in its line */
+static int column(struct yaml *y)
+{
+	const char *l = y->p;
+
+	while (l > y->text && l[-1] != '\n')
+		l--;
+	return y->p - l;
+}
+
+static int dash(struct yaml *y)
+{
+	return *y->p == '-' && (!y->p[1] || y->p[1] == ' ' || y->p[1] == '\n');
+}
+
+static int block_map(struct yaml *y, const char *path, int indent);
+static int block_list(struct yaml *y, const char *path, int indent);
+
+static int deeper(struct yaml *y)
+{
+	return ++y->depth > 16 ? yaml_fail(y, "nested too deeply") : 0;
+}
+
+/* a flow list "[a, b]" or map "{k: v}" at the point, over as many lines as written */
+static int flow(struct yaml *y, const char *path)
+{
+	char close = *y->p == '[' ? ']' : '}', *k, *s;
+	size_t at = y->p - y->text;
 	int n;
 
-	if (key && !v)
+	if (deeper(y) || yaml_put(y, path, xstrdup(""), at, close == ']' ? 'l' : 'm'))
 		return -1;
-	if (depth > 15)
-		return yaml_fail(y, "'%s' is nested too deeply", key);
-	if (v)
-		v->kind = close == ']' ? 'l' : 'm';
-	*p = flow_gap(*p + 1);
-	for (n = 0; **p != close; n++) {
-		char *sub = yaml_child(key, xstrfmt("%d", n)), *name;
+	y->p++;
+	flow_gap(y);
+	for (n = 0; *y->p != close; n++) {
+		char *sub = yaml_path(path, xstrfmt("%d", n));
 
-		if (**p == ',')
-			return yaml_fail(y, "an empty item in '%s'", key ? key : "the document");
 		if (close == '}') {
-			name = yaml_key(y, p, ",]}");
-			if (!name)
-				return yaml_fail(y, "not a key in '%s'", key ? key : "the document");
-			sub = yaml_child(key, name);
-			*p = flow_gap(*p);
+			if (!(k = key(y, 1)))
+				return yaml_fail(y, "no key");
+			sub = yaml_path(path, k);
+			flow_gap(y);
 		}
-		if (**p == '[' || **p == '{' ? yaml_flow(y, p, sub, depth + 1) : yaml_scalar(y, p, ",]}", sub))
+		if (*y->p == '[' || *y->p == '{') {
+			if (flow(y, sub))
+				return -1;
+		} else if (!(s = scalar(y, 1, &at)) || yaml_put(y, sub, s, at, 0)) {
 			return -1;
-		*p = flow_gap(*p);
-		if (**p == ',')
-			*p = flow_gap(*p + 1);
-		else if (**p != close)
-			return yaml_fail(y, "expected ',' or '%c' in '%s'", close, key);
+		}
+		flow_gap(y);
+		if (*y->p == ',') {
+			y->p++;
+			flow_gap(y);
+		} else if (*y->p != close) {
+			return yaml_fail(y, "expected ',' or '%c'", close);
+		}
 	}
-	(*p)++;
+	y->p++;
+	y->depth--;
 	return 0;
 }
 
-/* the line after the one P stands on, when a flow collection went past NEXT; NO counts the lines */
-static const char *flow_end(const char *p, const char *next, int *no)
+/* a literal block "|": the lines below more indented than INDENT, clipped to one final newline */
+static int literal(struct yaml *y, const char *path, int indent)
 {
-	const char *c;
+	struct strbuf sb = STRBUF_INIT;
+	size_t at = y->p - y->text;
+	int block = -1;
 
-	if (p < next)
-		return next;
-	for (c = next; c < p; c++)
-		*no += *c == '\n';
-	c = strchrnul(p, '\n');
-	return c + (*c == '\n');
+	while (*y->p) {
+		const char *e = strchrnul(y->p, '\n');
+		int in = strspn(y->p, " "), blank = y->p + in == e;
+
+		if (!blank && in <= indent)
+			break;
+		if (!blank && block < 0) {
+			block = in;
+			at = y->p + in - y->text;
+		}
+		if (!blank && in < block)
+			return yaml_fail(y, "a line less indented than the block's first");
+		strbuf_add(&sb, y->p + (blank ? e - y->p : block), blank ? 0 : e - y->p - block);
+		strbuf_addch(&sb, '\n');
+		y->p = e + !!*e;
+	}
+	while (sb.len > 1 && sb.buf[sb.len - 2] == '\n')
+		strbuf_setlen(&sb, sb.len - 1);
+	return yaml_put(y, path, block < 0 ? xstrdup("") : strbuf_detach(&sb, NULL), at, 0);
 }
 
-/* blanks, then the line's end or a comment, which a blank separates from what is before it */
-static int yaml_end(struct yaml *y, const char *p, int no)
+/*
+ * what stands under a key or dash whose line is done: a block map or list more
+ * indented than INDENT, a list at INDENT under a key (UNDER_KEY), or nothing
+ */
+static int block(struct yaml *y, const char *path, int indent, int under_key)
 {
-	p += strspn(p, " ");
-	return *p && *p != '\n' && (*p != '#' || p[-1] != ' ') ? yaml_fail(y, "trailing text in line %d", no) : 0;
+	int n = next_line(y);
+	size_t at = y->p - y->text;
+
+	if (n < 0 || n < indent || (n == indent && !(under_key && dash(y)))) {
+		y->p -= n < 0 ? 0 : n;
+		return yaml_put(y, path, xstrdup(""), at, '?');
+	}
+	if (dash(y))
+		return yaml_put(y, path, xstrdup(""), at, 'l') || block_list(y, path, n);
+	if (!key(y, 0))
+		return yaml_fail(y, "no key");
+	y->p = y->text + at;
+	return yaml_put(y, path, xstrdup(""), at, 'm') || block_map(y, path, n);
 }
 
-/* a level of block structure: where it is indented, its list items so far, its key and value */
-struct yframe {
-	int indent, items, map_only;
-	char *prefix;
-	struct yval *v;
-	int entries;	/* where its entries are indented, -1 until the first */
-};
-
-/* a map or list opening under KEY one level deeper, as deep as ait reads (16 levels) */
-static int yaml_push(struct yaml *y, struct yframe *st, int *sp, int indent, int map_only, char *key, const char *at,
-		     char kind, int no)
+/* what follows ": " or "- " on its line, in the map or list at INDENT */
+static int value(struct yaml *y, const char *path, int indent, int under_key)
 {
-	if (*sp >= 15)
-		return yaml_fail(y, "nested too deeply in line %d", no);
-	(*sp)++;
-	st[*sp] = (struct yframe){ indent, 0, map_only, key, yaml_put(y, key, xstrdup(""), at), map_only ? indent + 2 : -1 };
-	if (!st[*sp].v)
+	size_t at;
+	char *s;
+
+	y->p += strspn(y->p, " ");
+	if (!*y->p || *y->p == '\n' || comment(y))
+		return line_end(y) || block(y, path, indent, under_key);
+	if (*y->p == '|') {
+		y->p++;
+		return line_end(y) || literal(y, path, indent);
+	}
+	if (*y->p == '[' || *y->p == '{')
+		return flow(y, path) || line_end(y);
+	if (!(s = scalar(y, 0, &at)))
 		return -1;
-	st[*sp].v->kind = kind;
+	return yaml_put(y, path, s, at, 0) || line_end(y);
+}
+
+/* after a block's entry, the next line at INDENT: 1 to go on, 0 when the block ended, -1 on a bad indentation */
+static int next_entry(struct yaml *y, int indent)
+{
+	int n = next_line(y);
+
+	if (n < 0)
+		return 0;
+	if (n > indent)
+		return yaml_fail(y, "bad indentation");
+	y->p -= n < indent ? n : 0;
+	return n == indent;
+}
+
+/* the entries "KEY: VALUE" of a block map standing at INDENT */
+static int block_map(struct yaml *y, const char *path, int indent)
+{
+	int more;
+	char *k;
+
+	if (deeper(y))
+		return -1;
+	do {
+		if (!(k = key(y, 0)))
+			return yaml_fail(y, "no key");
+		if (*y->p && *y->p != ' ' && *y->p != '\n')
+			return yaml_fail(y, "no blank after ':'");
+		if (value(y, yaml_path(path, k), indent, 1) || (more = next_entry(y, indent)) < 0)
+			return -1;
+		if (more && dash(y))
+			return yaml_fail(y, "a list item among the entries of a map");
+	} while (more);
+	y->depth--;
 	return 0;
+}
+
+/* the items "- VALUE" of a block list standing at INDENT; an item may open a map on its own line */
+static int block_list(struct yaml *y, const char *path, int indent)
+{
+	int n = 0, more;
+
+	if (deeper(y))
+		return -1;
+	do {
+		char *item = yaml_path(path, xstrfmt("%d", n++));
+		size_t at;
+
+		y->p++;
+		y->p += strspn(y->p, " ");
+		at = y->p - y->text;
+		if (*y->p && *y->p != '\n' && !comment(y) && key(y, 0)) {
+			/* "- k: v": a map whose keys stand where its first one does */
+			y->p = y->text + at;
+			if (yaml_put(y, item, xstrdup(""), at, 'm') || block_map(y, item, column(y)))
+				return -1;
+		} else if (value(y, item, indent, 0)) {
+			return -1;
+		}
+		if ((more = next_entry(y, indent)) < 0)
+			return -1;
+		if (more && !dash(y)) {
+			y->p -= indent;
+			break;
+		}
+	} while (more);
+	y->depth--;
+	return 0;
+}
+
+/* a document is a block map, or one flow map (YAML 1.2), and nothing after it */
+static void document(struct yaml *y, int indent)
+{
+	const char *start = y->p;
+
+	if (*y->p == '{') {
+		if (flow(y, NULL) || line_end(y))
+			return;
+	} else if (!key(y, 0)) {
+		yaml_fail(y, "no key");
+		return;
+	} else {
+		y->p = start;
+		if (block_map(y, NULL, indent))
+			return;
+	}
+	if (next_line(y) >= 0)
+		yaml_fail(y, "text after the document");
 }
 
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err)
 {
-	struct yaml y = { text, what, kv, NULL };
-	struct yframe st[16] = { { -1, 0, 1, NULL, NULL, -1 } };
-	const char *line, *next;
-	int sp = 0, no = 0;
+	struct yaml y = { text, text, what, kv, NULL, 0 };
+	int n;
 
 	if (!is_utf8(text))
 		yaml_fail(&y, "not UTF-8");
-	if (strpbrk(text, "\t\r"))
+	else if (strpbrk(text, "\t\r"))
 		yaml_fail(&y, "a tab or CR");
-	for (line = text; *line && !y.err; line = next) {
-		const char *p = line, *e = strchrnul(line, '\n');
-		int indent = strspn(line, " "), item;
-		char *key, *prefix;
-
-		next = e + (*e == '\n');
-		no++;
-		p += indent;
-		if (p == e || *p == '#')
-			continue;
-		item = *p == '-' && (p + 1 == e || p[1] == ' ');
-		while (sp && (indent < st[sp].indent || (indent == st[sp].indent && (!item || st[sp].map_only))))
-			sp--;
-		if (st[sp].v && yaml_kind(&y, st[sp].v, item ? 'l' : 'm', st[sp].prefix))
-			break;
-		/* YAML 1.2: the entries of one map or list stand at one indentation */
-		if (st[sp].entries >= 0 && indent != st[sp].entries) {
-			yaml_fail(&y, "bad indentation in line %d", no);
-			break;
-		}
-		st[sp].entries = indent;
-		prefix = st[sp].prefix;
-		if (item) {
-			prefix = xstrfmt("%s.%d", prefix, st[sp].items++);
-			p += p + 1 == e ? 1 : 2;
-			indent += 2;
-			if (!key_end(p, "")) {
-				if (!(*p == '[' || *p == '{' ? yaml_flow(&y, &p, prefix, sp) : yaml_scalar(&y, &p, "", prefix)))
-					yaml_end(&y, p, no);
-				next = flow_end(p, next, &no);
-				continue;
-			}
-			if (yaml_push(&y, st, &sp, indent - 2, 1, prefix, p, 'm', no))
-				break;
-		}
-		/* YAML 1.2: the root may be a flow map, and then it is the whole document */
-		if (!prefix && !sp && *p == '{' && !kv->nr) {
-			if (!yaml_flow(&y, &p, NULL, 0))
-				p = flow_gap(p);
-			if (!y.err && *p)
-				yaml_fail(&y, "text after the document's flow map");
-			break;
-		}
-		key = yaml_key(&y, &p, "");
-		if (!key) {
-			yaml_fail(&y, "not a key in line %d", no);
-			break;
-		}
-		key = prefix ? yaml_child(prefix, key) : key;
-		p += strspn(p, " ");
-		if (p == e || *p == '#') {
-			if (yaml_push(&y, st, &sp, indent, 0, key, p, '?', no))
-				break;
-		} else if (*p == '|') {
-			/* a literal block: the more indented lines below, clipped to one final newline */
-			struct strbuf sb = STRBUF_INIT;
-			const char *l = next, *at = next;
-			int block = -1;
-
-			if (yaml_end(&y, p + 1, no))
-				break;
-			while (*l) {
-				const char *le = strchrnul(l, '\n');
-				int in = strspn(l, " "), blank = l + in == le;
-
-				if (!blank && in <= indent)
-					break;
-				if (!blank && block < 0) {
-					block = in;
-					at = l + in;
-				}
-				if (!blank && in < block) {
-					yaml_fail(&y, "a line of '%s' is less indented than its first", key);
-					break;
-				}
-				strbuf_add(&sb, l + (blank ? le - l : block), blank ? 0 : le - l - block);
-				strbuf_addch(&sb, '\n');
-				l = le + (*le == '\n');
-				no++;
-			}
-			while (sb.len > 1 && sb.buf[sb.len - 2] == '\n')
-				strbuf_setlen(&sb, sb.len - 1);
-			yaml_put(&y, key, block < 0 ? xstrdup("") : strbuf_detach(&sb, NULL), at);
-			next = l;
-		} else if (*p == '[' || *p == '{') {
-			if (!yaml_flow(&y, &p, key, sp))
-				yaml_end(&y, p, no);
-			next = flow_end(p, next, &no);
-		} else if (!yaml_scalar(&y, &p, "", key)) {
-			yaml_end(&y, p, no);
-		}
-	}
+	else if ((n = next_line(&y)) >= 0)
+		document(&y, n);
 	*err = y.err;
 	return y.err ? -1 : 0;
 }
