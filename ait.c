@@ -166,22 +166,32 @@ void newid(char *out, int prefix)
 }
 
 /* spec 5.12: fix the toplevel and the hook's index, then clear what redirects git */
-static void setup(void)
+static void setup(int bare_ok)
 {
 	static const char *clear[] = { "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX",
 				       "GIT_COMMON_DIR", "GIT_DIFF_OPTS", NULL };
-	int i, major = 0, minor = 0;
-	char *paths, oid[48];
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	int i, major = 0, minor = 0, rc;
+	char oid[48];
 
 	sscanf(git("version"), "git version %d.%d", &major, &minor);
 	/* "git cat-file --batch-command" came in 2.36 (git v2.53.0 Documentation/RelNotes/2.36.0.adoc:75) */
 	if (major < 2 || (major == 2 && minor < 36))
 		reject(128, "install git 2.36 or later", "git %d.%d is too old for ait", major, minor);
-	paths = git("rev-parse --show-toplevel --absolute-git-dir --path-format=absolute --git-common-dir");
-	top = xstrndup(paths, strcspn(paths, "\n"));
-	paths += strlen(top) + 1;
-	gitdir = xstrndup(paths, strcspn(paths, "\n"));
-	commondir = line1(paths + strlen(gitdir) + 1);
+	/*
+	 * the work tree last: a bare repository has none, and only a hook may run
+	 * there (pre-push, 7.1.6); rev-parse prints what it answered before it stops
+	 */
+	string_list_split(&lines, git_run(NULL, NULL, &rc, "rev-parse --absolute-git-dir --path-format=absolute "
+					  "--git-common-dir --show-object-format --show-toplevel"), "\n", -1);
+	if (lines.nr < 4 || (rc && !bare_ok))
+		reject(128, lines.nr < 4 ? "run this command inside a git repository" : NULL, "git failed: %s", git_error);
+	gitdir = lines.items[0].string;
+	commondir = lines.items[1].string;
+	/* object IDs are SHA-1 throughout ait-mini */
+	if (strcmp(lines.items[2].string, "sha1"))
+		unsupported(xstrfmt("object format %s", lines.items[2].string));
+	top = rc ? NULL : lines.items[3].string;
 	if (getenv("GIT_INDEX_FILE"))
 		gindex = realpath(getenv("GIT_INDEX_FILE"), NULL);
 	for (i = 0; clear[i]; i++)
@@ -261,6 +271,29 @@ static void write_state(const char *path, const char *text)
 		write_error(fd < 0 ? xstrndup(path, strrchr(path, '/') - path) : path);
 }
 
+/* the worktrees of this repository, as git lists them */
+static struct string_list *worktrees(void)
+{
+	static struct string_list list = STRING_LIST_INIT_DUP;
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	const char *path;
+
+	if (list.nr)
+		return &list;
+	string_list_split(&lines, git("worktree list --porcelain"), "\n", -1);
+	for_each_string_list_item(item, &lines)
+		if (skip_prefix(item->string, "worktree ", &path))
+			string_list_insert(&list, path);
+	return &list;
+}
+
+/* spec 5.8 E_SESSION: the worktree WT is no longer there, or git no longer lists it */
+static int gone(const char *wt)
+{
+	return access(wt, F_OK) || !string_list_has_string(worktrees(), wt);
+}
+
 static char *quoted(const char *s)
 {
 	struct strbuf sb = STRBUF_INIT;
@@ -309,7 +342,9 @@ const char *session(int need)
 	} else if (env && !wt)
 		reject(128, "ait session list", "no usable ait session: unknown session '%s'", env);
 	else if (wt && strcmp(wt, top))
-		reject(128, xstrfmt("cd %s", quoted(wt)), "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
+		reject(128, gone(wt) ? xstrfmt("its worktree is gone; close it: 'ait session close %s', then open a session with "
+					       "the same name in the worktree of your branch: 'ait session open --agent %s'", env, agent) :
+		       xstrfmt("cd %s", quoted(wt)), "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
 	if (!wt && need)
 		reject(128, "find your session with 'ait session list', or open one: 'ait session open --agent <name>'",
 		       "no usable ait session: none for this worktree");
@@ -357,9 +392,14 @@ static int cmd_session(int argc, const char **argv)
 			if (strncmp(who, name, wt - 1 - who) || strlen(name) != (size_t)(wt - 1 - who))
 				continue;
 			warning("agent name '%s' is also used by session '%s' (worktree '%s')", name, ids.items[i].string, wt);
-			suggest("if '%s' is yours, close this one: 'ait session close %s', and use '%s' in '%s' with "
-			       "AIT_SESSION=%s; otherwise close this one and open again with another name",
-			       ids.items[i].string, sid, ids.items[i].string, wt, ids.items[i].string);
+			if (gone(wt))
+				suggest("its worktree is gone; close it: 'ait session close %s', and keep this one if this worktree "
+					"is on your branch, otherwise close this one too ('ait session close %s') and open it again "
+					"in the worktree of your branch", ids.items[i].string, sid);
+			else
+				suggest("if '%s' is yours, close this one: 'ait session close %s', and use '%s' in '%s' with "
+					"AIT_SESSION=%s; otherwise close this one and open again with another name",
+					ids.items[i].string, sid, ids.items[i].string, wt, ids.items[i].string);
 		}
 		fd = held(top);
 		mine = default_of(top);
@@ -442,9 +482,13 @@ static char *hooks_dir(void)
 static int cmd_init(int argc, const char **argv)
 {
 	char *dir = hooks_dir();
-	int in_repo = inside(dir, top) && !inside(dir, commondir);
+	struct string_list_item *wt;
 	struct tree *t;
-	int i, bad = 0;
+	int i, bad = 0, in_repo = 0;
+
+	/* 7.1.1: inside any worktree of this repository and outside the git common directory */
+	for_each_string_list_item(wt, worktrees())
+		in_repo |= inside(dir, wt->string) && !inside(dir, commondir);
 
 	if (argc > 1)
 		reject(129, NULL, "init takes no arguments");
@@ -540,7 +584,28 @@ static int pre_push(void)
 
 static void recheck_hint(struct record *r, struct tree *t, struct tree *at);
 
-/* spec 7.1.2-7.1.3: guard plain commits, validate merges */
+/*
+ * spec 7.1.3: git stopped while bringing another commit into HEAD and has
+ * not committed the result: a merge, cherry-pick, revert, or a rebase that
+ * stopped at a commit. Any other operation in progress is no integration.
+ */
+static int integrating(void)
+{
+	struct strbuf safe = STRBUF_INIT;
+	char oid[48];
+
+	if (!access(xstrfmt("%s/MERGE_HEAD", gitdir), F_OK) || object("CHERRY_PICK_HEAD", 0, NULL, NULL) ||
+	    object("REVERT_HEAD", 0, NULL, NULL))
+		return 1;
+	if (!object("REBASE_HEAD", 0, NULL, NULL))
+		return 0;
+	if (!access(xstrfmt("%s/rebase-merge", gitdir), F_OK))
+		return !access(xstrfmt("%s/MERGE_MSG", gitdir), F_OK);
+	return strbuf_read_file(&safe, xstrfmt("%s/rebase-apply/abort-safety", gitdir), 0) >= 0 &&
+	       object("HEAD", 0, oid, NULL) && !strcmp(line1(safe.buf), oid);
+}
+
+/* spec 7.1.2-7.1.3: guard plain commits, validate integrations */
 static int cmd_hook(int argc, const char **argv)
 {
 	struct state hs = { 0 };
@@ -554,7 +619,7 @@ static int cmd_hook(int argc, const char **argv)
 	if (argc < 2 || (strcmp(argv[1], "pre-commit") && strcmp(argv[1], "pre-merge-commit")))
 		return 0;
 	t = tree_load(line1(git_run(NULL, gindex, NULL, "write-tree")));
-	if (!strcmp(argv[1], "pre-merge-commit") || git_op_in_progress()) {
+	if (!strcmp(argv[1], "pre-merge-commit") || integrating()) {
 		validate_at(t);
 		return 0;
 	}
@@ -592,23 +657,6 @@ static int cmd_hook(int argc, const char **argv)
 	return 0;
 }
 
-/* KEPT,<new scope> of 5.9a: the pieces of R's provider that T still has, then the new place */
-static char *moved_arg(struct record *r, struct tree *t)
-{
-	struct strbuf kept = STRBUF_INIT, arg = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, &r->f[PROVIDER])
-		if (blob_at(t, scope_path(item->string)))
-			strbuf_addf(&kept, "%s%s", kept.len ? "," : "", scope_path(item->string));
-	if (kept.len) {
-		sq_quote_buf_pretty(&arg, kept.buf);
-		strbuf_addch(&arg, ',');
-	}
-	strbuf_addstr(&arg, "<new scope>");
-	return strbuf_detach(&arg, NULL);
-}
-
 /* H7 and H8: check an unverified contract again, at its scope in T or where its code went; amend reads KEPT in AT */
 static void recheck_hint(struct record *r, struct tree *t, struct tree *at)
 {
@@ -638,7 +686,7 @@ static void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 	for (j = 0; j < s->nr; j++) {
 		struct record *l = s->r[j], *d;
 
-		if (*l->id != 'u' || l->bad || !in_state(l, "undertaken") || link_end(s, l, 1) != p)
+		if (!undertaken(l) || link_end(s, l, 1) != p)
 			continue;
 		d = link_end(s, l, 0);
 		if (in_state(d, "future") && is_abstract(d))
@@ -692,7 +740,7 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 	for (j = 0; j < s->nr; j++) {
 		struct record *l = s->r[j], *other;
 
-		if (*l->id != 'u' || l->bad || !in_state(l, "undertaken") || !strstr(l->id, r->id))
+		if (!undertaken(l) || !strstr(l->id, r->id))
 			continue;
 		other = link_end(s, l, *r->id == 'D');
 		printf("%s %s %s %s\n", *r->id == 'O' ? "undertakes" : "undertaken-by", other->id, val(other, STATE),
@@ -726,9 +774,7 @@ static int cmd_todo(int argc, const char **argv)
 			continue;
 		if (strlen(a) == 13 && strchr("DOX", *a))
 			reject(128, NULL, "no such contract: '%s'", a);
-		no_range(a);
-		if (strcmp(a, "/") && !path_ok(ends_with(a, "/") ? xstrndup(a, strlen(a) - 1) : a))
-			reject(128, NULL, "bad scope: '%s'", a);
+		scope_shape(a);
 	}
 	for (i = 0; i < s.nr; i++) {
 		struct record *r = s.r[i];
@@ -808,7 +854,7 @@ int main(int argc, const char **argv)
 			continue;
 		if (!commands[i].fn)
 			unsupported(argv[1]);
-		setup();
+		setup(!strcmp(argv[1], "hook"));
 		if (strcmp(argv[1], "init") && strcmp(argv[1], "hook"))
 			check_hooks();
 		return commands[i].fn(argc - 1, argv + 1);

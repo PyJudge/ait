@@ -186,6 +186,12 @@ int is_live(struct record *r)
 	return *r->id != 'u' && (in_state(r, "future") || in_state(r, "current"));
 }
 
+/* a readable link that is undertaken: its demand and offer exist (state_load marks it bad otherwise) */
+int undertaken(struct record *l)
+{
+	return *l->id == 'u' && !l->bad && in_state(l, "undertaken");
+}
+
 int is_current(struct record *r)
 {
 	return *r->id != 'u' && in_state(r, "current");
@@ -332,19 +338,17 @@ void state_load(struct state *s, struct tree *t)
 		if (*id == 'X')
 			unsupported("drop record");
 		text = strcmp(e->mode, "100644") ? NULL : blob_text(e->oid);
-		if (!strcmp(id, "init")) {
-			if (!text || strcmp(text, "version 1\n"))
-				state_add(s, id)->bad = xstrdup("must be the single line 'version 1'");
-			continue;
-		}
 		r = state_add(s, id);
-		if (strcmp(e->mode, "100644") || !id_ok(id))
+		/* 2.1.2a: the init file is no record; only its one line is checked, and it stays as T has it */
+		if (!strcmp(id, "init"))
+			r->bad = text && !strcmp(text, "version 1\n") ? NULL : xstrdup("must be the single line 'version 1'");
+		else if (strcmp(e->mode, "100644") || !id_ok(id))
 			r->bad = xstrdup("not a record path");
 		else if (!text)
 			r->bad = xstrdup("not a text file");
 		else
 			record_parse(r, text);
-		if (!r->bad)
+		if (!r->bad && strcmp(id, "init"))
 			r->bad = record_check(r);
 		r->old = record_copy(r);
 	}
@@ -511,15 +515,22 @@ const char *unusable(struct record *r, struct tree *t)
 	return NULL;
 }
 
-/* spec 5.10: a request on a state with a malformed record stops with that record's error */
-void reject_malformed(struct state *s)
+/* spec 5.10: a malformed record cannot be read; whoever needs it stops with its error */
+struct record *readable(struct record *r)
 {
 	struct verdict v;
+
+	if (r->bad && bad_record(&v, r, r->bad))
+		reject(v.code, v.hint, "%s", v.msg);
+	return r;
+}
+
+void reject_malformed(struct state *s)
+{
 	size_t i;
 
 	for (i = 0; i < s->nr; i++)
-		if (s->r[i]->bad && bad_record(&v, s->r[i], s->r[i]->bad))
-			reject(v.code, v.hint, "%s", v.msg);
+		readable(s->r[i]);
 }
 
 void validate(struct state *s, struct tree *t)
@@ -582,6 +593,17 @@ void no_range(const char *arg)
 		unsupported("line ranges");
 }
 
+/* spec 3.1-3.2: the shape of a scope argument, judged before any tree is read (5.13-1) */
+void scope_shape(const char *arg)
+{
+	const char *p = arg;
+
+	skip_prefix(arg, "new:", &p);
+	no_range(arg);
+	if (strcmp(p, "/") && !path_ok(ends_with(p, "/") ? xstrndup(p, strlen(p) - 1) : p))
+		reject(128, NULL, "bad scope: '%s'", arg);
+}
+
 /* spec 3.3-3.4: fix a scope argument at tree T */
 char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 {
@@ -626,6 +648,23 @@ char *shows(struct record *r, enum key k, struct tree *t, int current)
 	for_each_string_list_item(item, &r->f[k])
 		strbuf_addf(&sb, "%s%s", sb.len ? "," : "", show(item->string, t, current));
 	return strbuf_detach(&sb, NULL);
+}
+
+/* KEPT,<new scope> of 5.9a: the pieces of R's provider that T still has, then the new place */
+char *moved_arg(struct record *r, struct tree *t)
+{
+	struct strbuf kept = STRBUF_INIT, arg = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &r->f[PROVIDER])
+		if (blob_at(t, scope_path(item->string)))
+			strbuf_addf(&kept, "%s%s", kept.len ? "," : "", scope_path(item->string));
+	if (kept.len) {
+		sq_quote_buf_pretty(&arg, kept.buf);
+		strbuf_addch(&arg, ',');
+	}
+	strbuf_addstr(&arg, "<new scope>");
+	return strbuf_detach(&arg, NULL);
 }
 
 /* the provider of R can be found in T: each scope is a file there (spec 1.5c, 7.7.3-4) */

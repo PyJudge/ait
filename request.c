@@ -29,6 +29,14 @@ struct request {
 	struct verdict first;		/* the first condition that blocks fulfill or commit (5.13) */
 	struct strvec args;		/* the arguments that are not options */
 	char *after_option;		/* args.v[i] came right after an option */
+	struct clause *cl;		/* the helper's clauses, as written */
+	size_t ncl, alloc_cl;
+};
+
+/* a helper clause of 7.3.1: args.v[at..at+n), what it names and what it gives ("-" keeps, NULL not given) */
+struct clause {
+	const char *verb, *k[2], *a, *b, *f, *alias;
+	int future, at, n;
 };
 
 #define REQUEST_INIT { .msg = STRBUF_INIT, .cmdline = STRBUF_INIT, .files = STRING_LIST_INIT_DUP, \
@@ -60,7 +68,7 @@ static int allowed(struct request *q, struct record *r, const char *from, const 
 }
 
 /* spec 5.2-2: a merge, cherry-pick, revert, rebase or am is in progress (git v2.53.0 wt-status.c:1791) */
-int git_op_in_progress(void)
+static int git_op_in_progress(void)
 {
 	static const char *const files[] = { "MERGE_HEAD", "rebase-merge", "rebase-apply", "sequencer/todo", NULL };
 	int i;
@@ -216,7 +224,6 @@ static void load(struct request *q)
 	/* spec 5.5-1: the index as the request found it */
 	q->noted = tree_load(line1(git("write-tree")));
 	state_load(&q->s, q->ht);
-	reject_malformed(&q->s);
 }
 
 /*
@@ -332,7 +339,7 @@ static struct record *resolve(struct request *q, const char *k)
 	if (!state_get(&q->s, k) || !strcmp(k, "init"))
 		reject(128, islower(*k) ? "aliases are local to one command; use the ID printed on its 'new' line" : NULL,
 		       "no such contract: '%s'", k);
-	return state_get(&q->s, k);
+	return readable(state_get(&q->s, k));
 }
 
 /* spec 3.2a: a scope list "A,B", each pinned at T; the same scope twice is a bad scope */
@@ -374,44 +381,152 @@ static void defs(struct request *q, struct record *r, const char *list)
 	string_list_split(&parts, list, ",", -1);
 	string_list_clear(&r->f[FILES], 0);
 	for_each_string_list_item(item, &parts) {
-		if (!path_ok(item->string))
-			reject(128, NULL, "bad scope: '%s'", item->string);
-		string_list_append(&q->files, item->string)->util = (void *)"def";
+		struct string_list_item *file = unsorted_string_list_lookup(&q->files, item->string);
+
+		(file ? file : string_list_append(&q->files, item->string))->util = (void *)"def";
 		string_list_append(&r->f[FILES], xstrfmt("%s - - def", item->string));
 	}
 }
 
-static void new_contract(struct request *q, const char *role, int future, int *i)
+static void new_contract(struct request *q, struct clause *c)
 {
 	char id[16];
 	struct record *r;
-	const char *alias;
-	size_t k;
 
 	do
-		newid(id, toupper(*role));
+		newid(id, toupper(*c->verb));
 	while (state_get(&q->s, id));
 	r = state_add(&q->s, id);
 	r->seq = ++q->seq;
-	put(r, ROLE, role);
-	put(r, STATE, future ? "future" : "current");
-	if (*role == 'd')
-		scopes(q, r, CONSUMER, arg(q, i));
-	scopes(q, r, PROVIDER, arg(q, i));
-	defs(q, r, arg(q, i));
+	r->alias = c->alias;
+	put(r, ROLE, c->verb);
+	put(r, STATE, c->future ? "future" : "current");
+	if (c->a)
+		scopes(q, r, CONSUMER, c->a);
+	scopes(q, r, PROVIDER, c->b);
+	defs(q, r, c->f);
 	put(r, CREATOR, xstrfmt("%s %s", agent, sid));
 	put(r, PREV, "-");
-	if ((size_t)*i >= q->args.nr || strcmp(q->args.v[*i], "as"))
+}
+
+/* the shapes of a clause's arguments (3.1-3.2), before any tree is read (5.13-1) */
+static void shapes(const char *list, int defs)
+{
+	struct string_list parts = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+
+	if (!list || !strcmp(list, "-"))
 		return;
-	++*i;
-	alias = arg(q, i);
-	if (!islower(*alias) || strlen(alias) > 32 || alias[strspn(alias, "abcdefghijklmnopqrstuvwxyz0123456789_")] ||
-	    is_word(alias))
-		reject(129, NULL, "bad alias '%s'", alias);
-	for (k = 0; k < q->s.nr; k++)
-		if (q->s.r[k]->alias && !strcmp(q->s.r[k]->alias, alias))
-			reject(129, NULL, "alias '%s' is used twice in one request", alias);
-	r->alias = alias;
+	string_list_split(&parts, list, ",", -1);
+	for_each_string_list_item(item, &parts)
+		if (!defs)
+			scope_shape(item->string);
+		else if (!path_ok(item->string))
+			reject(128, NULL, "bad scope: '%s'", item->string);
+}
+
+/* spec 7.3.1: request := ["contract"|"ct"] clause+ option*, read before anything else (5.13-1) */
+static void parse_clauses(struct request *q)
+{
+	const char **v = q->args.v;
+	int n = q->args.nr, i = n && (!strcmp(v[0], "contract") || !strcmp(v[0], "ct"));
+	size_t k;
+
+	if (i == n)
+		reject(129, NULL, "a request needs a clause");
+	while (i < n) {
+		struct clause *c;
+		int more;
+
+		ALLOC_GROW(q->cl, q->ncl + 1, q->alloc_cl);
+		c = memset(&q->cl[q->ncl++], 0, sizeof(*c));
+		c->at = i;
+		c->future = !strcmp(v[i], "future");
+		if (c->future && i + 1 == n)
+			unsupported("future");
+		c->verb = v[i + c->future];
+		i += c->future + 1;
+		if (c->future && !strcmp(c->verb, "drop"))
+			unsupported("future drop");
+		if (!strcmp(c->verb, "demand") || !strcmp(c->verb, "offer")) {
+			c->a = *c->verb == 'd' ? arg(q, &i) : NULL;
+			c->b = arg(q, &i);
+			c->f = arg(q, &i);
+			if (i < n && !strcmp(v[i], "as")) {
+				i++;
+				c->alias = arg(q, &i);
+				if (!islower(*c->alias) || strlen(c->alias) > 32 || is_word(c->alias) ||
+				    c->alias[strspn(c->alias, "abcdefghijklmnopqrstuvwxyz0123456789_")])
+					reject(129, NULL, "bad alias '%s'", c->alias);
+				for (k = 0; k + 1 < q->ncl; k++)
+					if (q->cl[k].alias && !strcmp(q->cl[k].alias, c->alias))
+						reject(129, NULL, "alias '%s' is used twice in one request", c->alias);
+			}
+		} else if (!strcmp(c->verb, "amend")) {
+			c->k[0] = arg(q, &i);
+			/* a demand takes A B FILES, an offer B FILES; which one is checked once K is known */
+			for (more = 0; i + more < n && !is_word(v[i + more]) && !q->after_option[i + more]; more++)
+				;
+			if (more == 3)
+				c->a = arg(q, &i);
+			if (more != 0 && more != 2 && more != 3)
+				reject(129, NULL, "amend '%s' takes A B FILES (a demand) or B FILES (an offer)", c->k[0]);
+			c->b = more ? arg(q, &i) : NULL;
+			c->f = more ? arg(q, &i) : NULL;
+		} else if (c->future && !strcmp(c->verb, "cancel")) {
+			c->k[0] = arg(q, &i);
+		} else if (!c->future && (!strcmp(c->verb, "undertake") || !strcmp(c->verb, "release"))) {
+			c->k[0] = arg(q, &i);
+			c->k[1] = arg(q, &i);
+		} else {
+			reject(129, NULL, "unknown clause '%s'", c->verb);
+		}
+		shapes(c->a, 0);
+		shapes(c->b, 0);
+		shapes(c->f, 1);
+		c->n = i - c->at;
+	}
+}
+
+/* spec 7.3.2: a clause applies to the records as the earlier clauses left them */
+static void apply(struct request *q, struct clause *c)
+{
+	struct record *r, *o;
+	char *id;
+
+	if (!strcmp(c->verb, "demand") || !strcmp(c->verb, "offer")) {
+		new_contract(q, c);
+	} else if (!strcmp(c->verb, "amend")) {
+		r = resolve(q, c->k[0]);
+		if (*r->id == 'u' || !is_live(r))
+			reject(1, NULL, "not allowed: '%s' is not a future or current contract", r->id);
+		if (c->b && (*r->id == 'D') != (c->a != NULL))
+			reject(129, NULL, "amend '%s' takes A B FILES (a demand) or B FILES (an offer)", c->k[0]);
+		if (c->future)
+			put(r, STATE, "future");
+		r->recheck = is_current(r) && (!c->b || (!strcmp(c->a ? c->a : "-", "-") && !strcmp(c->b, "-") &&
+							 !strcmp(c->f, "-")));
+		if (c->b) {
+			scopes(q, r, CONSUMER, c->a ? c->a : "-");
+			scopes(q, r, PROVIDER, c->b);
+			defs(q, r, c->f);
+		}
+	} else if (!strcmp(c->verb, "cancel")) {
+		put(resolve(q, c->k[0]), STATE, "cancelled");
+	} else {
+		r = resolve(q, c->k[0]);
+		o = resolve(q, c->k[1]);
+		if (*r->id != 'D' || *o->id != 'O')
+			reject(128, NULL, "no such contract: '%s' must be a demand and '%s' an offer", r->id, o->id);
+		id = xstrfmt("undertake/%s-%s", r->id, o->id);
+		r = state_get(&q->s, id);
+		if (!r && *c->verb == 'u') {
+			r = state_add(&q->s, id);
+			put(r, PREV, "-");
+		}
+		if (r)
+			put(r, STATE, *c->verb == 'u' ? "undertaken" : "released");
+	}
 }
 
 /* spec 8.4: in the task values of a result file, the new contract +SEQ becomes ID */
@@ -637,7 +752,7 @@ static void also_undertaken(struct request *q, struct record *l)
 	struct record *d, *o;
 	size_t i;
 
-	if (*l->id != 'u' || !in_state(l, "undertaken") || (l->old && in_state(l->old, "undertaken")))
+	if (!undertaken(l) || (l->old && in_state(l->old, "undertaken")))
 		return;
 	d = link_end(&q->s, l, 0);
 	o = link_end(&q->s, l, 1);
@@ -645,7 +760,7 @@ static void also_undertaken(struct request *q, struct record *l)
 	for (i = 0; i < q->s.nr; i++) {
 		struct record *m = q->s.r[i], *o2;
 
-		if (*m->id != 'u' || m == l || !in_state(m, "undertaken") || link_end(&q->s, m, 0) != d)
+		if (m == l || !undertaken(m) || link_end(&q->s, m, 0) != d)
 			continue;
 		o2 = link_end(&q->s, m, 1);
 		if (!in_state(o2, "future") || !strcmp(val(o2, CREATOR), val(o, CREATOR)))
@@ -895,24 +1010,32 @@ static int finish(struct request *q)
 	struct strbuf failed = STRBUF_INIT, results = STRBUF_INIT;
 	char *input = NULL;
 	int unknown = 0;
+	size_t k;
 
 	transitions(q);
 	check_set(q);
 	if (!q->gate && !q->fulfill && !q->conf.nr && !q->first.code) {
-		/* 7.7a.1: nothing to check is a plain commit, without validate, session or trailers */
+		/* 7.7a.1: nothing to check is a plain commit, without validate, session or trailers (5.10) */
+		for (k = 0; k < q->s.nr; k++)
+			if (q->s.r[k]->bad)
+				warning("skipping malformed '.ait/%s' at 'index'", q->s.r[k]->id);
 		if (!strcmp(q->v->oid, q->ht->oid))
 			puts("noop");
 		else if (publish(q->v->oid, q->msg.buf, q->noted))
 			reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 		return 0;
 	}
-	if (!q->gate && !q->fulfill)
-		session(1);
+	/* 5.13-6: the state is valid; fulfill and commit judge the records they found (5.10) */
 	if (q->gate)
 		validate(&q->s, q->v);
+	else
+		reject_malformed(&q->s);
 	code_present(q);
 	if (!q->gate && !q->missing.nr && check_state(&q->s, q->v, &q->invalid))
 		block(q, q->invalid);
+	/* 5.13-8: commit asks for its session right before the results */
+	if (!q->gate && !q->fulfill && !q->first.code)
+		session(1);
 	if (!q->missing.nr && !q->force)
 		input = check_input(q);
 	if (input && q->tasks.nr && q->result && !q->first.code &&
@@ -984,7 +1107,7 @@ static void carry(struct request *q, struct string_list *ids)
 		struct record *l = q->s.r[i], *o;
 		struct string_list_item *d;
 
-		if (*l->id != 'u' || !in_state(l, "undertaken"))
+		if (!undertaken(l))
 			continue;
 		o = link_end(&q->s, l, 1);
 		if (!o || !unsorted_string_list_has_string(ids, o->id) || !in_state(o, "future"))
@@ -1014,6 +1137,7 @@ int cmd_fulfill(int argc, const char **argv)
 			reject(129, islower(*id) ? "aliases are local to one command; use the ID printed on its 'new' line" : NULL,
 			       "bad argument '%s'", a);
 		string_list_append(&ids, id)->util = eq ? xstrdup(eq + 1) : NULL;
+		shapes(eq ? eq + 1 : NULL, 0);
 	}
 	if (q.fulfill)
 		session(1);
@@ -1022,6 +1146,8 @@ int cmd_fulfill(int argc, const char **argv)
 	for_each_string_list_item(item, &ids)
 		if (!state_get(&q.s, item->string) || *item->string == 'u')
 			reject(128, NULL, "no such contract: '%s'", item->string);
+		else
+			readable(state_get(&q.s, item->string));
 	if (q.fulfill)
 		carry(&q, &ids);
 	/* the selected targets: plain IDs, and ID=SCOPES of a future contract that no target offer carries */
@@ -1091,75 +1217,23 @@ int cmd_request(int argc, const char **argv)
 {
 	static const char *const direct[] = { "new", "add", "commit", "push", "pull", NULL };
 	struct request q = REQUEST_INIT;
-	const char **v;
-	int n, i;
 	size_t k;
 
 	q.gate = 1;
 	parse_options(&q, argc, argv);
-	v = q.args.v;
-	n = q.args.nr;
-	i = !strcmp(v[0], "contract") || !strcmp(v[0], "ct");
-	if (i && n > 1 && one_of(v[1], direct))
-		unsupported(xstrfmt("contract %s", v[1]));
+	if (q.args.nr > 1 && (!strcmp(q.args.v[0], "contract") || !strcmp(q.args.v[0], "ct")) && one_of(q.args.v[1], direct))
+		unsupported(xstrfmt("contract %s", q.args.v[1]));
 	message(&q, "[CONTRACT] ");
+	parse_clauses(&q);
 	session(1);
 	load(&q);
 	strbuf_addstr(&q.cmdline, "ait");
 	for (k = 0; k < q.args.nr; k++) {
 		strbuf_addch(&q.cmdline, ' ');
-		sq_quote_buf_pretty(&q.cmdline, v[k]);
+		sq_quote_buf_pretty(&q.cmdline, q.args.v[k]);
 	}
-	while (i < n) {
-		int future = !strcmp(v[i], "future");
-		const char *w;
-		struct record *r, *o;
-
-		if (future && i + 1 == n)
-			unsupported("future");
-		w = v[i + future];
-		i += future + 1;
-		if (future && !strcmp(w, "drop"))
-			unsupported("future drop");
-		if (!strcmp(w, "demand") || !strcmp(w, "offer")) {
-			new_contract(&q, w, future, &i);
-		} else if (!strcmp(w, "amend")) {
-			r = resolve(&q, arg(&q, &i));
-			if (*r->id == 'u' || !is_live(r))
-				reject(1, NULL, "not allowed: '%s' is not a future or current contract", r->id);
-			if (future)
-				put(r, STATE, "future");
-			r->recheck = is_current(r);
-			if (i < n && !is_word(v[i])) {
-				const char *a = *r->id == 'D' ? arg(&q, &i) : "-", *b = arg(&q, &i);
-				const char *f = arg(&q, &i);
-
-				r->recheck &= !strcmp(a, "-") && !strcmp(b, "-") && !strcmp(f, "-");
-				scopes(&q, r, CONSUMER, a);
-				scopes(&q, r, PROVIDER, b);
-				defs(&q, r, f);
-			}
-		} else if (future && !strcmp(w, "cancel")) {
-			put(resolve(&q, arg(&q, &i)), STATE, "cancelled");
-		} else if (!future && (!strcmp(w, "undertake") || !strcmp(w, "release"))) {
-			char *id;
-
-			r = resolve(&q, arg(&q, &i));
-			o = resolve(&q, arg(&q, &i));
-			if (*r->id != 'D' || *o->id != 'O')
-				reject(128, NULL, "no such contract: '%s' must be a demand and '%s' an offer", r->id, o->id);
-			id = xstrfmt("undertake/%s-%s", r->id, o->id);
-			r = state_get(&q.s, id);
-			if (!r && *w == 'u') {
-				r = state_add(&q.s, id);
-				put(r, PREV, "-");
-			}
-			if (r)
-				put(r, STATE, *w == 'u' ? "undertaken" : "released");
-		} else {
-			reject(129, NULL, "unknown clause '%s'", w);
-		}
-	}
+	for (k = 0; k < q.ncl; k++)
+		apply(&q, &q.cl[k]);
 	q.v = candidate(&q);
 	for (k = 0; k < q.s.nr; k++)
 		if (is_live(q.s.r[k]) && expand_files(q.s.r[k], q.v))
