@@ -3,3 +3,4 @@
 *.o
 /t/trash*/
 *.dSYM/
+/dist/

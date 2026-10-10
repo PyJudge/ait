@@ -37,7 +37,16 @@ install: ait
 	install -d $(prefix)/bin
 	install ait $(prefix)/bin/ait
 
+# the experiment bundle: ait, the ait-mini skill and bundle/'s scripts, as dist/ait-mini.tar.gz
+bundle: ait
+	rm -rf dist/ait-mini
+	mkdir -p dist/ait-mini/bin dist/ait-mini/skills
+	cp ait dist/ait-mini/bin/
+	cp -R spec/skills/ait-mini dist/ait-mini/skills/
+	cp bundle/README.md bundle/install.sh bundle/try.sh dist/ait-mini/
+	tar -czf dist/ait-mini.tar.gz -C dist ait-mini
+
 clean:
 	rm -f ait $(YAML)
 
-.PHONY: test install clean
+.PHONY: test install bundle clean
