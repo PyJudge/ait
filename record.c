@@ -744,14 +744,18 @@ static void no_range(const char *arg)
 		unsupported("line ranges");
 }
 
-/* spec 3.1-3.2: the shape of a scope argument, judged before any tree is read (5.13-1) */
+/*
+ * spec 3.1-3.2: the shape of a scope argument, judged before any tree is read
+ * (5.13-1); new:PATH names a file, and '/' and 'DIR/' name none
+ */
 void scope_shape(const char *arg)
 {
 	const char *p = arg;
+	int is_new = skip_prefix(arg, "new:", &p);
 
-	skip_prefix(arg, "new:", &p);
 	no_range(arg);
-	if (strcmp(p, "/") && !path_ok(ends_with(p, "/") ? xstrndup(p, strlen(p) - 1) : p))
+	if ((is_new && ends_with(p, "/")) ||
+	    (strcmp(p, "/") && !path_ok(ends_with(p, "/") ? xstrndup(p, strlen(p) - 1) : p)))
 		reject(128, NULL, "bad scope: '%s'", arg);
 }
 
@@ -793,7 +797,8 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 		return xstrfmt("%s %s", arg, e->oid);
 	if (case_twin(t, path))
 		reject(128, xstrfmt("give it as git has it: '%s'", case_twin(t, path)), "bad scope: '%s'", arg);
-	reject(128, e || is_new || !allow_new ? NULL :
+	/* only a file can be new (scope_shape) */
+	reject(128, e || is_new || !allow_new || ends_with(arg, "/") ? NULL :
 	       xstrfmt("if it does not exist yet, use 'new:%s'", arg), "bad scope: '%s'", arg);
 }
 
