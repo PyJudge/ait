@@ -1276,6 +1276,8 @@ struct yval {
 	size_t start, at, end;	/* where the node starts, where the value's text starts, where the node ends */
 	int line, literal;	/* LITERAL: the text from AT spells the value as it is */
 	int plain, block;	/* a plain scalar; a "|" block */
+	char *pattern;		/* its path with "N" for each list index, as schemas name it (NULL: the root) */
+	struct yval *parent;	/* the map or list it is in (NULL: the root) */
 	char kind;	/* 'l' a list, 'm' a map, '?' a key with nothing under it, 0 a scalar */
 };
 
@@ -1329,19 +1331,20 @@ static const char *yaml_outside(yaml_event_t *e, int docs)
 	}
 }
 
-/* an open map or list: its path, the key read for its next value, the count of its items */
+/* an open map or list: its path and pattern, the key read for its next value, the count of its items, its node */
 struct yframe {
-	char *path, *key;
+	char *path, *pattern, *key;
 	int n;
 	char kind;
+	struct yval *node;
 };
 
 /*
  * where the node of E goes under TOP, the innermost open collection (NULL at
- * the root): its path; NULL when it is the root map, or the key of TOP's next
- * value (kept in TOP), or with WHY set
+ * the root): its path, and its PATTERN; NULL when it is the root map, or the
+ * key of TOP's next value (kept in TOP), or with WHY set
  */
-static char *yaml_place(struct yframe *top, yaml_event_t *e, const char **why)
+static char *yaml_place(struct yframe *top, yaml_event_t *e, char **pattern, const char **why)
 {
 	char *path;
 
@@ -1350,9 +1353,12 @@ static char *yaml_place(struct yframe *top, yaml_event_t *e, const char **why)
 			*why = "no key";
 		return NULL;
 	}
-	if (top->kind == 'l')
+	if (top->kind == 'l') {
+		*pattern = yaml_path(top->pattern, "N");
 		return yaml_path(top->path, xstrfmt("%d", top->n++));
+	}
 	if (top->key) {
+		*pattern = yaml_path(top->pattern, top->key);
 		path = yaml_path(top->path, top->key);
 		top->key = NULL;
 		return path;
@@ -1378,8 +1384,8 @@ static char yaml_kind(yaml_event_t *e)
 static const char *yaml_event(const char *text, struct string_list *kv, struct yframe *stack, int *depth, yaml_event_t *e)
 {
 	const char *why = NULL;
-	struct yval *v;
-	char *path;
+	struct yval *v = NULL;
+	char *path, *pattern = NULL;
 
 	if (e->type == YAML_MAPPING_END_EVENT || e->type == YAML_SEQUENCE_END_EVENT)
 		(*depth)--;
@@ -1388,7 +1394,7 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 	/* a value is text, as a file ait reads is (an escaped NUL would cut it) */
 	if (e->type == YAML_SCALAR_EVENT && strlen((char *)e->data.scalar.value) != e->data.scalar.length)
 		return "a NUL character";
-	path = yaml_place(*depth ? &stack[*depth - 1] : NULL, e, &why);
+	path = yaml_place(*depth ? &stack[*depth - 1] : NULL, e, &pattern, &why);
 	if (why)
 		return why;
 	/* the root map, kept under ROOT for the line of what it lacks */
@@ -1401,6 +1407,8 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 		v->s = xstrdup(e->type == YAML_SCALAR_EVENT ? (char *)e->data.scalar.value : "");
 		v->kind = yaml_kind(e);
 		v->plain = e->type == YAML_SCALAR_EVENT && e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE;
+		v->pattern = pattern;
+		v->parent = *depth ? stack[*depth - 1].node : NULL;
 		v->block = e->type == YAML_SCALAR_EVENT && e->data.scalar.style == YAML_LITERAL_SCALAR_STYLE;
 		v->line = e->start_mark.line + 1;
 		v->start = yaml_byte(text, e->start_mark);
@@ -1416,6 +1424,8 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 	if (*depth == 16)
 		return "nested too deeply";
 	stack[*depth].path = strcmp(path, ROOT) ? path : NULL;
+	stack[*depth].pattern = pattern;
+	stack[*depth].node = v;
 	stack[*depth].key = NULL;
 	stack[*depth].n = 0;
 	stack[*depth].kind = yaml_kind(e);
@@ -1674,30 +1684,19 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, kv) {
-		struct yval *v = item->util;
-		struct strbuf pattern = STRBUF_INIT;
-		struct string_list parts = STRING_LIST_INIT_DUP;
-		struct string_list_item *part;
-		char kind = 0;
+		struct yval *v = item->util, *up = v->parent;
+		char kind;
 
 		/* the root map is no key */
-		if (!strcmp(item->string, ROOT))
+		if (!v->pattern)
 			continue;
-		string_list_split(&parts, item->string, ".", -1);
-		for_each_string_list_item(part, &parts)
-			strbuf_addf(&pattern, "%s%s", pattern.len ? "." : "",
-				    *part->string && !part->string[strspn(part->string, "0123456789")] ? "N" : part->string);
-		if (!(kind = schema_kind(schema, pattern.buf))) {
+		if (!(kind = schema_kind(schema, v->pattern))) {
 			/*
 			 * a key the schema lacks, in a map the document and the schema both
 			 * have as one (or the root), is unknown; under anything else it is
 			 * its parent's kind that is wrong, and the parent's check says so
 			 */
-			size_t dot = last_dot(item->string);
-			struct string_list_item *parent = unsorted_string_list_lookup(kv, xstrndup(item->string, dot));
-
-			if (!item->string[dot] || (parent && ((struct yval *)parent->util)->kind == 'm' &&
-						    schema_kind(schema, xstrndup(pattern.buf, last_dot(pattern.buf))) == 'm'))
+			if (up->kind == 'm' && (!up->pattern || schema_kind(schema, up->pattern) == 'm'))
 				reject(128, hint, "bad format: '%s': unknown key '%s' in line %d", what, item->string, v->line);
 			continue;
 		}
