@@ -124,11 +124,11 @@ void index_line(struct strbuf *sb, const char *mode, const char *oid, const char
 }
 
 /*
- * BASE in a throwaway index (spec 4.8), then INDEX_INFO (index_line()s), or the
- * work-tree files PATHS staged by git update-index --add as git stages them
- * (core.fileMode, core.symlinks, paths beyond a symlink, filters); the tree,
- * or NULL with git's reason in git_error: the caller judges, as a failure
- * after a commit is published is only a warning (5.5-5)
+ * BASE in a throwaway index (spec 4.8), then INDEX_INFO (index_line()s), then
+ * the work-tree files PATHS staged by git add as git stages them (modes,
+ * symlinks, filters, a file becoming a directory; refusing paths in a
+ * submodule or outside a sparse checkout); the tree, or NULL with git's
+ * reason in git_error, for the caller to judge
  */
 char *tree_with(const char *base, const char *index_info, struct string_list *paths)
 {
@@ -140,17 +140,19 @@ char *tree_with(const char *base, const char *index_info, struct string_list *pa
 
 	if (!paths && !*index_info)
 		return xstrdup(base);
+	/* 5.8 E_IO: the directory 4.8 names cannot be written */
 	if (!mkdtemp(dir))
-		die_errno("could not create '%s'", dir);
+		reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command", xstrndup(dir, strrchr(dir, '/') - dir)),
+		       "write error: '%s': %s", dir, strerror(errno));
 	index = xstrfmt("%s/index", dir);
 	git_run(NULL, index, &rc, "read-tree %s", base);
+	if (!rc && *index_info)
+		git_run(index_info, index, &rc, "update-index --add --index-info");
 	if (!rc && paths) {
-		strvec_pushl(&add, "update-index", "--add", "--", NULL);
+		strvec_pushl(&add, "add", "-f", "--", NULL);
 		for_each_string_list_item(item, paths)
 			strvec_push(&add, item->string);
 		git_args(&add, NULL, index, &rc);
-	} else if (!rc) {
-		git_run(index_info, index, &rc, "update-index --add --index-info");
 	}
 	if (!rc)
 		tree = line1(git_run(NULL, index, &rc, "write-tree"));
@@ -164,7 +166,9 @@ void tree_diff(struct tree *a, struct tree *b, struct string_list *paths)
 {
 	const char *p, *end;
 
-	for (p = git("diff-tree -r -z --name-only %s %s", a->oid, b->oid), end = p + git_out_len; p < end; p += strlen(p) + 1)
+	/* a submodule's commit is a change whatever submodule.<name>.ignore says */
+	for (p = git("diff-tree -r -z --ignore-submodules=none --name-only %s %s", a->oid, b->oid), end = p + git_out_len;
+	     p < end; p += strlen(p) + 1)
 		string_list_append(paths, p);
 }
 
@@ -1320,6 +1324,37 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 	return NULL;
 }
 
+/* the line (from 0) of the byte at OFFSET in TEXT */
+static size_t line_at(const char *text, size_t offset)
+{
+	size_t n = 0, i;
+
+	for (i = 0; i < offset && text[i]; i++)
+		n += text[i] == '\n';
+	return n;
+}
+
+/*
+ * 2.5.1: UTF-8, and LF the only line break, as libyaml takes CR, NEL, LS and
+ * PS as line breaks too (YAML 1.1); what breaks that and its line, or NULL.
+ * Where a tab may stand is YAML's.
+ */
+static const char *not_text(const char *text, size_t *line)
+{
+	static const char *const breaks[] = { "\r", "\xc2\x85", "\xe2\x80\xa8", "\xe2\x80\xa9", NULL };
+	const char *p, *first = NULL;
+	int i;
+
+	for (p = text, *line = 0; *p; p += strcspn(p, "\n") + !!p[strcspn(p, "\n")], ++*line)
+		if (!is_utf8(xstrndup(p, strcspn(p, "\n"))))
+			return "not UTF-8";
+	for (i = 0; breaks[i]; i++)
+		if ((p = strstr(text, breaks[i])) && (!first || p < first))
+			first = p;
+	*line = first ? line_at(text, first - text) : 0;
+	return first ? "a line break other than LF" : NULL;
+}
+
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err)
 {
 	struct yframe stack[16];
@@ -1334,9 +1369,8 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 	 * 2.5.1: UTF-8, and LF the only line break; libyaml takes CR, NEL, LS and
 	 * PS as line breaks too (YAML 1.1). Where a tab may stand is YAML's.
 	 */
-	if (!is_utf8(text) || strchr(text, '\r') || strstr(text, "\xc2\x85") || strstr(text, "\xe2\x80\xa8") ||
-	    strstr(text, "\xe2\x80\xa9")) {
-		*err = xstrfmt("bad format: '%s': %s", what, is_utf8(text) ? "a line break other than LF" : "not UTF-8");
+	if ((why = not_text(text, &line))) {
+		*err = xstrfmt("bad format: '%s': %s in line %d", what, why, (int)line + 1);
 		return -1;
 	}
 	yaml_parser_initialize(&parser);
@@ -1352,7 +1386,8 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 	}
 	if (!done && !why) {
 		why = parser.problem;
-		line = parser.problem_mark.line;
+		/* a reader error has its place as an offset only */
+		line = parser.error == YAML_READER_ERROR ? line_at(text, parser.problem_offset) : parser.problem_mark.line;
 	}
 	if (why)
 		*err = xstrfmt("bad format: '%s': %s in line %d", what, why, (int)line + 1);
@@ -1452,15 +1487,36 @@ static int decimal(struct yval *v)
 	return v->plain && *v->s && !v->s[strspn(v->s, "0123456789")] && (*v->s != '0' || !v->s[1]);
 }
 
+/* the kind SCHEMA gives PATTERN, or 0 */
+static char schema_kind(const char *const *schema, const char *pattern)
+{
+	for (; *schema; schema++)
+		if (starts_with(*schema, pattern) && (*schema)[strlen(pattern)] == ' ')
+			return (*schema)[strlen(pattern) + 1];
+	return 0;
+}
+
+/* where the Nth '.' of the path P stands (its length when there are fewer); keys escape theirs as "\." */
+static size_t nth_dot(const char *p, size_t n)
+{
+	size_t i;
+
+	for (i = 0; p[i]; i++)
+		if (p[i] == '\\' && p[i + 1])
+			i++;
+		else if (p[i] == '.' && !--n)
+			return i;
+	return i;
+}
+
 /*
  * Every key of KV against SCHEMA, entries "PATTERN KIND" where N in a pattern
  * stands for a list index and KIND is s (scalar), i (integer), l (list) or
  * m (map); a list or map may be written empty. The first mismatch is fatal.
  */
-void yaml_check(struct string_list *kv, const char *const *schema, const char *what, const char *hint)
+void yaml_check(struct string_list *kv, const char *const *schema, const char *what, const char *hint, int kinds)
 {
 	struct string_list_item *item;
-	const char *const *e;
 
 	for_each_string_list_item(item, kv) {
 		struct yval *v = item->util;
@@ -1476,14 +1532,24 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 		for_each_string_list_item(part, &parts)
 			strbuf_addf(&pattern, "%s%s", pattern.len ? "." : "",
 				    *part->string && !part->string[strspn(part->string, "0123456789")] ? "N" : part->string);
-		for (e = schema; *e && !kind; e++)
-			if (starts_with(*e, pattern.buf) && (*e)[pattern.len] == ' ')
-				kind = (*e)[pattern.len + 1];
-		if (!kind)
-			reject(128, hint, "bad format: '%s': unknown key '%s' in line %d", what, item->string, v->line);
+		if (!(kind = schema_kind(schema, pattern.buf))) {
+			/* the nearest key the schema knows above it: under a map (or the root) it is an unknown key */
+			size_t up = parts.nr;
+			char above = 0;
+
+			while (!above && --up)
+				above = schema_kind(schema, xstrndup(pattern.buf, nth_dot(pattern.buf, up)));
+			if (!above || above == 'm')
+				reject(128, hint, "bad format: '%s': unknown key '%s' in line %d", what, item->string, v->line);
+			/* under a scalar or a list, it is that value that has the wrong kind */
+			if (kinds)
+				reject(128, hint, "bad format: '%s': bad value of '%s' in line %d", what,
+				       xstrndup(item->string, nth_dot(item->string, up)), v->line);
+			continue;
+		}
 		/* a key with nothing under it is an empty list, map or scalar; "" is a scalar only */
-		if (strchr("lm", kind) ? v->kind != kind && v->kind != '?' :
-		    (v->kind && v->kind != '?') || (kind == 'i' && !decimal(v)))
+		if (kinds && (strchr("lm", kind) ? v->kind != kind && v->kind != '?' :
+			      (v->kind && v->kind != '?') || (kind == 'i' && !decimal(v))))
 			reject(128, hint, "bad format: '%s': bad value of '%s' in line %d", what, item->string, v->line);
 	}
 }
@@ -1512,8 +1578,9 @@ struct string_list *def_get(struct tree *t, const char *path)
 		unsupported("environment");
 	engine = yget(kv, "engine") ? yget(kv, "engine") : "";
 	if (*engine && strcmp(engine, "exec"))
-		reject(128, NULL, "bad format: '%s': engine '%s' is not exec or prompt%s", path, engine, yline(kv, "engine"));
-	yaml_check(kv, *engine ? exec : prompt, path, NULL);
+		reject(128, NULL, "bad format: '%s': engine '%s': give exec, or leave it out for prompt%s", path, engine,
+		       yline(kv, "engine"));
+	yaml_check(kv, *engine ? exec : prompt, path, NULL, 1);
 	if (!yget(kv, "body") || !*yget(kv, "body") || (*engine && !yget(kv, "command.0")))
 		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'%s", path, yline(kv, ""));
 	string_list_insert(&parsed, oid)->util = kv;

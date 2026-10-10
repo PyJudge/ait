@@ -21,6 +21,7 @@ struct request {
 	int has_msg;			/* -m or -F was given */
 	struct strbuf msg;
 	struct string_list files;	/* spec files given to the helpers */
+	struct string_list declared;	/* an input -> a definition of this request that declares it */
 	struct string_list scoped;	/* IDs given with =SCOPES */
 	struct string_list selected;	/* the promises fulfill was asked to keep */
 	struct string_list conf;	/* the check set, ID -> record */
@@ -46,7 +47,7 @@ struct clause {
 #define REQUEST_INIT { .msg = STRBUF_INIT, .files = STRING_LIST_INIT_DUP, \
 	.scoped = STRING_LIST_INIT_DUP, .selected = STRING_LIST_INIT_DUP, .conf = STRING_LIST_INIT_DUP, \
 	.missing = STRING_LIST_INIT_DUP, .tasks = STRING_LIST_INIT_DUP, .hints = STRING_LIST_INIT_DUP, \
-	.carried = STRING_LIST_INIT_DUP, .mixed = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
+	.carried = STRING_LIST_INIT_DUP, .mixed = STRING_LIST_INIT_DUP, .declared = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
 
 /* spec 2.3: the allowed transitions of a demand or offer ('x') and of a link ('u'), and who makes them */
 static const struct move {
@@ -228,8 +229,11 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
 /*
  * spec 5.5: C is TREE on HEAD with MSG, and git's update-ref moves the branch R
  * from HEAD to C or refuses (the CAS); then the index and work tree follow
- * from INDEX, the entries noted when the request began. 1 when R moved meanwhile.
+ * from INDEX, the entries noted when the request began. 1 when R moved
+ * meanwhile; else C is PUBLISHED, which nothing after it needs to read again.
  */
+const char *published;
+
 int publish(const char *tree, const char *msg, struct tree *index)
 {
 	struct tree *t = tree_load(tree);
@@ -247,6 +251,7 @@ int publish(const char *tree, const char *msg, struct tree *index)
 			return 1;
 		reject(128, NULL, "%s", why);
 	}
+	published = c;
 	follow(&paths, o, t, c);
 	return 0;
 }
@@ -591,6 +596,31 @@ static void apply(struct request *q, struct clause *c)
 }
 
 /*
+ * S as a YAML string, which is UTF-8: as it is, or, holding other bytes (a
+ * path git keeps as bytes), quoted as git shows such a path (core.quotePath)
+ */
+static const char *yaml_text(const char *s)
+{
+	struct strbuf sb = STRBUF_INIT;
+
+	if (is_utf8(s))
+		return s;
+	quote_c_style(s, &sb, NULL, 0);
+	return strbuf_detach(&sb, NULL);
+}
+
+/* the task named T in a result file, its name written as the check files write it */
+static struct string_list_item *task_of(struct request *q, const char *t)
+{
+	struct string_list_item *task;
+
+	for_each_string_list_item(task, &q->tasks)
+		if (!strcmp(yaml_text(task->string), t))
+			return task;
+	return NULL;
+}
+
+/*
  * spec 8.4: in the task values of a result file, a new contract's +SEQ becomes
  * its ID, read once and spliced from the last task back so the places hold
  */
@@ -604,11 +634,15 @@ static void rename_tasks(struct request *q, struct strbuf *sb)
 
 	yaml_parse(sb->buf, &kv, "results", &err);
 	for (n = kv.nr; n >= 0; n--) {
-		if (!(t = yget(&kv, xstrfmt("results.%d.task", n))) || *t != '+')
+		struct string_list_item *task;
+
+		/* the task as the result file names it, which may be quoted as the check files wrote it */
+		if (!(t = yget(&kv, xstrfmt("results.%d.task", n))) || !(task = task_of(q, t)) || *task->string != '+')
 			continue;
 		for (i = 0; i < q->s.nr; i++)
-			if (!q->s.r[i]->old && q->s.r[i]->seq && q->s.r[i]->seq == atoi(t + 1))
-				yreplace(sb, &kv, xstrfmt("results.%d.task", n), strcspn(t, ":"), q->s.r[i]->id);
+			if (!q->s.r[i]->old && q->s.r[i]->seq && q->s.r[i]->seq == atoi(task->string + 1))
+				yreplace(sb, &kv, xstrfmt("results.%d.task", n), strlen(t),
+					 yaml_text(xstrfmt("%s%s", q->s.r[i]->id, task->string + strcspn(task->string, ":"))));
 	}
 }
 
@@ -988,31 +1022,6 @@ static void emit(yaml_emitter_t *y, yaml_event_t *e)
 		BUG("libyaml cannot write the check files: %s", y->problem);
 }
 
-/*
- * S as a YAML string, which is UTF-8: as it is, or, holding other bytes (a
- * path git keeps as bytes), quoted as git shows such a path (core.quotePath)
- */
-static const char *yaml_text(const char *s)
-{
-	struct strbuf sb = STRBUF_INIT;
-
-	if (is_utf8(s))
-		return s;
-	quote_c_style(s, &sb, NULL, 0);
-	return strbuf_detach(&sb, NULL);
-}
-
-/* the task named T in a result file, its name written as the check files write it */
-static struct string_list_item *task_of(struct request *q, const char *t)
-{
-	struct string_list_item *task;
-
-	for_each_string_list_item(task, &q->tasks)
-		if (!strcmp(yaml_text(task->string), t))
-			return task;
-	return NULL;
-}
-
 static void yscalar(yaml_emitter_t *y, const char *s, yaml_scalar_style_t style)
 {
 	yaml_event_t e;
@@ -1115,7 +1124,9 @@ static void write_check_files(struct request *q, const char *in, const char *req
 		ykey(&y, "provider", shows(r, PROVIDER, q->v, was_current(r)));
 		ykey(&y, "engine", engine);
 		yscalar(&y, "body", YAML_PLAIN_SCALAR_STYLE);
-		yscalar(&y, yget(kv, "body"), YAML_LITERAL_SCALAR_STYLE);
+		/* libyaml's "|" writer keeps LS and PS raw, which 2.5.1 has no place for; "..." escapes them */
+		yscalar(&y, yget(kv, "body"), strstr(yget(kv, "body"), "\xe2\x80\xa8") || strstr(yget(kv, "body"), "\xe2\x80\xa9") ?
+			YAML_DOUBLE_QUOTED_SCALAR_STYLE : YAML_LITERAL_SCALAR_STYLE);
 		if (!strcmp(engine, "exec")) {
 			yscalar(&y, "command", YAML_PLAIN_SCALAR_STYLE);
 			yopen(&y, 1, 1);
@@ -1184,12 +1195,13 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 		reject(128, hint, "bad format: '%s': not a text file", q->result);
 	if (yaml_parse(text->buf, &kv, q->result, &err))
 		reject(128, hint, "%s", err);
-	/* 8.4: the subset of 2.5.1, its unknown keys and kinds too, then the input */
-	yaml_check(&kv, schema, q->result, hint);
+	/* 8.4: the subset of 2.5.1, its unknown keys too, then the input, then the rest */
+	yaml_check(&kv, schema, q->result, hint, 0);
 	if (!yget(&kv, "input"))
 		reject(128, hint, "bad format: '%s': no 'input'%s", q->result, yline(&kv, ""));
 	if (strcmp(yget(&kv, "input"), input))
 		return 0;
+	yaml_check(&kv, schema, q->result, hint, 1);
 	/* every item of results, each naming its task */
 	for (n = 0; yget(&kv, xstrfmt("results.%d", n)); n++) {
 		const char *outcome = yget(&kv, xstrfmt("results.%d.outcome", n));
@@ -1700,6 +1712,30 @@ static const char *not_a_file(const char *path)
 }
 
 /*
+ * 5.8 E_INCOMPLETE "missing": restore PATH from HEAD, or create it, or stop
+ * declaring it in DECL, the definitions of this request and the records of
+ * HEAD that declare it
+ */
+static char *missing_hint(struct request *q, const char *path)
+{
+	struct string_list decl = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	struct strbuf in = STRBUF_INIT;
+	size_t i;
+
+	for_each_string_list_item(item, &q->declared)
+		if (!strcmp(item->string, path))
+			string_list_append(&decl, item->util);
+	for (i = 0; i < q->s.nr; i++)
+		if (q->s.r[i]->old && declares(q->s.r[i]->old, path))
+			string_list_append(&decl, xstrfmt(".ait/%s", q->s.r[i]->id));
+	if (decl.nr)
+		strbuf_addf(&in, " in %s", quoted_paths(&decl));
+	return blob_at(q->ht, path) ? xstrfmt("restore '%s' from HEAD, or stop declaring it%s", path, in.buf) :
+	       xstrfmt("create it or stop declaring it%s", in.buf);
+}
+
+/*
  * spec 7.3.3: the files of the request from the work tree on HEAD, staged by
  * git as git stages them; each a regular file, and the index holding HEAD's
  * version or the work tree's (no partial staging); git failing is E_GIT
@@ -1707,25 +1743,33 @@ static const char *not_a_file(const char *path)
 static struct tree *stage_files(struct request *q)
 {
 	struct string_list_item *item;
+	struct strbuf info = STRBUF_INIT;
 	struct tree *u;
 	char *tree;
 
 	for_each_string_list_item(item, &q->files) {
-		const char *why = not_a_file(item->string), *twin = case_twin(q->ht, item->string);
+		const char *why = not_a_file(item->string), *twin = NULL;
 		struct stat st;
 
-		if (!twin)
-			twin = case_twin(q->index, item->string);
+		/* a twin counts only where git has no path spelled so (3.3's pin() takes an exact one too) */
+		if (!tree_get(q->ht, item->string) && !tree_get(q->index, item->string))
+			twin = case_twin(q->ht, item->string) ? case_twin(q->ht, item->string) : case_twin(q->index, item->string);
 		if (twin)
 			reject(1, xstrfmt("give it as git has it: '%s'", twin),
 			       "spec files do not match the contract: '%s' is '%s' in git", item->string, twin);
 		if (why)
 			reject(1, NULL, "spec files do not match the contract: '%s' %s", item->string, why);
 		if (lstat(xstrfmt("%s/%s", top, item->string), &st))
-			reject(1, xstrfmt("create '%s' or stop declaring it", item->string),
-			       "spec files do not match the contract: missing '%s'", item->string);
+			reject(1, missing_hint(q, item->string), "spec files do not match the contract: missing '%s'", item->string);
 	}
-	if (!(tree = tree_with(q->ht->oid, NULL, &q->files)))
+	/* on HEAD, the index's own versions of the files, so git add starts where the index is (core.fileMode) */
+	for_each_string_list_item(item, &q->files) {
+		struct entry *was = tree_get(q->noted, item->string);
+
+		index_line(&info, was ? was->mode : "0", was ? was->oid : "0000000000000000000000000000000000000000",
+			   item->string);
+	}
+	if (!(tree = tree_with(q->ht->oid, info.buf, &q->files)))
 		reject(128, NULL, "%s", git_failed());
 	u = tree_load(tree);
 	for_each_string_list_item(item, &q->files) {
@@ -1748,9 +1792,19 @@ static struct tree *candidate(struct request *q)
 	struct tree *u = stage_files(q);
 	size_t n = q->files.nr, k;
 
-	for (k = 0; k < n; k++)
-		if (q->files.items[k].util)
-			def_inputs(u, q->files.items[k].string, &q->files);
+	for (k = 0; k < n; k++) {
+		struct string_list inputs = STRING_LIST_INIT_DUP;
+		struct string_list_item *in;
+
+		if (!q->files.items[k].util)
+			continue;
+		def_inputs(u, q->files.items[k].string, &inputs);
+		for_each_string_list_item(in, &inputs) {
+			string_list_append(&q->declared, in->string)->util = q->files.items[k].string;
+			if (!unsorted_string_list_has_string(&q->files, in->string))
+				string_list_append(&q->files, in->string);
+		}
+	}
 	return q->files.nr > n ? stage_files(q) : u;
 }
 

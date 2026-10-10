@@ -90,13 +90,15 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 	size_t i;
 	int code;
 
-	/* git's output as ait parses it, whatever the user's config would add to it */
+	/* git's output as ait parses it, whatever the user's config would add to it or recode it to */
 	strvec_pushl(&cmd.args, "git", "-c", "core.quotePath=false", "-c", "trailer.separators=:",
-		     "-c", "core.commentChar=#", "-c", "log.showSignature=false", NULL);
+		     "-c", "core.commentChar=#", "-c", "log.showSignature=false", "-c", "i18n.logOutputEncoding=UTF-8", NULL);
 	at_repository(&cmd.args);
 	strvec_pushv(&cmd.args, args->v);
 	if (index)
 		strvec_pushf(&cmd.env, "GIT_INDEX_FILE=%s", index);
+	/* git's messages untranslated: ait's are English (5.6), and it takes git's "fatal: " off */
+	strvec_push(&cmd.env, "LANGUAGE=C");
 	code = pipe_command(&cmd, in, in ? strlen(in) : 0, &out, 0, &err, 0);
 	/* git's first stderr line, its "fatal: " or "error: " left to the message ait writes around it */
 	free(git_error);
@@ -598,7 +600,7 @@ static int cmd_init(int argc, const char **argv)
 		puts("init exists");
 		return 0;
 	}
-	printf("init created %s\n", line1(git("rev-parse HEAD")));
+	printf("init created %s\n", published);
 	return 0;
 }
 

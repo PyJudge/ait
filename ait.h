@@ -118,7 +118,7 @@ const char *unverified_since(struct record *r);
 int read_text(struct strbuf *sb, const char *path);
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err);
 void yaml(const char *text, struct string_list *kv, const char *what);
-void yaml_check(struct string_list *kv, const char *const *schema, const char *what, const char *hint);
+void yaml_check(struct string_list *kv, const char *const *schema, const char *what, const char *hint, int kinds);
 char *yline(struct string_list *kv, const char *key);
 void yaml_trim_blocks(struct strbuf *text);
 void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size_t len, const char *with);
@@ -129,5 +129,6 @@ struct string_list *def_get(struct tree *t, const char *path);
 int cmd_request(int argc, const char **argv);
 int cmd_fulfill(int argc, const char **argv);
 void precondition(int allow_unborn);
+extern const char *published;
 int publish(const char *tree, const char *msg, struct tree *index);
 #endif

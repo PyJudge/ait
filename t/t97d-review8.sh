@@ -80,4 +80,75 @@ git checkout -q master && tick && git commit -q --allow-empty -m pad && tick && 
 run ait todo $O
 check "since names the commit on the side branch" err_has "(unverified since '$G')"
 git reset -q --hard "$H"
+
+# 7.3.3: spec files are staged as git add stages them, over the index's own versions
+git config core.fileMode false && git update-index --chmod=+x specs/p.yaml
+tick; expect_ok "a mode staged with core.fileMode false" ait offer src/stock.c specs/p.yaml --force -m o
+check "is committed" sh -c "git ls-tree HEAD specs/p.yaml | grep -q '^100755'"
+git config --unset core.fileMode; git reset -q --hard "$H"
+echo 'body: x' > specs/x && git add specs/x && tick && git commit -q --no-verify -m x && H3=$(git rev-parse HEAD)
+rm specs/x && mkdir specs/x && echo 'body: y' > specs/x/y.yaml
+tick; expect_ok "a file that became a directory" ait offer src/stock.c specs/x/y.yaml --force -m o
+git reset -q --hard "$H"; rm -rf specs/x
+git sparse-checkout set --no-cone '/src/' '/tests/' '/specs/p.yaml' '/specs/pass.yaml'
+echo 'body: q' > specs/q.yaml
+bad E_GIT "a spec file outside the sparse checkout" ait offer src/stock.c specs/q.yaml --force -m o
+check "stays in the work tree" [ -f specs/q.yaml ]
+git sparse-checkout disable; rm -f specs/q.yaml; git reset -q --hard "$H"
+
+# 5.12: git's output as ait parses it whatever i18n.logOutputEncoding says, and git's messages in English
+tick; ait offer src/stock.c specs/pass.yaml --force -m o >"$T/out"; O=$(new_id)
+git config i18n.logOutputEncoding UTF-16
+run ait todo $O
+check "a check is read under another log encoding" sh -c "! grep -q 'unverified yes' '$T/out'"
+git config --unset i18n.logOutputEncoding; git reset -q --hard "$H"
+echo 'specs/p.yaml filter=broken' > .gitattributes && git config filter.broken.clean false && git config filter.broken.required true
+echo 'body: new' > specs/p.yaml
+tick; run env LANG=de_DE.UTF-8 LC_ALL=de_DE.UTF-8 ait offer src/stock.c specs/p.yaml --force -m o
+check "git's reason untranslated" sh -c "grep -q \"^fatal: git failed: 'git add': external filter\" '$T/err'"
+git config --unset filter.broken.clean; git config --unset filter.broken.required; rm -f .gitattributes; git reset -q --hard "$H"
+
+# 8.3: a submodule's commit is a change whatever submodule.<name>.ignore says
+git init -q "$T/sub" && git -C "$T/sub" commit -q --allow-empty -m s1
+git -c protocol.file.allow=always submodule add -q "$T/sub" sub >/dev/null 2>&1
+git config -f .gitmodules submodule.sub.ignore all && git add .gitmodules && tick && git commit -q --no-verify -m sub
+tick; ait offer src/stock.c specs/pass.yaml --force -m o >/dev/null; H4=$(git rev-parse HEAD)
+echo x >> src/stock.c && git add src/stock.c
+tick; run ait commit -m c; I1=$(sed -n 's/^input: //p' "$(git rev-parse --git-path ait/check-request.yaml)")
+git -C sub commit -q --allow-empty -m s2 && git add sub
+tick; run ait commit -m c; I2=$(sed -n 's/^input: //p' "$(git rev-parse --git-path ait/check-request.yaml)")
+check "the submodule's change is in the check input" [ "$I1" != "$I2" ]
+git reset -q --hard "$H"; rm -rf sub .gitmodules
+
+# 7.3.3 and decision 5: a case twin counts only where git has no path spelled so
+if [ "$(git config --bool core.ignorecase)" = true ]; then
+	git mv specs/p.yaml specs/P.yaml
+	tick; expect_ok "the index's spelling is taken" ait offer src/stock.c specs/P.yaml --force -m o
+	git reset -q --hard "$H"
+fi
+
+# 5.8: E_IO for a temporary directory that cannot be made; the missing hint names what declares the path
+tick; run env TMPDIR="$T/nonexistent" ait future offer src/stock.c specs/p.yaml -m o
+check "write error" sh -c "[ $rc = 128 ] && grep -q '^fatal: write error:' '$T/err'"
+git rm -q --cached tests/pass.sh && rm tests/pass.sh
+bad E_INCOMPLETE "a missing input" ait offer src/stock.c specs/pass.yaml --force -m o
+check "restore it, or stop declaring it in its definition" err_has "restore 'tests/pass.sh' from HEAD, or stop declaring it in 'specs/pass.yaml'"
+git reset -q --hard "$H"
+
+# 5.8: a reader error names its line
+printf 'body: b\n\ninputs: [a\001]\n' > specs/c.yaml
+bad E_FORMAT "a control character" ait future offer src/stock.c specs/c.yaml -m o
+check "in its line" err_has "in line 3"
+rm -f specs/c.yaml
+
+# 8.2: what ait writes, its reader reads: LS and PS in a body are escaped
+printf 'body: "x\\Ly"\n' > specs/ls.yaml && git add specs/ls.yaml && tick && git commit -q --no-verify -m ls
+tick; run ait offer src/stock.c specs/ls.yaml -m o
+check "the body goes as a quoted string" grep -qF 'body: "x\Ly"' "$(git rev-parse --git-path ait/check-request.yaml)"
+git reset -q --hard "$H"
+
+# 8.4: with another input, the kinds of values are not checked; the result is not for this state
+result '  basis: ok\n'
+sed 's/^input: .*/input: 0123456789012345678901234567890123456789/; s/^  outcome: pass$/  outcome: [pass]/' "$T/r.yaml" > "$T/s.yaml"
+bad E_NEEDS_RESULTS "a stale result with a list as outcome" ait offer src/stock.c specs/pass.yaml -m o -r "$T/s.yaml"
 done_testing

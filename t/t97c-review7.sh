@@ -21,7 +21,7 @@ echo 'specs/p.yaml filter=broken' > .gitattributes
 git config filter.broken.clean 'exit 42' && git config filter.broken.required true
 echo 'body: new' > specs/p.yaml
 bad E_GIT "a required clean filter that fails" ait future offer src/stock.c specs/p.yaml -m o
-check "names the git command" err_has "git failed: 'git update-index'"
+check "names the git command" err_has "git failed: 'git add'"
 git config --unset filter.broken.clean; git config --unset filter.broken.required; rm -f .gitattributes; git reset -q --hard "$H"
 
 # 5.13-1 and 7.7.1: fulfill without an ID is a grammar error before the session
