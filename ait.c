@@ -567,7 +567,7 @@ static int cmd_init(int argc, const char **argv)
 	precondition(1);
 	/* spec 7.1.1-5: if another init won the race, its init file is ours too */
 	if (publish(tree_with(t->oid, xstrfmt("100644 %s\t.ait/init\n", line1(git_run("version 1\n", NULL, NULL,
-		    "hash-object -w --stdin")))), "[CONTRACT] ait init\n", tree_load(line1(git("write-tree"))))) {
+		    "hash-object -w --stdin"))), NULL), "[CONTRACT] ait init\n", tree_load(line1(git("write-tree"))))) {
 		const char *now = object("HEAD:.ait/init", 1, NULL, NULL);
 
 		if (!now || strcmp(now, "version 1\n"))
@@ -600,31 +600,44 @@ static void check_hooks(void)
 		}
 }
 
+/*
+ * a pre-push record ends at E (its LF) when what is before holds
+ * " LOCAL-OID SP REMOTE-REF SP REMOTE-OID": git writes "%s %s %s %s\n" (git
+ * v2.53.0 transport.c:1355), LOCAL being what was given, spaces and line
+ * feeds included, and REMOTE-REF a ref name, which holds neither; the local
+ * object ID of that record, or NULL
+ */
+static char *push_record(const char *p, const char *e)
+{
+	const char *ref = e - 41;
+
+	if (e - p < 85 || !oid_ok(xstrndup(e - 40, 40)) || *ref != ' ')
+		return NULL;
+	while (ref > p && ref[-1] != ' ' && ref[-1] != '\n')
+		ref--;
+	if (ref - p < 43 || ref[-1] != ' ' || ref[-42] != ' ')
+		return NULL;
+	return oid_ok(xstrndup(ref - 41, 40)) ? xstrndup(ref - 41, 40) : NULL;
+}
+
 /* spec 7.1.6: every pushed commit holds a valid state */
 static int pre_push(void)
 {
 	struct strbuf in = STRBUF_INIT;
-	struct string_list lines = STRING_LIST_INIT_DUP;
-	size_t i;
+	const char *p, *e;
+	char *oid;
 
 	strbuf_read(&in, 0, 0);
-	string_list_split(&lines, in.buf, "\n", -1);
-	/*
-	 * githooks(5): "LOCAL-REF SP LOCAL-OID SP REMOTE-REF SP REMOTE-OID"; the local
-	 * name is what was given, spaces and all, so the fields are read from the right
-	 */
-	for (i = 0; i < lines.nr; i++) {
-		struct string_list fields = STRING_LIST_INIT_DUP;
-		const char *oid;
-
-		if (!*lines.items[i].string)
+	for (p = e = in.buf; (e = strchr(e, '\n')); e++) {
+		if (!(oid = push_record(p, e)))
 			continue;
-		string_list_split(&fields, lines.items[i].string, " ", -1);
-		if (fields.nr < 4 || !oid_ok(oid = fields.items[fields.nr - 3].string))
-			reject(128, NULL, "bad pre-push input '%s'", lines.items[i].string);
-		if (strspn(oid, "0") != strlen(oid) && object(xstrfmt("%s^{commit}", oid), 0, NULL, NULL))
+		p = e + 1;
+		/* a deletion pushes nothing; what does not peel to a commit has no contracts */
+		if (strspn(oid, "0") != 40 && object(xstrfmt("%s^{commit}", oid), 0, NULL, NULL))
 			validate_at(tree_load(oid));
 	}
+	if (*p)
+		reject(128, NULL, "bad pre-push input '%s'", p);
 	return 0;
 }
 

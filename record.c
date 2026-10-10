@@ -4,6 +4,7 @@
  */
 #include "ait.h"
 #include "quote.h"
+#include "strvec.h"
 #include "utf8.h"
 #include <regex.h>
 
@@ -85,26 +86,39 @@ const char *blob_text(const char *oid)
 	return hit->util;
 }
 
-/* BASE plus INDEX_INFO ("MODE OID\tPATH" lines) in a throwaway index (spec 4.8) */
-char *tree_with(const char *base, const char *index_info)
+/*
+ * BASE in a throwaway index (spec 4.8), then INDEX_INFO ("MODE OID\tPATH"
+ * lines), or the work-tree files PATHS staged by git update-index --add as git
+ * stages them (core.fileMode, core.symlinks, paths beyond a symlink, filters);
+ * the tree, or NULL with git's reason in git_error when git refuses the paths
+ */
+char *tree_with(const char *base, const char *index_info, struct string_list *paths)
 {
 	char *dir = xstrfmt("%s/ait-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+	struct strvec add = STRVEC_INIT;
+	struct string_list_item *item;
 	char *index, *tree = NULL;
 	int rc;
 
-	if (!*index_info)
+	if (!paths && !*index_info)
 		return xstrdup(base);
 	if (!mkdtemp(dir))
 		die_errno("could not create '%s'", dir);
 	index = xstrfmt("%s/index", dir);
 	git_run(NULL, index, &rc, "read-tree %s", base);
-	if (!rc)
+	if (!rc && paths) {
+		strvec_pushl(&add, "update-index", "--add", "--", NULL);
+		for_each_string_list_item(item, paths)
+			strvec_push(&add, item->string);
+		git_args(&add, NULL, index, &rc);
+	} else if (!rc) {
 		git_run(index_info, index, &rc, "update-index --add --index-info");
+	}
 	if (!rc)
 		tree = line1(git_run(NULL, index, &rc, "write-tree"));
 	unlink(index);
 	rmdir(dir);
-	if (rc)
+	if (rc && !paths)
 		reject(128, NULL, "git failed: %s", git_error);
 	return tree;
 }
@@ -860,27 +874,25 @@ char *pins(struct record *r)
 
 /*
  * every Ait-Check value in HEAD's history as git's trailer parser gives it (5.4),
- * a folded one unfolded, with the commit that holds it as util; read once
+ * a folded one unfolded, with the commit that holds it as util; read once.
+ * "COMMIT NUL KEY \1 VALUE NUL ... NUL" per commit: the key is kept, since a
+ * value alone cannot tell an empty value from none, and no value holds NUL
  */
 static struct string_list *check_trailers(void)
 {
 	static struct string_list values = STRING_LIST_INIT_DUP;
 	static int loaded;
-	const char *p, *end;
+	const char *p, *end, *commit = NULL;
 
 	if (loaded++ || !head)
 		return &values;
-	/* "COMMIT\1VALUE\1VALUE..." NUL-terminated per commit: neither byte is in a value */
-	p = git("log -z --format=%H%x01%(trailers:key=Ait-Check,valueonly,unfold,separator=%x01) %s", head);
-	for (end = p + git_out_len; p < end; p += strlen(p) + 1) {
-		struct string_list fields = STRING_LIST_INIT_DUP;
-		size_t i;
-
-		string_list_split(&fields, p, "\x01", -1);
-		for (i = 1; i < fields.nr; i++)
-			if (*fields.items[i].string)
-				string_list_append(&values, fields.items[i].string)->util = xstrdup(fields.items[0].string);
-	}
+	p = git("log -z --format=%H%x00%(trailers:key=Ait-Check,unfold,separator=%x00,key_value_separator=%x01) %s", head);
+	/* an item always holds \1, a commit's ID never; an empty field ends a commit without trailers */
+	for (end = p + git_out_len; p < end; p += strlen(p) + 1)
+		if (strchr(p, '\x01') && commit)
+			string_list_append(&values, strchr(p, '\x01') + 1)->util = xstrdup(commit);
+		else if (*p)
+			commit = p;
 	return &values;
 }
 

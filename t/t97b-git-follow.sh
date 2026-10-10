@@ -1,0 +1,61 @@
+#!/bin/sh
+# 5.5-4, 7.3.3, 5.4 and 7.1.6: what git does is what ait takes; each case reproduced against git's own behaviour
+. "$(dirname "$0")/lib.sh"
+setup
+A=$(ait session open --agent a)
+prompt_defs; exec_def pass
+git add -A && tick && git commit -q --no-verify -m defs
+H=$(git rev-parse HEAD)
+
+# 5.5-4: a path the commit took, staged again meanwhile: git's two-way merge keeps the index where it was not judged
+racing_git
+echo 'echo raced > "$T/r/src/order.c" && git -C "$T/r" add src/order.c' > "$T/before-update-ref"
+echo y >> src/order.c && git add src/order.c
+tick; run env PATH="$T/bin:$PATH" ait commit -m judged
+check "the judged commit lands" sh -c "[ $rc = 0 ] && ! git show HEAD:src/order.c | grep -q raced"
+check "with no warning" [ ! -s "$T/err" ]
+check "and the staging made meanwhile stays" sh -c "git show :src/order.c | grep -qx raced"
+git reset -q --hard "$H"
+
+# 5.5-4: a record the request changes, staged otherwise meanwhile: read-tree refuses whole, the staging stays
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out"; O=$(new_id); H2=$(git rev-parse HEAD)
+echo 'printf "raced\n" >> "$T/r/.ait/'$O'" && git -C "$T/r" add .ait/'$O > "$T/before-update-ref"
+tick; run env PATH="$T/bin:$PATH" ait future cancel $O -m c
+check "the request lands" sh -c "[ $rc = 0 ] && [ \$(git rev-parse HEAD^) = $H2 ]"
+check "with the warning of 5.5-5" err_has "but the index and work tree were not updated"
+check "and the staging made meanwhile stays" sh -c "git show :.ait/$O | grep -qx raced"
+git reset -q --hard "$H"
+
+# 7.3.3: a spec file is staged as git stages it; a symlink is not a regular file
+ln -s p.yaml specs/l.yaml
+tick; expect_err "a symlinked spec file" E_INCOMPLETE ait offer src/stock.c specs/l.yaml --force -m m
+check "says so" err_has "is not a regular file"
+rm specs/l.yaml
+
+# 7.3.3: with core.fileMode false the mode git has is kept
+git update-index --chmod=+x specs/p.yaml && tick && git commit -q --no-verify -m x
+git config core.fileMode false && chmod -x specs/p.yaml
+tick; expect_ok "a request with core.fileMode false" ait offer src/stock.c specs/p.yaml --force -m m
+check "keeps the executable mode" sh -c "git ls-tree HEAD specs/p.yaml | grep -q '^100755'"
+git config --unset core.fileMode; git reset -q --hard "$H"
+
+# 5.5-4: core.sparseCheckout without a patterns file is no sparse checkout; nothing is emptied
+git config core.sparseCheckout true
+tick; expect_ok "a request" ait future offer src/stock.c specs/p.yaml -m o
+check "the work tree is whole" sh -c "[ -f src/order.c ] && [ -f specs/p.yaml ]"
+git config --unset core.sparseCheckout; git reset -q --hard "$H"
+
+# 5.4: trailers as git reads them; a commit without trailers and a folded value in one log
+tick; ait offer src/stock.c specs/pass.yaml --force -m o >"$T/out"; O=$(new_id)
+tick; git commit -q --allow-empty -m plain
+tick; git commit -q --allow-empty -m "$(printf 'note\n\nAit-Check: %s\n  forced\nSigned-off-by: x' "$O")"
+expect_ok "todo reads the log" ait todo $O
+git reset -q --hard "$H"
+
+# 7.1.6: a local name holding a line feed is read from the right, as git writes it
+mkdir -p .ait && echo garbage > .ait/Daaaaaaaaaaaa && git add .ait && tick && git commit -q --no-verify -m "$(printf 'bad\nline')"
+B=$(git rev-parse HEAD); Z=0000000000000000000000000000000000000000
+run sh -c "printf 'HEAD^{/bad\nline} %s refs/heads/nl %s\n' $B $Z | ait hook pre-push"
+check "the commit is validated" sh -c "[ $rc != 0 ]"
+git reset -q --hard "$H"
+done_testing

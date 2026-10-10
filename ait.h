@@ -34,7 +34,7 @@ struct tree *head_tree(void);
 struct entry *tree_get(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
 const char *blob_text(const char *oid);
-char *tree_with(const char *base, const char *index_info);
+char *tree_with(const char *base, const char *index_info, struct string_list *paths);
 void tree_diff(struct tree *a, struct tree *b, struct string_list *paths);
 
 /* a record is its values per key (spec 2.2.2); "new:PATH", "PATH OID", "DIR/ OID" for scopes */

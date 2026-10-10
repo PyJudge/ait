@@ -95,12 +95,6 @@ void precondition(int allow_unborn)
 		       "uncommitted changes in .ait/");
 }
 
-/* two optional index entries hold the same file */
-static int same(struct entry *a, struct entry *b)
-{
-	return a ? b && !strcmp(a->mode, b->mode) && !strcmp(a->oid, b->oid) : !b;
-}
-
 /* HEAD is still the branch R, and R is the commit C */
 static int at(const char *c)
 {
@@ -121,57 +115,63 @@ static char *quoted_paths(struct string_list *paths)
 	return strbuf_detach(&sb, NULL);
 }
 
+/* this worktree is sparse as git takes it: core.sparseCheckout with its own patterns file (git-sparse-checkout(1)) */
+static int sparse(void)
+{
+	int rc;
+
+	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool core.sparseCheckout")), "true") &&
+	       !access(line1(git("rev-parse --path-format=absolute --git-path info/sparse-checkout")), F_OK);
+}
+
 /*
- * spec 5.5-4/5: under the worktree's lock, with HEAD still R at C, each path
- * that C changed and whose index entry is still the one NOTED when the
- * request began takes C's version; .ait/ paths take it in the work tree too.
- * Nothing staged meanwhile is touched; what is not brought is warned about.
+ * spec 5.5-4/5 by git's own commands. git read-tree -i -m O C moves the index
+ * from O to C under git's index lock in one step, taking C's entry only where
+ * the index still has O's and refusing everything when one was staged
+ * otherwise (git v2.53.0 unpack-trees.c twoway_merge). O is C with, on the
+ * paths C changed from H, the entries the index had when the request began
+ * (NOTED), so nothing else is touched. Then .ait/ follows in the work tree,
+ * apart from skip-worktree entries, as git checkout-index keeps them, and a
+ * sparse worktree gets its patterns back. What is not done is warned about.
  */
 static void follow(struct tree *h, struct tree *noted, const char *c)
 {
-	struct tree *ct = tree_load(c), *it = NULL;
-	struct string_list paths = STRING_LIST_INIT_DUP, brought = STRING_LIST_INIT_DUP, left = STRING_LIST_INIT_DUP;
-	struct string_list ait = STRING_LIST_INIT_DUP, rest = STRING_LIST_INIT_DUP;
+	struct tree *ct = tree_load(c);
+	struct string_list paths = STRING_LIST_INIT_DUP, ait = STRING_LIST_INIT_DUP, rest = STRING_LIST_INIT_DUP;
+	struct string_list skipped = STRING_LIST_INIT_DUP, left = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct strbuf info = STRBUF_INIT;
 	int fd = lock_worktree(top), rc = fd < 0 || !at(c), unset;
 
-	if (!rc) {
-		char *index = line1(git_run(NULL, NULL, &rc, "write-tree"));
-
-		/* another process holds the index, or it has unmerged entries: 5.5-5 */
-		it = rc ? NULL : tree_load(index);
-	}
 	tree_diff(h, ct, &paths);
 	for_each_string_list_item(item, &paths) {
-		struct entry *now = tree_get(ct, item->string);
+		struct entry *was = tree_get(noted, item->string);
 
-		if (!rc && same(tree_get(it, item->string), now))
-			continue;
-		if (rc || !same(tree_get(it, item->string), tree_get(noted, item->string))) {
-			string_list_append(&left, item->string);
-			continue;
-		}
-		strbuf_addf(&info, "%s %s\t%s\n", now ? now->mode : "0",
-			    now ? now->oid : "0000000000000000000000000000000000000000", item->string);
-		string_list_append(&brought, item->string)->util = now;
+		strbuf_addf(&info, "%s %s\t%s\n", was ? was->mode : "0",
+			    was ? was->oid : "0000000000000000000000000000000000000000", item->string);
+		string_list_append(starts_with(item->string, ".ait/") ? &ait : &rest, item->string);
 	}
-	if (info.len)
-		git_run(info.buf, NULL, &rc, "update-index --index-info");
-	for_each_string_list_item(item, &brought) {
+	if (!rc && paths.nr)
+		git_run(NULL, NULL, &rc, "read-tree -i -m %s %s", tree_with(ct->oid, info.buf, NULL), c);
+	if (!rc && ait.nr)
+		string_list_split(&skipped, git_run(NULL, NULL, &unset, "ls-files -t -- .ait"), "\n", -1);
+	for_each_string_list_item(item, &ait) {
 		int bad = rc;
 
-		if (!bad && starts_with(item->string, ".ait/") && item->util)
+		if (!bad && unsorted_string_list_has_string(&skipped, xstrfmt("S %s", item->string)))
+			continue;
+		if (!bad && tree_get(ct, item->string))
 			git_run(NULL, NULL, &bad, "checkout-index -f -q -- %s", item->string);
-		else if (!bad && starts_with(item->string, ".ait/"))
+		else if (!bad)
 			bad = unlink(xstrfmt("%s/%s", top, item->string)) && errno != ENOENT;
 		if (bad)
 			string_list_append(&left, item->string);
 	}
-	/* a sparse checkout keeps out of the work tree what its patterns leave out, as git does (git-sparse-checkout(1)) */
-	if (!rc && brought.nr && !strcmp(line1(git_run(NULL, NULL, &unset, "config --bool core.sparseCheckout")), "true")) {
+	if (!rc && ait.nr && sparse()) {
 		git_run(NULL, NULL, &unset, "update-index -q --refresh");
-		git_run(NULL, NULL, &rc, "sparse-checkout reapply");
+		git_run(NULL, NULL, &unset, "sparse-checkout reapply");
+		if (unset)
+			warning("committed '%s' to '%s', but 'git sparse-checkout reapply' failed: %s", c, headref, git_error);
 	}
 	if (!at(c))
 		rc = 1;
@@ -179,17 +179,17 @@ static void follow(struct tree *h, struct tree *noted, const char *c)
 		close(fd);
 	if (!rc && !left.nr)
 		return;
-	if (rc || left.nr == paths.nr)
+	if (rc)
 		warning("committed '%s' to '%s', but the index and work tree were not updated", c, headref);
 	else
 		warning("committed '%s' to '%s', but %s were not updated", c, headref, quoted_paths(&left));
 	if (!at(c))
 		return;
-	for_each_string_list_item(item, &left)
-		string_list_append(starts_with(item->string, ".ait/") ? &ait : &rest, item->string);
-	if (ait.nr)
+	if (rc && ait.nr)
 		suggest("bring %s to '%s' in the index and work tree", quoted_paths(&ait), c);
-	if (rest.nr)
+	else if (left.nr)
+		suggest("bring %s to '%s' in the work tree", quoted_paths(&left), c);
+	if (rc && rest.nr)
 		suggest("bring %s to '%s' in the index", quoted_paths(&rest), c);
 }
 
@@ -935,7 +935,7 @@ static char *judged_tree(struct request *q, struct string_list *changed)
 		if (changed)
 			string_list_append(changed, r->id)->util = r;
 	}
-	return tree_with(q->v->oid, info.buf);
+	return tree_with(q->v->oid, info.buf, NULL);
 }
 
 /* the double-quoted YAML scalar of spec 8.2 */
@@ -1508,35 +1508,24 @@ int cmd_fulfill(int argc, const char **argv)
 	return finish(&q);
 }
 
-/* spec 7.3.3: the candidate is HEAD plus the given definitions and what they declare, from the work tree */
+/*
+ * spec 7.3.3: the candidate is HEAD plus the given definitions and what they
+ * declare, from the work tree, staged by git as git stages them
+ */
 static struct tree *candidate(struct request *q)
 {
-	struct strbuf info = STRBUF_INIT;
+	struct string_list_item *item;
+	struct tree *u;
+	char *tree;
 	size_t k;
 
 	for (k = 0; k < q->files.nr; k++) {
 		const char *p = q->files.items[k].string;
 		struct strbuf text = STRBUF_INIT;
 		struct string_list kv = STRING_LIST_INIT_DUP;
-		struct string_list_item *item;
-		const char *staged, *c;
-		struct stat st, dir;
-		char *oid;
-		int regular;
 
-		if (lstat(xstrfmt("%s/%s", top, p), &st))
+		if (access(xstrfmt("%s/%s", top, p), F_OK))
 			reject(1, xstrfmt("create '%s' or stop declaring it", p), "spec files do not match the contract: missing '%s'", p);
-		/* 7.3.3: a regular file of the work tree, as git sees one: not a symlink, nor reached through one */
-		regular = S_ISREG(st.st_mode);
-		for (c = strchr(p, '/'); regular && c; c = strchr(c + 1, '/'))
-			regular = !lstat(xstrfmt("%s/%.*s", top, (int)(c - p), p), &dir) && S_ISDIR(dir.st_mode);
-		if (!regular)
-			reject(1, NULL, "spec files do not match the contract: '%s' is not a regular file", p);
-		oid = line1(git("hash-object -w -- %s", p));
-		staged = git("ls-files -s -- %s", p);
-		if (*staged && !strstr(staged, oid) && (!blob_at(q->ht, p) || !strstr(staged, blob_at(q->ht, p))))
-			reject(1, xstrfmt("stage all of '%s' or none of it", p), "spec files do not match the contract: '%s' is partly staged", p);
-		strbuf_addf(&info, "%s %s\t%s\n", st.st_mode & S_IXUSR ? "100755" : "100644", oid, p);
 		if (!q->files.items[k].util)
 			continue;
 		text_or_die(&text, xstrfmt("%s/%s", top, p));
@@ -1546,7 +1535,22 @@ static struct tree *candidate(struct request *q)
 			    !unsorted_string_list_has_string(&q->files, input_path(p, yget(&kv, item->string))))
 				string_list_append(&q->files, yget(&kv, item->string));
 	}
-	return tree_load(tree_with(q->ht->oid, info.buf));
+	tree = tree_with(q->ht->oid, NULL, &q->files);
+	if (!tree)
+		reject(1, NULL, "spec files do not match the contract: %s", git_error);
+	u = tree_load(tree);
+	for_each_string_list_item(item, &q->files) {
+		struct entry *e = tree_get(u, item->string);
+		char *index = git("ls-files -s -- %s", item->string);
+
+		/* 2.1.4: a spec file is a regular file; and it is staged as a whole, or not at all (7.3.3) */
+		if (!e || (strcmp(e->mode, "100644") && strcmp(e->mode, "100755")))
+			reject(1, NULL, "spec files do not match the contract: '%s' is not a regular file", item->string);
+		if (*index && !strstr(index, e->oid) && (!blob_at(q->ht, item->string) || !strstr(index, blob_at(q->ht, item->string))))
+			reject(1, xstrfmt("stage all of '%s' or none of it", item->string),
+			       "spec files do not match the contract: '%s' is partly staged", item->string);
+	}
+	return u;
 }
 
 /* spec 7.3: clauses apply in order to the records loaded from HEAD */
