@@ -1168,19 +1168,28 @@ const char *unverified_since(struct record *r)
 	return NULL;
 }
 
-/* spec 2.5.2: the inputs of the definition DEF at T into OUT, each a PATH of 3.1 */
-void def_inputs(struct tree *t, const char *def, struct string_list *out)
+/*
+ * spec 2.5.2: the inputs the definitions DEFS declare at T, each a PATH of 3.1,
+ * into OUT as "input -> the definition declaring it", once per declaration
+ */
+void def_inputs(struct tree *t, struct string_list *defs, struct string_list *out)
 {
-	struct string_list *kv = def_get(t, def);
-	struct string_list_item *in;
+	struct string_list_item *def, *in;
 
-	for_each_string_list_item(in, kv) {
-		if (!starts_with(in->string, "inputs."))
-			continue;
-		if (!path_ok(yget(kv, in->string)))
-			reject(128, NULL, "bad format: '%s': bad input '%s'%s", def, yget(kv, in->string), yline(kv, in->string));
-		if (!unsorted_string_list_has_string(out, yget(kv, in->string)))
-			string_list_append(out, yget(kv, in->string));
+	for_each_string_list_item(def, defs) {
+		struct string_list *kv = def_get(t, def->string);
+
+		for_each_string_list_item(in, kv) {
+			const char *p = yget(kv, in->string);
+
+			if (!starts_with(in->string, "inputs."))
+				continue;
+			if (!path_ok(p))
+				reject(128, NULL, "bad format: '%s': bad input '%s'%s", def->string, p, yline(kv, in->string));
+			/* an input that is a definition of these is that definition */
+			if (!unsorted_string_list_has_string(defs, p))
+				string_list_append(out, p)->util = def->string;
+		}
 	}
 }
 
@@ -1199,11 +1208,9 @@ int expand_files(struct record *r, struct tree *t)
 		if (!blob_at(t, item->string))
 			return -1;
 		string_list_insert(&out, xstrfmt("%s %s %s def", e->path, e->mode, e->oid));
-		def_inputs(t, e->path, &inputs);
 	}
+	def_inputs(t, &defs, &inputs);
 	for_each_string_list_item(in, &inputs) {
-		if (string_list_has_string(&defs, in->string))
-			continue;
 		if (!blob_at(t, in->string))
 			return -1;
 		string_list_insert(&out, xstrfmt("%s %s %s input", in->string, tree_get(t, in->string)->mode,
@@ -1539,24 +1546,22 @@ static void yaml_quoted(struct strbuf *sb, const char *s)
 }
 
 /*
- * In TEXT, which KV was parsed from, the first LEN bytes of KEY's value become
- * WITH: in place where the text spells the value as it is, else the scalar is
- * written anew as "..." (its line breaks after it kept). Replacing from the
- * last value back keeps the places of the others.
+ * In TEXT, the value V of a scalar becomes WITH: in place where the text
+ * spells the value as it is, else the scalar is written anew as "..." (its
+ * line breaks after it kept)
  */
-void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size_t len, const char *with)
+static void yreplace(struct strbuf *text, struct yval *v, const char *with)
 {
-	struct yval *v = unsorted_string_list_lookup(kv, key)->util;
 	struct strbuf sb = STRBUF_INIT;
 	size_t end = v->end;
 
 	if (v->literal) {
-		strbuf_splice(text, v->at, len, with, strlen(with));
+		strbuf_splice(text, v->at, strlen(v->s), with, strlen(with));
 		return;
 	}
 	while (end > v->start && text->buf[end - 1] == '\n')
 		end--;
-	yaml_quoted(&sb, xstrfmt("%s%s", with, v->s + len));
+	yaml_quoted(&sb, with);
 	strbuf_splice(text, v->start, end - v->start, sb.buf, sb.len);
 }
 
@@ -1594,45 +1599,53 @@ char *yline(struct string_list *kv, const char *key)
 }
 
 /*
- * spec 8.4: the "|" blocks of TEXT, a YAML file, without their trailing blank
- * lines: whole lines of spaces at the end of a block as libyaml places it,
- * dropped only where the value reads the same after ("|+" keeps them as its
- * value); from the last block back, so the places of the others hold
+ * spec 8.4: the "|" block V of TEXT, the value of KEY, without its trailing
+ * blank lines: whole lines of spaces at its end as libyaml places it, dropped
+ * only where the value reads the same after ("|+" keeps them as its value)
  */
-void yaml_trim_blocks(struct strbuf *text)
+static void trim_block(struct strbuf *text, const char *key, struct yval *v)
 {
-	struct string_list kv = STRING_LIST_INIT_DUP;
+	struct string_list after = STRING_LIST_INIT_DUP;
+	struct strbuf trimmed = STRBUF_INIT;
+	size_t head = v->start + strcspn(text->buf + v->start, "\n") + 1, e = v->end, p, line;
 	char *err;
+
+	/* the end of the block's last line; the next line keeps its indentation */
+	while (e > head && text->buf[e - 1] != '\n')
+		e--;
+	/* back over the lines that hold spaces only */
+	for (p = e; p > head; p = line) {
+		line = p - 1;
+		while (line > head && text->buf[line - 1] != '\n')
+			line--;
+		if (text->buf[line + strspn(text->buf + line, " ")] != '\n')
+			break;
+	}
+	if (p == e)
+		return;
+	strbuf_add(&trimmed, text->buf, text->len);
+	strbuf_splice(&trimmed, p, e - p, "", 0);
+	if (!yaml_parse(trimmed.buf, &after, "", &err) && yget(&after, key) && !strcmp(yget(&after, key), v->s))
+		strbuf_splice(text, p, e - p, "", 0);
+}
+
+/*
+ * spec 8.4: the result file TEXT, parsed into KV, as the message carries it:
+ * each value RENAMED names made what it says, each "|" block without its
+ * trailing blank lines; from the last value back, so the places of the others hold
+ */
+void yaml_finish(struct strbuf *text, struct string_list *kv, struct string_list *renamed)
+{
 	size_t i;
 
-	if (yaml_parse(text->buf, &kv, "", &err))
-		return;
-	for (i = kv.nr; i-- > 0;) {
-		struct yval *v = kv.items[i].util;
-		struct string_list after = STRING_LIST_INIT_DUP;
-		struct strbuf trimmed = STRBUF_INIT;
-		size_t head = v->start + strcspn(text->buf + v->start, "\n") + 1, e = v->end, p, line;
+	for (i = kv->nr; i-- > 0;) {
+		struct string_list_item *to = unsorted_string_list_lookup(renamed, kv->items[i].string);
+		struct yval *v = kv->items[i].util;
 
-		if (!v->block)
-			continue;
-		/* the end of the block's last line; the next line keeps its indentation */
-		while (e > head && text->buf[e - 1] != '\n')
-			e--;
-		/* back over the lines that hold spaces only */
-		for (p = e; p > head; p = line) {
-			line = p - 1;
-			while (line > head && text->buf[line - 1] != '\n')
-				line--;
-			if (text->buf[line + strspn(text->buf + line, " ")] != '\n')
-				break;
-		}
-		if (p == e)
-			continue;
-		strbuf_add(&trimmed, text->buf, text->len);
-		strbuf_splice(&trimmed, p, e - p, "", 0);
-		if (!yaml_parse(trimmed.buf, &after, "", &err) && yget(&after, kv.items[i].string) &&
-		    !strcmp(yget(&after, kv.items[i].string), v->s))
-			strbuf_splice(text, p, e - p, "", 0);
+		if (to)
+			yreplace(text, v, to->util);
+		else if (v->block)
+			trim_block(text, kv->items[i].string, v);
 	}
 }
 

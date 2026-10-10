@@ -22,6 +22,8 @@ struct request {
 	struct strbuf msg;
 	struct string_list files;	/* spec files given to the helpers */
 	struct string_list declared;	/* an input -> a definition of this request that declares it */
+	struct string_list results;	/* the result file taken, as yaml_parse() read it */
+	struct string_list renamed;	/* "results.N.task" -> its value with +SEQ made the new ID (8.4) */
 	struct string_list scoped;	/* IDs given with =SCOPES */
 	struct string_list selected;	/* the promises fulfill was asked to keep */
 	struct string_list conf;	/* the check set, ID -> record */
@@ -47,7 +49,8 @@ struct clause {
 #define REQUEST_INIT { .msg = STRBUF_INIT, .files = STRING_LIST_INIT_DUP, \
 	.scoped = STRING_LIST_INIT_DUP, .selected = STRING_LIST_INIT_DUP, .conf = STRING_LIST_INIT_DUP, \
 	.missing = STRING_LIST_INIT_DUP, .tasks = STRING_LIST_INIT_DUP, .hints = STRING_LIST_INIT_DUP, \
-	.carried = STRING_LIST_INIT_DUP, .mixed = STRING_LIST_INIT_DUP, .declared = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
+	.carried = STRING_LIST_INIT_DUP, .mixed = STRING_LIST_INIT_DUP, .declared = STRING_LIST_INIT_DUP, \
+	.results = STRING_LIST_INIT_DUP, .renamed = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
 
 /* spec 2.3: the allowed transitions of a demand or offer ('x') and of a link ('u'), and who makes them */
 static const struct move {
@@ -629,31 +632,6 @@ static struct string_list_item *task_of(struct request *q, const char *t)
 	return NULL;
 }
 
-/*
- * spec 8.4: in the task values of a result file, a new contract's +SEQ becomes
- * its ID, read once and spliced from the last task back so the places hold
- */
-static void rename_tasks(struct request *q, struct strbuf *sb)
-{
-	struct string_list kv = STRING_LIST_INIT_DUP;
-	const char *t;
-	char *err;
-	size_t i;
-	int n;
-
-	yaml_parse(sb->buf, &kv, "results", &err);
-	for (n = kv.nr; n >= 0; n--) {
-		struct string_list_item *task;
-
-		/* the task as the result file names it, which may be quoted as the check files wrote it */
-		if (!(t = yget(&kv, xstrfmt("results.%d.task", n))) || !(task = task_of(q, t)) || *task->string != '+')
-			continue;
-		for (i = 0; i < q->s.nr; i++)
-			if (!q->s.r[i]->old && q->s.r[i]->seq && q->s.r[i]->seq == atoi(task->string + 1))
-				yreplace(sb, &kv, xstrfmt("results.%d.task", n), strlen(t),
-					 yaml_text(xstrfmt("%s%s", q->s.r[i]->id, task->string + strcspn(task->string, ":"))));
-	}
-}
 
 static int unchanged(struct record *r)
 {
@@ -1184,10 +1162,11 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	static const char *const outcomes[] = { "pass", "fail", "unknown", NULL };
 	static const char *const schema[] = { "input s", "results l", "results.N m", "results.N.task s",
 					      "results.N.outcome s", "results.N.basis s", "results.N.reason s", NULL };
-	struct string_list kv = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP;
+	struct string_list *kv = &q->results, seen = STRING_LIST_INIT_DUP;
 	char *hint = xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis", q->result);
 	char *err;
 	const char *t;
+	size_t i;
 	int n, rc;
 
 	/* 5.8 E_FORMAT of a result file carries its hint on every path */
@@ -1195,29 +1174,34 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 		reject(128, "rerun without -r to get the check-result path", "could not read '%s'", q->result);
 	if (rc)
 		reject(128, hint, "bad format: '%s': not a text file%s", q->result, nul_line(text->buf));
-	if (yaml_parse(text->buf, &kv, q->result, &err))
+	if (yaml_parse(text->buf, kv, q->result, &err))
 		reject(128, hint, "%s", err);
 	/* 8.4: the subset of 2.5.1, its unknown keys too, then the input, then the rest */
-	yaml_check(&kv, schema, q->result, hint, 0);
-	if (!yget(&kv, "input"))
-		reject(128, hint, "bad format: '%s': no 'input'%s", q->result, yline(&kv, "input"));
-	if (strcmp(yget(&kv, "input"), input))
+	yaml_check(kv, schema, q->result, hint, 0);
+	if (!yget(kv, "input"))
+		reject(128, hint, "bad format: '%s': no 'input'%s", q->result, yline(kv, "input"));
+	if (strcmp(yget(kv, "input"), input))
 		return 0;
-	yaml_check(&kv, schema, q->result, hint, 1);
+	yaml_check(kv, schema, q->result, hint, 1);
 	/* every item of results, each naming its task */
-	for (n = 0; yget(&kv, xstrfmt("results.%d", n)); n++) {
-		const char *outcome = yget(&kv, xstrfmt("results.%d.outcome", n));
-		const char *basis = yget(&kv, xstrfmt("results.%d.basis", n));
+	for (n = 0; yget(kv, xstrfmt("results.%d", n)); n++) {
+		const char *outcome = yget(kv, xstrfmt("results.%d.outcome", n));
+		const char *basis = yget(kv, xstrfmt("results.%d.basis", n));
 		struct string_list_item *task;
 
-		if (!(t = yget(&kv, xstrfmt("results.%d.task", n))))
+		if (!(t = yget(kv, xstrfmt("results.%d.task", n))))
 			reject(128, hint, "bad format: '%s': a result without a task%s", q->result,
-			       yline(&kv, xstrfmt("results.%d", n)));
+			       yline(kv, xstrfmt("results.%d", n)));
 		task = task_of(q, t);
 		if (!task || unsorted_string_list_has_string(&seen, task->string) || !outcome || !one_of(outcome, outcomes) ||
 		    (!strcmp(outcome, "pass") && (!basis || !basis[strspn(basis, " \n")])))
-			reject(128, hint, "bad format: '%s': task '%s'%s", q->result, t, yline(&kv, xstrfmt("results.%d.task", n)));
+			reject(128, hint, "bad format: '%s': task '%s'%s", q->result, t, yline(kv, xstrfmt("results.%d.task", n)));
 		string_list_append(&seen, task->string);
+		/* 8.4: a new contract's +SEQ becomes its ID in the message, the name written as the check files write it */
+		for (i = 0; *task->string == '+' && i < q->s.nr; i++)
+			if (!q->s.r[i]->old && q->s.r[i]->seq == atoi(task->string + 1))
+				string_list_append(&q->renamed, xstrfmt("results.%d.task", n))->util =
+					(void *)yaml_text(xstrfmt("%s%s", q->s.r[i]->id, strchr(task->string, ':')));
 		if (!strcmp(outcome, "pass"))
 			continue;
 		if (!strcmp(outcome, "fail"))
@@ -1227,7 +1211,7 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	}
 	if (seen.nr != q->tasks.nr)
 		reject(128, hint, "bad format: '%s': %d of %d tasks%s", q->result, (int)seen.nr, (int)q->tasks.nr,
-		       yline(&kv, "results"));
+		       yline(kv, "results"));
 	return 1;
 }
 
@@ -1478,13 +1462,12 @@ static void commit_request(struct request *q, struct strbuf *results)
 	for_each_string_list_item(item, &q->conf)
 		repin(item->util, PROVIDER, q->v, 0);
 	tree = judged_tree(q, &changed);
-	rename_tasks(q, results);
 	if (!strcmp(tree, q->ht->oid) && !q->conf.nr) {
 		puts("noop");
 		return;
 	}
 	if (results->len) {
-		yaml_trim_blocks(results);
+		yaml_finish(results, &q->results, &q->renamed);
 		strbuf_complete_line(results);
 		hides(results->buf);
 		strbuf_addf(&q->msg, "\n%s", results->buf);
@@ -1795,22 +1778,18 @@ static struct tree *stage_files(struct request *q)
 /* the candidate U: the given definitions, read as git stages them, then what they declare (7.3.3) */
 static struct tree *candidate(struct request *q)
 {
+	struct string_list defs = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
 	struct tree *u = stage_files(q);
-	size_t n = q->files.nr, k;
+	size_t n = q->files.nr;
 
-	for (k = 0; k < n; k++) {
-		struct string_list inputs = STRING_LIST_INIT_DUP;
-		struct string_list_item *in;
-
-		if (!q->files.items[k].util)
-			continue;
-		def_inputs(u, q->files.items[k].string, &inputs);
-		for_each_string_list_item(in, &inputs) {
-			string_list_append(&q->declared, in->string)->util = q->files.items[k].string;
-			if (!unsorted_string_list_has_string(&q->files, in->string))
-				string_list_append(&q->files, in->string);
-		}
-	}
+	for_each_string_list_item(item, &q->files)
+		if (item->util)
+			string_list_append(&defs, item->string);
+	def_inputs(u, &defs, &q->declared);
+	for_each_string_list_item(item, &q->declared)
+		if (!unsorted_string_list_has_string(&q->files, item->string))
+			string_list_append(&q->files, item->string);
 	return q->files.nr > n ? stage_files(q) : u;
 }
 
