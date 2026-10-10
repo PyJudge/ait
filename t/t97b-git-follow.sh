@@ -75,6 +75,16 @@ tick; run ait offer src/stock.c specs/pass.yaml -m o -r "$W"; O=$(new_id)
 check "the message names the new ID" sh -c "git log -1 --format=%B | grep -q 'task: $O:specs/pass.yaml'"
 git reset -q --hard "$H"
 
+# 7.3.3: a definition is read as git stages it: a directory is no regular file, a clean filter applies
+mkdir specs/d.yaml && touch specs/d.yaml/x
+tick; expect_err "a directory as a definition" E_INCOMPLETE ait offer src/stock.c specs/d.yaml --force -m o
+rm -rf specs/d.yaml
+echo 'specs/f.yaml filter=un' > .gitattributes && git config filter.un.clean "sed 's/^#//'"
+printf 'body: x\n#inputs: [tests/n.sh]\n' > specs/f.yaml && echo n > tests/n.sh
+tick; expect_ok "the inputs git stages" ait offer src/stock.c specs/f.yaml --force -m o
+check "are staged with it" git cat-file -e HEAD:tests/n.sh
+git config --unset filter.un.clean; rm -f .gitattributes specs/f.yaml tests/n.sh; git reset -q --hard "$H"
+
 # 5.5-1: the index is read with its intent-to-add entries, which git write-tree leaves out
 echo 'body: new' > specs/n.yaml && git add -N specs/n.yaml
 tick; expect_err "an intent-to-add spec file is not staged whole" E_INCOMPLETE ait future offer src/stock.c specs/n.yaml -m o

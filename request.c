@@ -1611,34 +1611,20 @@ int cmd_fulfill(int argc, const char **argv)
 }
 
 /*
- * spec 7.3.3: the candidate is HEAD plus the given definitions and what they
- * declare, from the work tree, staged by git as git stages them
+ * spec 7.3.3: the files of the request from the work tree on HEAD, staged by
+ * git as git stages them; each a regular file, staged whole or not at all
  */
-static struct tree *candidate(struct request *q)
+static struct tree *stage_files(struct request *q)
 {
 	struct string_list_item *item;
 	struct tree *u;
 	char *tree;
-	size_t k;
 
-	for (k = 0; k < q->files.nr; k++) {
-		const char *p = q->files.items[k].string;
-		struct strbuf text = STRBUF_INIT;
-		struct string_list *kv;
-
-		if (access(xstrfmt("%s/%s", top, p), F_OK))
-			reject(1, xstrfmt("create '%s' or stop declaring it", p), "spec files do not match the contract: missing '%s'", p);
-		if (!q->files.items[k].util)
-			continue;
-		text_or_die(&text, xstrfmt("%s/%s", top, p));
-		kv = def_parse(text.buf, p);
-		for_each_string_list_item(item, kv)
-			if (starts_with(item->string, "inputs.") &&
-			    !unsorted_string_list_has_string(&q->files, input_path(p, yget(kv, item->string))))
-				string_list_append(&q->files, yget(kv, item->string));
-	}
-	tree = tree_with(q->ht->oid, NULL, &q->files);
-	if (!tree)
+	for_each_string_list_item(item, &q->files)
+		if (access(xstrfmt("%s/%s", top, item->string), F_OK))
+			reject(1, xstrfmt("create '%s' or stop declaring it", item->string),
+			       "spec files do not match the contract: missing '%s'", item->string);
+	if (!(tree = tree_with(q->ht->oid, NULL, &q->files)))
 		reject(1, NULL, "spec files do not match the contract: %s", git_error);
 	u = tree_load(tree);
 	for_each_string_list_item(item, &q->files) {
@@ -1653,6 +1639,26 @@ static struct tree *candidate(struct request *q)
 			       "spec files do not match the contract: '%s' is partly staged", item->string);
 	}
 	return u;
+}
+
+/* the candidate U: the given definitions, read as git stages them, then what they declare (7.3.3) */
+static struct tree *candidate(struct request *q)
+{
+	struct tree *u = stage_files(q);
+	struct string_list_item *in;
+	size_t n = q->files.nr, k;
+
+	for (k = 0; k < n; k++) {
+		const char *def = q->files.items[k].string;
+
+		if (!q->files.items[k].util)
+			continue;
+		for_each_string_list_item(in, def_get(u, def))
+			if (starts_with(in->string, "inputs.") &&
+			    !unsorted_string_list_has_string(&q->files, input_path(def, yget(def_get(u, def), in->string))))
+				string_list_append(&q->files, yget(def_get(u, def), in->string));
+	}
+	return q->files.nr > n ? stage_files(q) : u;
 }
 
 /* spec 7.3: clauses apply in order to the records loaded from HEAD */

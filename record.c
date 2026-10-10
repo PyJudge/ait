@@ -1323,22 +1323,26 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 	}
 }
 
-/* spec 2.5.2, 2.5.4, 2.5.6: a spec definition, from a blob or a work-tree file; each text is read and checked once */
-struct string_list *def_parse(const char *text, const char *path)
+/* spec 2.5.2, 2.5.4, 2.5.6: a spec definition; each one is read and checked once per blob */
+struct string_list *def_get(struct tree *t, const char *path)
 {
 	static const char *const exec[] = { "body s", "engine s", "command l", "command.N s", "success l",
 					    "success.N i", "inputs l", "inputs.N s", NULL };
 	static const char *const prompt[] = { "body s", "engine s", "inputs l", "inputs.N s", NULL };
 	static struct string_list parsed = STRING_LIST_INIT_DUP;
-	struct string_list_item *hit = string_list_lookup(&parsed, text);
+	const char *oid = blob_at(t, path), *engine;
+	struct string_list_item *hit = oid ? string_list_lookup(&parsed, oid) : NULL;
 	struct string_list *kv;
-	const char *engine;
 
+	if (!oid)
+		reject(1, NULL, "spec files do not match the contract: missing '%s'", path);
 	if (hit)
 		return hit->util;
+	if (!blob_text(oid))
+		reject(128, NULL, "bad format: '%s': not a text file", path);
 	kv = xcalloc(1, sizeof(*kv));
 	string_list_init_dup(kv);
-	yaml(text, kv, path);
+	yaml(blob_text(oid), kv, path);
 	if (yget(kv, "environment"))
 		unsupported("environment");
 	engine = yget(kv, "engine") ? yget(kv, "engine") : "";
@@ -1347,17 +1351,6 @@ struct string_list *def_parse(const char *text, const char *path)
 	yaml_check(kv, *engine ? exec : prompt, path);
 	if (!yget(kv, "body") || !*yget(kv, "body") || (*engine && !yget(kv, "command.0")))
 		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'", path);
-	string_list_insert(&parsed, text)->util = kv;
+	string_list_insert(&parsed, oid)->util = kv;
 	return kv;
-}
-
-struct string_list *def_get(struct tree *t, const char *path)
-{
-	const char *oid = blob_at(t, path);
-
-	if (!oid)
-		reject(1, NULL, "spec files do not match the contract: missing '%s'", path);
-	if (!blob_text(oid))
-		reject(128, NULL, "bad format: '%s': not a text file", path);
-	return def_parse(blob_text(oid), path);
 }

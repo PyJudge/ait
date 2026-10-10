@@ -20,3 +20,4 @@
 14. **문서 하나의 `---`·`...` 표시를 받음(2.5.1에 적음).** "libyaml 동봉·표준 escape"(사용자 결정)에서 도출. emitter는 끝 행바꿈을 지키는 `|+` body 뒤에 `...`를 쓰므로, 받지 않으면 ait가 쓴 파일을 ait가 거절한다. 지시와 둘째 문서는 그대로 막는다.
 15. **git의 stderr 행은 git의 `fatal: `·`error: `를 떼고 ait 문구 안에 넣음.** 선택. ait가 제 접두어를 붙이므로 `error: … error: …`로 겹치지 않게 한다. E_GIT은 5.8 표의 "git 명령과 그 stderr 첫 행"대로 `fatal: git failed: 'git SUB': 이유`다. ait가 직접 만드는 E_GIT(`cat-file`이 멈춤, tree가 아님)도 이 모양이다.
 16. **시작 때의 index는 두 사실로 읽음.** 5.5-1에서 도출. 커밋할 tree(T0)는 `git write-tree`(git commit처럼 intent-to-add를 뺀다), index 항목은 `git ls-files -s`(intent-to-add도 빈 blob으로 든다)다. 부분 stage 판정과 follow의 O는 index 항목으로 한다. 그래서 `git add -N`한 명세 파일은 예전처럼 "partly staged"다.
+17. **명세 정의는 git이 stage한 blob에서 읽음.** 7.3.3("git이 stage하는 대로")과 2.1.4에서 도출. 그래서 clean filter를 거친 내용의 inputs를 따르고, 디렉터리인 정의는 E_READ가 아니라 E_INCOMPLETE다.
