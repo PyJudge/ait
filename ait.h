@@ -111,7 +111,7 @@ int touches(struct record *r, struct tree *a, struct tree *b);
 void repin(struct record *r, enum key k, struct tree *t, int new_only);
 char *def_text(struct tree *t, const char *path, const char *indent);
 const char *engine_of(struct tree *t, const char *def);
-const char *input_path(const char *def, struct string_list *kv, const char *key);
+void def_inputs(struct tree *t, const char *def, struct string_list *out);
 int expand_files(struct record *r, struct tree *t);
 int unverified(struct record *r, struct tree *t);
 const char *unverified_since(struct record *r);

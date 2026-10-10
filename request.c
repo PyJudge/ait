@@ -1763,19 +1763,11 @@ static struct tree *stage_files(struct request *q)
 static struct tree *candidate(struct request *q)
 {
 	struct tree *u = stage_files(q);
-	struct string_list_item *in;
 	size_t n = q->files.nr, k;
 
-	for (k = 0; k < n; k++) {
-		const char *def = q->files.items[k].string;
-
-		if (!q->files.items[k].util)
-			continue;
-		for_each_string_list_item(in, def_get(u, def))
-			if (starts_with(in->string, "inputs.") &&
-			    !unsorted_string_list_has_string(&q->files, input_path(def, def_get(u, def), in->string)))
-				string_list_append(&q->files, yget(def_get(u, def), in->string));
-	}
+	for (k = 0; k < n; k++)
+		if (q->files.items[k].util)
+			def_inputs(u, q->files.items[k].string, &q->files);
 	return q->files.nr > n ? stage_files(q) : u;
 }
 

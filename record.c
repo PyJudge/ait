@@ -1006,17 +1006,14 @@ int unverified(struct record *r, struct tree *t)
 /* the record TEXT is R as a current contract with R's pins (the provider and file lines of 5.4) */
 static int same_pins(const char *text, struct record *r)
 {
-	struct strbuf pinned = STRBUF_INIT;
-	struct string_list lines = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
+	struct record x = { "" };
+	int k;
 
-	if (!text || !strstr(text, "\nstate current\n"))
-		return 0;
-	string_list_split(&lines, text, "\n", -1);
-	for_each_string_list_item(item, &lines)
-		if (starts_with(item->string, "provider ") || starts_with(item->string, "file "))
-			strbuf_addf(&pinned, "%s\n", item->string);
-	return !strcmp(pinned.buf, record_text(r, PIN_KEYS));
+	for (k = 0; k < NKEYS; k++)
+		string_list_init_dup(&x.f[k]);
+	if (text)
+		record_parse(&x, text);
+	return text && !x.bad && in_state(&x, "current") && !strcmp(record_text(&x, PIN_KEYS), record_text(r, PIN_KEYS));
 }
 
 /*
@@ -1059,18 +1056,26 @@ const char *unverified_since(struct record *r)
 	return since;
 }
 
-/* spec 2.5.2: the input KEY of the definition DEF, parsed in KV, is a PATH of 3.1 */
-const char *input_path(const char *def, struct string_list *kv, const char *key)
+/* spec 2.5.2: the inputs of the definition DEF at T into OUT, each a PATH of 3.1 */
+void def_inputs(struct tree *t, const char *def, struct string_list *out)
 {
-	if (!path_ok(yget(kv, key)))
-		reject(128, NULL, "bad format: '%s': bad input '%s'%s", def, yget(kv, key), yline(kv, key));
-	return yget(kv, key);
+	struct string_list *kv = def_get(t, def);
+	struct string_list_item *in;
+
+	for_each_string_list_item(in, kv) {
+		if (!starts_with(in->string, "inputs."))
+			continue;
+		if (!path_ok(yget(kv, in->string)))
+			reject(128, NULL, "bad format: '%s': bad input '%s'%s", def, yget(kv, in->string), yline(kv, in->string));
+		if (!unsorted_string_list_has_string(out, yget(kv, in->string)))
+			string_list_append(out, yget(kv, in->string));
+	}
 }
 
 /* spec 2.4: the file lines are the defs and what the defs declare, pinned at T */
 int expand_files(struct record *r, struct tree *t)
 {
-	struct string_list defs = STRING_LIST_INIT_DUP, out = STRING_LIST_INIT_DUP;
+	struct string_list defs = STRING_LIST_INIT_DUP, out = STRING_LIST_INIT_DUP, inputs = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *in;
 
 	for_each_string_list_item(item, &r->f[FILES])
@@ -1082,16 +1087,15 @@ int expand_files(struct record *r, struct tree *t)
 		if (!blob_at(t, item->string))
 			return -1;
 		string_list_insert(&out, xstrfmt("%s %s %s def", e->path, e->mode, e->oid));
-		for_each_string_list_item(in, def_get(t, e->path)) {
-			const char *p;
-
-			if (!starts_with(in->string, "inputs.") ||
-			    string_list_has_string(&defs, (p = input_path(item->string, def_get(t, e->path), in->string))))
-				continue;
-			if (!blob_at(t, p))
-				return -1;
-			string_list_insert(&out, xstrfmt("%s %s %s input", p, tree_get(t, p)->mode, blob_at(t, p)));
-		}
+		def_inputs(t, e->path, &inputs);
+	}
+	for_each_string_list_item(in, &inputs) {
+		if (string_list_has_string(&defs, in->string))
+			continue;
+		if (!blob_at(t, in->string))
+			return -1;
+		string_list_insert(&out, xstrfmt("%s %s %s input", in->string, tree_get(t, in->string)->mode,
+						 blob_at(t, in->string)));
 	}
 	r->f[FILES] = out;
 	return 0;
