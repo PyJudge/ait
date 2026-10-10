@@ -198,13 +198,13 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
 	}
 	/* read-tree and checkout-index leave the entries without the files' stat data */
 	if (!rc && o)
-		git_run(NULL, NULL, &unset, "update-index -q --refresh");
-	if (!rc && o && unset)
-		warning("committed '%s' to '%s', but %s", c, headref, git_failed());
+		git_run(NULL, NULL, &rc, "update-index -q --refresh");
+	/* the sparse patterns back over .ait/; when that fails, those files are left as they are */
 	if (!rc && ait.nr && sparse()) {
 		git_run(NULL, NULL, &unset, "sparse-checkout reapply");
-		if (unset)
-			warning("committed '%s' to '%s', but %s", c, headref, git_failed());
+		for_each_string_list_item(item, &ait)
+			if (unset && !unsorted_string_list_has_string(&left, item->string))
+				string_list_append(&left, item->string);
 	}
 	if (!at(c))
 		rc = 1;
@@ -264,7 +264,7 @@ static void text_or_die(struct strbuf *sb, const char *path)
 	if (rc < 0)
 		reject(128, NULL, "could not read '%s'", path);
 	if (rc > 0)
-		reject(128, NULL, "bad format: '%s': not a text file", path);
+		reject(128, NULL, "bad format: '%s': not a text file%s", path, nul_line(sb->buf));
 }
 
 static void load(struct request *q)
@@ -408,13 +408,8 @@ static void scope_list(struct string_list *out, const char *list, struct tree *t
 	struct string_list_item *item;
 
 	string_list_split(&parts, list, ",", -1);
-	for_each_string_list_item(item, &parts) {
-		char *v = pin(item->string, t, allow_new, allow_abs);
-
-		if (unsorted_string_list_has_string(out, v))
-			reject(128, NULL, "bad scope: '%s' is given twice", item->string);
-		string_list_append(out, v);
-	}
+	for_each_string_list_item(item, &parts)
+		string_list_append(out, pin(item->string, t, allow_new, allow_abs));
 }
 
 /* a helper's scope argument, pinned at HEAD (spec 3.3); "-" keeps the old one */
@@ -472,18 +467,24 @@ static void new_contract(struct request *q, struct clause *c)
 /* the shapes of a clause's arguments (3.1-3.2), before any tree is read (5.13-1) */
 static void shapes(const char *list, int defs, int keep)
 {
-	struct string_list parts = STRING_LIST_INIT_DUP;
+	struct string_list parts = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
 	/* "-" keeps what a clause's contract has (7.3.2); as scopes of ID=SCOPES it is no PATH (3.1) */
 	if (!list || (keep && !strcmp(list, "-")))
 		return;
 	string_list_split(&parts, list, ",", -1);
-	for_each_string_list_item(item, &parts)
-		if (!defs)
-			scope_shape(item->string);
-		else if (!path_ok(item->string))
+	for_each_string_list_item(item, &parts) {
+		if (defs && !path_ok(item->string))
 			reject(128, NULL, "bad scope: '%s'", item->string);
+		if (defs)
+			continue;
+		scope_shape(item->string);
+		/* 3.2a: a scope once in a list; the spec files may repeat */
+		if (unsorted_string_list_has_string(&seen, item->string))
+			reject(128, NULL, "bad scope: '%s' is given twice", item->string);
+		string_list_append(&seen, item->string);
+	}
 }
 
 /* spec 7.3.1: request := ["contract"|"ct"] clause+ option*, read before anything else (5.13-1) */
@@ -541,6 +542,10 @@ static void parse_clauses(struct request *q)
 		} else {
 			reject(129, NULL, "unknown clause '%s'", c->verb);
 		}
+		/* 7.3.1: a lone "-" keeps what an amend's contract has; a new contract has nothing to keep */
+		if (strcmp(c->verb, "amend") && ((c->a && !strcmp(c->a, "-")) || (c->b && !strcmp(c->b, "-")) ||
+						 (c->f && !strcmp(c->f, "-"))))
+			reject(129, NULL, "'-' keeps a value only in amend");
 		shapes(c->a, 0, 1);
 		shapes(c->b, 0, 1);
 		shapes(c->f, 1, 1);
@@ -1192,7 +1197,7 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	if ((rc = read_text(text, q->result)) < 0)
 		reject(128, "rerun without -r to get the check-result path", "could not read '%s'", q->result);
 	if (rc)
-		reject(128, hint, "bad format: '%s': not a text file", q->result);
+		reject(128, hint, "bad format: '%s': not a text file%s", q->result, nul_line(text->buf));
 	if (yaml_parse(text->buf, &kv, q->result, &err))
 		reject(128, hint, "%s", err);
 	/* 8.4: the subset of 2.5.1, its unknown keys too, then the input, then the rest */
@@ -1225,7 +1230,7 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	}
 	if (seen.nr != q->tasks.nr)
 		reject(128, hint, "bad format: '%s': %d of %d tasks%s", q->result, (int)seen.nr, (int)q->tasks.nr,
-		       yline(&kv, "results"));
+		       yline(&kv, yget(&kv, "results") ? "results" : ""));
 	return 1;
 }
 

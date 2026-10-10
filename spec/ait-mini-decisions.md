@@ -10,7 +10,7 @@
 4. **symlink이거나 일반 파일이 아닌 명세 파일은 E_INCOMPLETE `'…' is not a regular file`.** 2.1.4와 spec 표에서 도출. 문구는 선택.
 5. **대소문자만 다른 경로는 받지 않음(사용자 결정, 7.3.3에 적음).** core.ignorecase에서 HEAD나 index에 대소문자만 다른 경로가 있으면 명세 파일은 E_INCOMPLETE, 계약 범위는 E_SCOPE이고, hint는 git의 경로를 알려 준다. `git add`가 그 경로를 stage하지 않는 것을 따랐다.
 6. **noop일 때 index를 맞추지 않음.** 5.5-4 "noop일 때도 같다"에서 도출. 부분 stage 검사가 먼저 막으므로, noop까지 오면 명세 파일의 index 판은 HEAD와 같고 맞출 것이 없다. 문구는 그대로 둔다.
-7. **5.5-5의 경고와 hint 문구.** 선택. `committed '…' to '…', but the index and work tree were not updated`, `but … were not updated`, `bring … to '…' in the index`/`in the work tree`, reapply가 실패하면 `but git failed: 'git sparse-checkout': …`.
+7. **5.5-5의 경고와 hint 문구.** spec 5.5-5의 형식을 따른다. refresh가 실패하면 5.5-4를 다 하지 못한 것이라 `but the index and work tree were not updated`와 bring hint를 쓰고, sparse reapply가 실패하면 `.ait/` 경로를 맞추지 못한 경로로 친다.
 8. **ID를 만들 수 없을 때의 문구 `unable to get random bytes`.** 선택. git의 tempfile 문구를 따랐다.
 9. **`git worktree list`를 `-z`로 읽음.** "git이 하는 대로"에서 도출. 경로에 LF가 든 저장소·worktree는 미지원으로 거절한다(사용자 결정).
 10. **libyaml이 받는 대로 받음.** "libyaml 동봉"(사용자 결정)과 ait-mini.md 한계에서 도출. libyaml이 YAML 1.2보다 너그러운 곳(따옴표 바로 뒤의 `#` 주석)도, 엄격한 곳(탭이 놓일 수 있는 자리 일부)도 libyaml이 두는 대로다. CR·NEL·LS·PS만 2.5.1의 "LF"로 막는다(결정 21).

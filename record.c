@@ -1334,6 +1334,12 @@ static size_t line_at(const char *text, size_t offset)
 	return n;
 }
 
+/* " in line N" of the first NUL of BUF, a file ait reads that holds one (5.8 E_FORMAT) */
+char *nul_line(const char *buf)
+{
+	return xstrfmt(" in line %d", (int)line_at(buf, strlen(buf)) + 1);
+}
+
 /*
  * 2.5.1: UTF-8, and LF the only line break, as libyaml takes CR, NEL, LS and
  * PS as line breaks too (YAML 1.1); what breaks that and its line, or NULL.
@@ -1570,7 +1576,7 @@ struct string_list *def_get(struct tree *t, const char *path)
 	if (hit)
 		return hit->util;
 	if (!blob_text(oid))
-		reject(128, NULL, "bad format: '%s': not a text file", path);
+		reject(128, NULL, "bad format: '%s': not a text file%s", path, nul_line(object(oid, 1, NULL, NULL)));
 	kv = xcalloc(1, sizeof(*kv));
 	string_list_init_dup(kv);
 	yaml(blob_text(oid), kv, path);

@@ -70,7 +70,7 @@ exec "$real" "$@"
 GIT
 chmod +x "$T/lockbin/git"
 tick; run env PATH="$T/lockbin:$PATH" ait future offer src/stock.c specs/p.yaml -m o
-check "the request succeeds with the warning" sh -c "[ $rc = 0 ] && grep -q \"^warning: committed .* but git failed: 'git update-index'\" '$T/err'"
+check "the request succeeds with the warning of 5.5-5" sh -c "[ $rc = 0 ] && grep -q '^warning: committed .* but the index and work tree were not updated' '$T/err' && grep -q '^hint: bring ' '$T/err'"
 git reset -q --hard "$H"
 
 # H8, 9.1: the commit where it newly became unverified, over every parent

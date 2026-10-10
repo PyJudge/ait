@@ -120,6 +120,7 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 void yaml(const char *text, struct string_list *kv, const char *what);
 void yaml_check(struct string_list *kv, const char *const *schema, const char *what, const char *hint, int kinds);
 char *yline(struct string_list *kv, const char *key);
+char *nul_line(const char *buf);
 void yaml_trim_blocks(struct strbuf *text);
 void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size_t len, const char *with);
 const char *yget(struct string_list *kv, const char *key);
