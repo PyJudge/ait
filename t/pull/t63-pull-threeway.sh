@@ -126,7 +126,7 @@ fact "T1b: both changed since D@A (c-E, c-A2)" eval 'not same_body "$vMine" "$vA
 fact "T1b: neither moved forward" eval 'not forward "$vMine" "$vA2" && not forward "$vA2" "$vMine"'
 fact "T1b: a's history is not in main (a1 and a2 are new)" test "$(new_count a)" = 2
 want "T1b: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "T1b: stops to choose" stops_re 1 "^error: '$D' has 2 latest versions: .*'HEAD'"
+want "T1b: stops to choose" stops_re 1 "^error: '$D' has diverged between .*'HEAD'"
 want "T1b: the hint offers D=HEAD" eval 'choices "$D" | grep -qx "'"'ait contract pull $D=HEAD -m <why>'"'"'
 want "T1b: the hint offers a's version too" eval 'choices "$D" | grep -v "=HEAD " | grep -q .'
 
@@ -154,7 +154,7 @@ want "X1: 'pull D O' stops, nothing changed" pull_unchanged "$D" "$O"
 want "X1: stops at 3: Y and Z not named" eval 'stops_re 1 "^error: taking .* also changes contracts you did not name: " && head -1 "$T/err" | grep -q "'"'$Y'"'" && head -1 "$T/err" | grep -q "'"'$Z'"'"'
 want "X1: hint names Y and Z too" err_re "^hint: name them too: 'ait contract pull $D $O ($Y $Z|$Z $Y)'\$"
 want "X1: 'pull D O Y Z' stops, nothing changed" pull_unchanged "$D" "$O" "$Y" "$Z"
-want "X1: stops to choose Y and Z" stops_re 1 "^error: '($Y|$Z)' has 2 latest versions: "
+want "X1: stops to choose Y and Z" stops_re 1 "^error: '($Y|$Z)' has diverged between "
 want "X1: the hint chooses Y and Z once in one command" err_re "^hint: pick one: .*'ait contract pull $D $O $Y=[^ ']+ $Z=[^ ']+ -m <why>'"
 # record 115: a change that is not taken is given to git as the result's pin, so b1's merge base c1 sees no change
 OLD=$(git rev-parse HEAD)
@@ -186,7 +186,7 @@ fact "MS2: M and K have different bodies, so neither moved forward" eval 'not sa
 fact "MS2: q is squashed: q1 (holding M) is not reachable from q" test "$(git rev-list --count q ^master)" = 1
 fact "MS2: new commits: p2 2, qS 1" test "$(new_count p) $(new_count q)" = "2 1"
 want "MS2: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "MS2: stops to choose" stops_re 1 "^error: '$D' has 2 latest versions: "
+want "MS2: stops to choose" stops_re 1 "^error: '$D' has diverged between "
 want "MS2: the hint offers the two versions, not HEAD" two_choices_no_head "$D"
 git clone -q --no-local --no-single-branch "file://$T/r" "$T/z" && cd "$T/z" && ait init >/dev/null && ait session open --agent agent-z >/dev/null
 fact "MS2 clone: M's blob is missing, K's is present" eval 'not has_obj "$vM" && has_obj "$vK"'
@@ -195,7 +195,7 @@ fact "MS2 clone: the latest versions are still p2's and qS's" test "$(latest "$v
 fact "MS2 clone: the newest common versions are M (missing) and K" test "$(newest_common "$vP" "$vQ")" = "$(sorted "$vM" "$vK")"
 fact "MS2 clone: neither moved forward (M's body is not known)" eval 'not forward "$vP" "$vQ" && not forward "$vQ" "$vP"'
 want "MS2 clone: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "MS2 clone: stops to choose" stops_re 1 "^error: '$D' has 2 latest versions: "
+want "MS2 clone: stops to choose" stops_re 1 "^error: '$D' has diverged between "
 want "MS2 clone: the hint offers the two versions, not HEAD" two_choices_no_head "$D"
 
 # MS3  C's prev is a missing blob ; main: V (C's body, prev C) ; a1: W (changed, prev C) ; 'pull D'

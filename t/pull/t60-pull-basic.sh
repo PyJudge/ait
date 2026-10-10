@@ -27,6 +27,6 @@ fact "A3: both a and b changed Q since init" test "$QA" != "$Q0" -a "$QB" != "$Q
 fact "A3: a's Q and b's Q have different bodies" not same_body "$QA" "$QB"
 fact "A3: both contain init's Q" contains "$QA" "$Q0"
 want "A3: stops, nothing changed" pull_unchanged "$D" "$Q"
-want "A3: diverged error on Q" stops_with 1 "error: '$Q' has 2 latest versions:"
+want "A3: diverged error on Q" stops_with 1 "error: '$Q' has diverged between "
 want "A3: hint offers Q=a1 and Q=b1 with D kept" grep -q "ait contract pull $D $Q=.* -m <why>" "$T/err"
 done_testing

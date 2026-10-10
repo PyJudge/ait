@@ -255,7 +255,7 @@ fact "TT1: two different ended versions remain, mine is not ended" test "$(state
 fact "TT1: the ended versions have different bodies" not same_body "$vT" "$vWb"
 fact "TT1: new commits: a1 1, b3 3" test "$(new_count a) $(new_count b)" = "1 3"
 want "TT1: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "TT1: stops to choose" stopped_re 1 "^error: '$D' has [0-9]+ latest versions: "
+want "TT1: stops to choose" stopped_re 1 "^error: '$D' has diverged between '[^']+' \\([^)]+\\) and '[^']+' \\([^)]+\\)$"
 want "TT1: the hint offers the two ended versions, not HEAD" two_choices_no_head "$D"
 OLD=$(git rev-parse HEAD)
 pull "$D=$cA1" -m "pick a1"

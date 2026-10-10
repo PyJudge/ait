@@ -59,7 +59,7 @@ fact "XT1: X has two ended versions, fulfilled and cancelled" test "$(state_of "
 fact "XT1: ... with different bodies" not same_body "$XF" "$XC"
 fact "XT1: ... neither contains the other" test -z "$(contains "$XF" "$XC" && echo y)$(contains "$XC" "$XF" && echo y)"
 want "XT1: pull D X stops, nothing changed" pull_unchanged "$D" "$X"
-want "XT1: X diverged" stops 1 "error: '$X' has 2 latest versions:"
+want "XT1: X diverged" stops 1 "error: '$X' has diverged between "
 want "XT1: one choice in the hint" test "$(hint_cmds | wc -l | tr -d ' ')" = 1
 want "XT1: the hint is 'pull D X=a1 -m <why>'" sh -c "grep '^hint: ' '$T/err' | grep -qE \"'ait contract pull $D $X=[^ ']+ -m <why>'\""
 want "XT1: it offers a1, not HEAD" test "$(picks "$X")" = "$(oids "$A1")"
@@ -91,7 +91,7 @@ for row in XT2 XT3; do
 		fact "XT3: D=d1: in either order of d1 and b1, src/x.c conflicts twice" test -z "$(once "$D1" "$B1" && echo y)$(once "$B1" "$D1" && echo y)"
 	fi
 	want "$row: pull D O stops, nothing changed" pull_unchanged "$D" "$O"
-	want "$row: D diverged" stops 1 "error: '$D' has 2 latest versions:"
+	want "$row: D diverged" stops 1 "error: '$D' has diverged between "
 	want "$row: the hint offers both D=a1 and D=d1" test "$(picks "$D")" = "$(oids "$A1" "$D1")"
 	want "$row: each choice keeps O" test "$(hint_cmds | grep -c " $O ")" = 2
 	if [ $row = XT2 ]; then pick=$A1 pn=a1; else pick=$D1 pn=d1; fi

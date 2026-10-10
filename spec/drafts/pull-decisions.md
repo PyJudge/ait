@@ -491,6 +491,17 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
     - 지정하지 않은 계약의 건너뛰기 경고(MF2)는 2절 1의 두 문구와 같다.
     - HEAD의 명세 파일 사고(HD1)는 v14 2.4.3의 `E_INCOMPLETE`와 5.10의 hint다.
     - 확인 없는 명세 변경(CP2, SP8의 current)의 문장은 계약이 어디서 왔느냐에 따른 2절 5의 두 문장이다. IND1처럼 고른 판이 들어오는 D는 `merges your changes into what 'D' checked`다.
+117. **pull의 출력 목록**(기준 2절 끝). 멈춤마다 종료 코드, 첫 행, hint를 한 표로 정했다. 114에서 미뤄 둔 문구를 여기서 정했다. CLAUDE.md의 git 스타일(결정 31)과 git의 같은 경우에서 끌어냈다.
+    - 갈라짐은 `error: 'D' has diverged between 'a1' (a) and 'HEAD'`다. 판의 개수를 쓰지 않고 고를 판을 모두 쓴다. "latest versions"는 TT1처럼 끝난 쪽 규칙으로 빠진 판이 있으면 틀린 수를 말했다. "diverged"는 git의 낱말이다(`You have divergent branches`).
+    - KB1·KB2: `error: 'a1' has no version of 'D' to choose: a newer one includes it`. C3: `error: taking 'a1' conflicts in what 'D' checked: 'src/stock.c'`. NEW2: `error: untracked working tree files would be overwritten by this pull: 'specs/q.yaml'`(git: `The following untracked working tree files would be overwritten by merge`). 코드가 충돌할 pull의 `--force`: `error: --force cannot take a pull whose code conflicts: 'src/other.c'`.
+    - shallow는 `fatal:`(128)이다. 이 clone이 가진 것으로는 판정할 수 없어서다. git도 같은 처지에서 `fatal: refusing to merge unrelated histories`다. 그 밖의 멈춤은 받을 수 있는 상태로 가는 길이 있으므로 `error:`(1)다.
+    - 커밋은 전체 OID로 쓴다(v14 5.7). ref는 짧은 이름이다(`origin/a`).
+    - 테스트를 이 문구로 조였다. 남은 것: U1z(다른 clone에서 되돌린 커밋으로 세지 않는 것)는 pull의 출력이 아니라 todo 등에서 보이므로 v14의 그 명령을 고칠 때 넣는다.
+118. **줄 예산(추정).** 새 pull은 v14 13.3의 "contract push·pull 185행"으로는 담을 수 없다. 재현 스크립트(`lib.py`)의 판정 코드와 v14의 C 코드 크기를 견주어 추정했다(C는 주석 포함, git 스타일).
+    - pull 1,400행: 판 정하기(후보, 사고 판, 최신 판, 3-way·고리, 끝난 쪽, 결과 판·확인 행) 330, 들이는 커밋·TIE·지정 되풀이 170, 합치기(결정 26의 차례)·명세 판정과 빼기 280, 확인 검사(새 미확인, 다시 고정, 도우미 절, `--force`) 200, 받기(fast-forward, commit-tree, index·작업 폴더, merge 상태) 200, 0단계·출력·hint 170, 되돌린 커밋(1.5d, todo와 함께 씀) 50.
+    - 그 밖에 hook(마치는 커밋의 출발 판, 레코드마다 보는 7.1.3-4, 위에 얹는 다시 고정) +60, 확인 행(읽기·쓰기·PINS) +40.
+    - 그래서 v14 13.3의 합계는 4,090 − 185 + push 100 + 1,500 ≈ 5,500행이다. ait-mini에 pull을 더하면 CLAUDE.md의 3,150행에 1,500행을 더한 4,650행이다.
+    - 추정이므로 pull의 1·2단계를 C로 쓴 뒤 다시 잰다. 지금 ait-mini의 C는 4개 파일 합계 5,030행(주석·빈 행을 빼면 3,890행)으로 이미 3,150행을 넘는다. 상한을 무엇으로 셀지(주석 포함 여부)는 사용자가 정한다.
 
 ## 용어 (사용자 확정, 2026-10-09)
 

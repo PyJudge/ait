@@ -133,7 +133,7 @@ ait contract pull K[=C]… [도우미 절…] [--force] [-m MSG]
      - 결과 판이 들어오는 판이거나 새 판이면, 들이는 커밋은 1절의 규칙으로 정한다.
    - **갈라짐:** 남는 판의 본문이 둘 이상인데 고르지 않았으면 멈춘다. 셋 이상이 꼬리를 무는 경우도 같다(CYC1).
      ```
-     error: 'D' has 2 latest versions: 'a1' (a), 'HEAD'
+     error: 'D' has diverged between 'a1' (a) and 'HEAD'
      hint: pick one: 'ait contract pull D=a1 -m <why>' or 'ait contract pull D=HEAD -m <why>'
      ```
      - hint는 원래 지정한 이름과 이미 고른 것을 모두 둔 한 명령이다.
@@ -234,6 +234,35 @@ ait contract pull K[=C]… [도우미 절…] [--force] [-m MSG]
    - **출력:** 들인 계약마다 `included K from 'C'`. 들인 것 없이 새 판만 적었으면 `kept K`. 1의 warning과 5의 `comes in unverified`도 쓴다.
      - 요청 커밋을 만들면 다른 요청 명령과 같은 출력 행(v14 6.7: `request RID` 등, `--force`면 `check K forced`)을 쓴다.
      - 이 커밋이 되돌린 커밋이면 `warning: 'D' is reopened by this pull`과 H10을 쓴다(v14 규칙 6, 7.1.5와 같다). 내가 이제 그 계약을 다시 이행할 쪽이기 때문이다. 이유는 v14 7.1.5의 조건이 맞을 때만, 처음 맞는 하나를 붙인다(예: 결과의 `prev`를 뺀 내용이 future인 출발 판과 같으면 `: it keeps the future version over the current one`, U1c). 맞는 조건이 없으면 붙이지 않는다(IND4).
+
+**출력 목록** (기록 117. v14 5.8로 옮긴다)
+
+출력은 CLAUDE.md의 git 스타일을 따른다(결정 31). 커밋은 전체 OID로 쓰고(v14 5.7 "OID는 출력 어디서나 줄이지 않은 전체 OID"), 아래의 `'a1'`은 그 자리다. `'a1' (a)`는 커밋과 그것을 끝으로 가진 ref이고, `'D' at 'a' (a2)`는 ref와 그 ref에서 그 판을 담은 커밋이다. ref는 짧은 이름이다(`refs/heads/a`는 `a`, `refs/remotes/origin/a`는 `origin/a`). 끝이 셋 이상이면 `'a1', 'b1' and 'c1'`처럼 잇는다.
+
+| 경우 | 종료 | 첫 행 | hint |
+| --- | --- | --- | --- |
+| 갈라짐(1) | 1 | `error: 'D' has diverged between 'a1' (a) and 'HEAD'` | `pick one: 'ait contract pull D=a1 -m <why>' or 'ait contract pull D=HEAD -m <why>'` |
+| 고른 판이 남는 판이 아님(1, KB1, KB2) | 1 | `error: 'a1' has no version of 'D' to choose: a newer one includes it` | 갈라져 있으면 고르기 hint, 아니면 `take it as it is: 'ait contract pull D'` |
+| 후보가 사고 판·형식이 틀린 판뿐(1, ID1) | 1 | `error: 'W' at 'a' (a2) was changed outside ait's rules` | `'W' has to be fixed on branch 'a' first` |
+| 지정(3) | 1 | `error: taking 'a2' also changes contracts you did not name: 'Q'` | `name them too: 'ait contract pull D Q'` |
+| 구조 위반이 사고 판에서 옴(4, ACC1) | 1 | `error: taking 'a3' needs 'D' as 'a' has it, but 'D' at 'a' (a2) was changed outside ait's rules` | `'D' has to be fixed on branch 'a' first` |
+| 구조 위반(4) | 1 | v14의 `error: not allowed: …` | 모든 위반을 푸는 한 명령 |
+| 같은 파일이 두 번 걸림, 나눠 받을 수 있음(4) | 1 | `error: 'a1' and 'b1' both change 'src/x.c', which you changed too` | `take them one at a time: '…', then '…'` |
+| 같은 파일이 두 번 걸림, 함께만(4) | 1 | `error: 'a1' and 'b1' can only be taken together, but both change 'src/x.c', which you changed too` | `they can be taken once one of them is rebased onto the other, or once your branch merges cleanly with one of them` |
+| 내 계약이 확인한 것이 바뀜(5) | 1 | `error: taking 'a1' changes what contract 'K6' checked: 'src/stock.c'` | 되돌리기 절, 이어서 `--force` |
+| 들어오는 계약이 확인한 것에 내 변경이 합쳐짐(5) | 1 | `error: taking 'a1' merges your changes into what 'D' checked: 'src/stock.c'` | 되돌리기 절, 이어서 `--force` |
+| 들이는 커밋 없이 확인한 코드가 없음(5, RV3b) | 1 | `error: 'D' at 'a1' checked code your branch no longer has: 'src/stock.c'` | 되돌리기 절, 이어서 `--force` |
+| 확인한 파일의 코드 충돌(5, C3) | 1 | `error: taking 'a1' conflicts in what 'D' checked: 'src/stock.c'` | 되돌리기 절만 |
+| 코드가 충돌할 pull의 `--force`(5, F2) | 1 | `error: --force cannot take a pull whose code conflicts: 'src/other.c'` | 되돌리기 절 |
+| 작업 폴더의 변경(0, WT1) | 1 | `error: your local changes to 'specs/d.yaml' would be overwritten by this pull` | 2절 0의 두 꼴 |
+| 추적하지 않는 파일(0, NEW2) | 1 | `error: untracked working tree files would be overwritten by this pull: 'specs/q.yaml'` | `move or remove 'specs/q.yaml' before you pull` |
+| index의 변경(0, IDX1) | 1 | v14의 `E_DIRTY` | v14 그대로 |
+| shallow(0, SH1) | 128 | `fatal: 'a1' is beyond the shallow boundary of this clone` | `'a1' can be taken once this clone has its history down to the merge base with HEAD` |
+| HEAD에 이미 있는 오류(0) | v14 5.10 | v14 5.10의 오류 | v14 5.10의 hint |
+| 코드 충돌(6) | 1 | git merge의 충돌 행(stdout) | v14의 마치는 hint |
+
+- 갈라짐 문장은 고를 판을 모두 쓴다. 끝난 쪽 규칙으로 빠진 판은 쓰지 않는다(TT1은 둘이다).
+- shallow는 git과 같이 `fatal:`이다. 이 clone이 가진 것으로는 판정할 수 없기 때문이다(git: `fatal: refusing to merge unrelated histories`). 그 밖의 멈춤은 받을 수 있는 상태로 가는 길이 있으므로 `error:`다.
 
 그래서:
 - 고르기로 멈추는 것은 두 쪽이 공통 조상 뒤에 **둘 다** 바꿨을 때(셋 이상이 꼬리를 무는 경우 포함), 서로 다른 끝난 판이 남았을 때, blob이 없어 공통 조상의 본문을 모를 때뿐이다. 사본, 이미 합쳐진 판, 본문이 같은 판, 한쪽만 바뀐 판, 끝난 판과 끝나지 않은 판으로는 멈추지 않는다.
@@ -557,7 +586,8 @@ ait contract pull K[=C]… [도우미 절…] [--force] [-m MSG]
   - 버려진 변경을 만든 커밋의 `Ait-Agent`를 받는 쪽(9.3)에 더한다(결정 16).
 - **11.1:** revert 등에 대한 설명을 결정 8로 바꾼다.
 - **13.1:** git 최소 버전을 `merge-tree --write-tree`가 있는 판으로 올린다(사용자가 2.40까지 허용). 2.40 자체는 아직 돌려 보지 않았다.
-- **13.3:** 행수 예산의 "contract push·pull … 185"를 새 pull(3-way, 끝난 쪽, 여러 끝, merge-tree, commit-tree, 충돌 상태)에 맞춰 다시 잡는다.
+- **13.3:** 행수 예산의 "contract push·pull … 185"를 새 pull에 맞춰 다시 잡는다(기록 118의 추정). pull 1,400행(판 정하기 330, 들이는 커밋·지정 170, 합치기·명세 판정 280, 확인 검사 200, 받기·merge 상태 200, 0단계·출력 170, 되돌린 커밋 50), push 100행, hook +60, 확인 행 +40. 합계 약 5,500행.
+- **5.8:** 2절 끝의 출력 목록(기록 117)을 옮긴다.
 - **`ait-mini.md` 26행:** git merge로 받으라는 안내를 지운다(결정 9).
 - **시나리오, SKILL, `ait-concept.md`를 함께 맞춘다.** SKILL에는 git merge를 직접 쓰는 길을 적지 않는다. SKILL 100·165·167·171행과 `ait-concept.md` 79~81행(코드 없이 받기, 고를 계약 커밋 hint, `--force`로 코드까지 받기, git merge 충돌 뒤 hook과 `Ait-Resolves`)을 결정 3·9에 맞춘다.
 

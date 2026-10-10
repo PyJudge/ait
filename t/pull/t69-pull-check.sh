@@ -112,6 +112,7 @@ fact "C3: a1's D is current and checks src/stock.c" test "$(state_of "$VA")" = c
 want "C3: stops, nothing changed" pull_unchanged "$D"
 # no wording in the criteria (record 114): the exit code and 'error:' only
 want "C3: first stderr line is 'error: ...'" err_re '^error: '
+want "C3: the wording of the output table (record 117)" err_re "^error: taking '[^']+' conflicts in what '$D' checked: 'src/stock.c'\$"
 want "C3: exit code 1" test "$rc" = 1
 want "C3: the only hint is 'ait contract pull D future amend D -m <why>'" only_hint "'ait contract pull $D future amend $D -m <why>'\$"
 # follow the hint: D comes in future, then the code conflict stops like git

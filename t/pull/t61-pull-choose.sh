@@ -61,11 +61,13 @@ ok_pull() { [ "$rc" = 0 ]; }
 included() { [ "$rc" = 0 ] && grep -q "^included $D from '[^']*'\$" "$T/out"; }
 kept() { [ "$rc" = 0 ] && out_line "kept $D"; }
 already() { [ "$rc" = 0 ] && out_line "already $D"; }
-# diverged N PART...: the stop of 2절 1 'error: 'D' has N latest versions: …'; each PART ('(a)', "'HEAD'") is in it
+# diverged N PART...: the stop of 2절 1 'error: 'D' has diverged between …' (출력 목록) naming N versions to choose
+# from; each PART ('(a)', "'HEAD'") is in it
 diverged() {
 	dv_n=$1; shift; [ "$rc" = 1 ] || return 1
 	dv_l=$(head -1 "$T/err")
-	case $dv_l in "error: '$D' has $dv_n latest versions: "*) ;; *) return 1 ;; esac
+	case $dv_l in "error: '$D' has diverged between "*) ;; *) return 1 ;; esac
+	[ $(( $(printf '%s' "${dv_l#*between }" | tr -cd "'" | wc -c) / 2 )) = "$dv_n" ] || return 1
 	for x; do case $dv_l in *"$x"*) ;; *) return 1 ;; esac; done
 }
 # picks C...: the 'hint: pick one: …' line offers exactly 'ait contract pull D=C -m <why>' for these C (HEAD or a
@@ -96,7 +98,7 @@ fact "U1: two bodies" not same_body "$VA" "$VE"
 fact "U1: a1 is the one new commit" test "$(newc a)" = 1
 fact "U1: merge-tree with a1 conflicts on .ait/D and specs/d.yaml" test "$(mt HEAD "$A1")" = ".ait/$D specs/d.yaml"
 want "U1: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "U1: error: 'D' has 2 latest versions: '…' (a), 'HEAD'" diverged 2 "(a)" "'HEAD'"
+want "U1: error: 'D' has diverged (2 versions): '…' (a), 'HEAD'" diverged 2 "(a)" "'HEAD'"
 want "U1: hint picks D=a1 or D=HEAD" picks HEAD "$A1"
 pull "$D=$A1" -m why
 want "U1: 'pull D=a1 -m <why>': included D from '…'" included
@@ -133,7 +135,7 @@ fact "U2: both changed since D@A (3-way leaves both)" both_changed "$BP" "$FP"
 fact "U2: two bodies" not same_body "$BP" "$FP"
 fact "U2: bM and fM bring 3 new commits each" test "$(newc "$BM") $(newc "$FM")" = "3 3"
 want "U2: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "U2: error: 'D' has 2 latest versions (b, f)" diverged 2 "(b)" "(f)"
+want "U2: error: 'D' has diverged (2 versions) (b, f)" diverged 2 "(b)" "(f)"
 want "U2: hint picks D=bM or D=fM" picks "$BM" "$FM"
 
 # U3  a1 fulfils D (current) ; main: D c-E
@@ -145,7 +147,7 @@ fact "U3: a's D is current with a check line whose PINS match" eval '[ "$(state_
 fact "U3: a's D and mine are the two latest" two_latest "$VA" "$VE"
 fact "U3: both changed since init (3-way leaves both)" both_changed "$VA" "$VE"
 want "U3: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "U3: error: 'D' has 2 latest versions: '…' (a), 'HEAD'" diverged 2 "(a)" "'HEAD'"
+want "U3: error: 'D' has diverged (2 versions): '…' (a), 'HEAD'" diverged 2 "(a)" "'HEAD'"
 want "U3: hint picks D=a1 or D=HEAD" picks HEAD "$A1"
 
 # U6  D current ; a1 and b1 each change the code and re-check it (same condition) ; main: D0
@@ -159,7 +161,7 @@ fact "U6: they are the two latest (both contain my D0)" eval 'two_latest "$VA" "
 fact "U6: both changed since D0 (3-way leaves both)" both_changed "$VA" "$VB"
 fact "U6: only the pins (the provider row) differ" eval '[ "$(body "$VA" | grep -v "^provider ")" = "$(body "$VB" | grep -v "^provider ")" ] && not same_body "$VA" "$VB"'
 want "U6: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "U6: error: 'D' has 2 latest versions (a, b)" diverged 2 "(a)" "(b)"
+want "U6: error: 'D' has diverged (2 versions) (a, b)" diverged 2 "(a)" "(b)"
 want "U6: hint picks D=a1 or D=b1" picks "$A1" "$B1"
 
 # U8  a1: D@A ; main takes a1 ; a amends a1 (a1': D@A2, prev D0)
@@ -173,7 +175,7 @@ fact "U8: a's tip a1' has D@A2 with prev D0, on init" eval '[ "$(recat a D)" = "
 fact "U8: my D@A and D@A2 are the two latest" two_latest "$VA" "$VA2"
 fact "U8: both changed since D0 (newest common D0)" eval '[ "$(newest_common "$VA" "$VA2")" = "$D0" ] && both_changed "$VA" "$VA2"'
 want "U8: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "U8: error: 'D' has 2 latest versions: '…' (a), 'HEAD'" diverged 2 "(a)" "'HEAD'"
+want "U8: error: 'D' has diverged (2 versions): '…' (a), 'HEAD'" diverged 2 "(a)" "'HEAD'"
 want "U8: hint picks D=a1' or D=HEAD" picks HEAD "$A1P"
 
 # NT2  a1: D c-A, b1: D c-B ; A and B at once each 'pull D=HEAD' (a2, b2)
@@ -192,7 +194,7 @@ fact "NT2: seen from main they are the two latest" two_latest "$A2V" "$B2V"
 fact "NT2: the newest common versions are D@A and D@B, with different bodies" eval '[ "$(newest_common "$A2V" "$B2V" | tr "\n" " ")" = "$(printf "%s\n%s\n" "$VA" "$VB" | sort | tr "\n" " ")" ] && not same_body "$VA" "$VB"'
 fact "NT2: neither moved forward from the other" both_changed "$A2V" "$B2V"
 want "NT2: main's 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "NT2: error: 'D' has 2 latest versions (a, b)" diverged 2 "(a)" "(b)"
+want "NT2: error: 'D' has diverged (2 versions) (a, b)" diverged 2 "(a)" "(b)"
 want "NT2: hint picks D=a2 or D=b2" picks "$A2" "$B2"
 
 # NT3  NT2, then A keeps its own again (a3), then B pulls D
@@ -228,7 +230,7 @@ fact "CYC1: b2 moved forward from a2" moved_forward "$A2V" "$B2V"
 fact "CYC1: c2 moved forward from b2" moved_forward "$B2V" "$C2V"
 fact "CYC1: a2 moved forward from c2 (a cycle)" moved_forward "$C2V" "$A2V"
 want "CYC1: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "CYC1: error: 'D' has 3 latest versions (a, b, c)" diverged 3 "(a)" "(b)" "(c)"
+want "CYC1: error: 'D' has diverged (3 versions) (a, b, c)" diverged 3 "(a)" "(b)" "(c)"
 want "CYC1: hint picks D=a2, D=b2 or D=c2" picks "$A2" "$B2" "$C2"
 pull "$D=$B2" -m why
 want "CYC1: following the hint D=b2 includes D" included
@@ -432,7 +434,7 @@ fact "U1m: in z, R2 cannot be followed to C" not contains "$VR2" "$VC"
 fact "U1m: in z, C (HEAD's) and R2 are two latest with different bodies" eval '[ "$(hd)" = "$VC" ] && two_latest "$VC" "$VR2" && not same_body "$VC" "$VR2"'
 fact "U1m: in z, no readable newest common version: R2 is not forward of C" both_changed "$VC" "$VR2"
 want "U1m: z: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "U1m: z: error: 'D' has 2 latest versions" diverged 2 "'HEAD'"
+want "U1m: z: error: 'D' has diverged (2 versions)" diverged 2 "'HEAD'"
 want "U1m: z: hint picks D=a2s or D=HEAD" picks HEAD "$A2S"
 pull "$D=$A2S" -m why
 want "U1m: z: 'pull D=a2s -m <why>' includes D" included

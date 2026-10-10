@@ -191,7 +191,7 @@ want "M1: the same repository takes D@B2" test "$rc" = 0 -a "$(recat HEAD D)" = 
 want "M1: by fast-forward to a'" test "$(git rev-parse HEAD)" = "$AR"
 cd "$T/m1"
 want "M1: the fresh clone stops, nothing changed" pull_unchanged "$D"
-want "M1: diverged error" stops_with 1 "error: '$D' has 2 latest versions: "
+want "M1: diverged error" stops_with 1 "error: '$D' has diverged between "
 want "M1: hint offers D=HEAD" hint_cmd "ait contract pull $D=HEAD -m <why>"
 want "M1: hint offers a's version" pick_re "'ait contract pull $D=[^ ']+ -m <why>'"
 cd "$T/r"
@@ -201,6 +201,8 @@ g1
 fact "KB1: a1's version is not a remaining version (bM's contains it)" eval 'contains "$VBM" "$VA" && test "$(nlatest "$VA" "$VB" "$VBM")" = 1'
 want "KB1: stops, nothing changed" pull_unchanged "$D=$A1" -m why
 want "KB1: an error (the criteria give no wording)" stops_err
+want "KB1: the wording of the output table (record 117)" err_re "^error: '[^']+' has no version of '$D' to choose: a newer one includes it\$"
+want "KB1: the hint wording" err_line "hint: take it as it is: 'ait contract pull $D'"
 want "KB1: not diverged, so the hint is 'pull D'" hint_cmd "ait contract pull $D"
 
 # KB2  a1: c-A ; b1: c-B (the hint was 'D=a1 or D=b1') ; then b merged a and kept B (bM) ; 'pull D=a1 -m <why>'
@@ -217,6 +219,7 @@ fact "KB2: now bM's version is the one latest version" test "$(nlatest "$D0" "$V
 fact "KB2: bM introduces it, 3 new commits" test "$(newc "$BM")" = 3
 want "KB2: stops, nothing changed" pull_unchanged "$D=$A1" -m why
 want "KB2: an error (the criteria give no wording)" stops_err
+want "KB2: the wording of the output table (record 117)" err_re "^error: '[^']+' has no version of '$D' to choose: a newer one includes it\$"
 want "KB2: the hint is 'pull D'" hint_cmd "ait contract pull $D"
 
 # KB3  KB2, then main takes bM ; 'pull D=HEAD -m <why>'
@@ -317,7 +320,7 @@ fact "CP3: both introduce it, 1 new commit each" test "$(newc "$A1")" = 1 -a "$(
 fact "CP3: their Ait-Agent trailers" test "$(trailer "$A1")" = agent-a -a "$(trailer "$B1")" = agent-b
 fact "CP3: 2 latest versions with different bodies" eval 'test "$(nlatest "$VA" "$E")" = 2 && ! same_body "$VA" "$E"'
 want "CP3: stops, nothing changed" pull_unchanged "$D"
-want "CP3: diverged error" stops_with 1 "error: '$D' has 2 latest versions: "
+want "CP3: diverged error" stops_with 1 "error: '$D' has diverged between "
 want "CP3: hint offers D=HEAD" hint_cmd "ait contract pull $D=HEAD -m <why>"
 want "CP3: hint offers the copied version" pick_re "'ait contract pull $D=[^ ']+ -m <why>'"
 pull "$D=HEAD" -m why

@@ -96,7 +96,7 @@ fact "K1: O's one version is a2's, 2 new commits" test -z "$(recat HEAD O)" -a "
 fact "K1: merging a2 changes .ait/D and .ait/undertake/D-O too" test "$(mt HEAD "$A2")" = "" -a "$(mt_paths HEAD "$A2")" = ".ait/$D .ait/$O .ait/undertake/$D-$O specs/o.yaml src/o.c"
 fact "K1: a2's state passes 5.9 d (current O undertakes current D)" test "$(state_of "$VO")" = current -a "$(state_of "$VD")" = current -a "$(state_of "$LK")" = undertaken -a "$(link_at "$A2" D O)" = "$LK"
 want "K1: stops, nothing changed" pull_unchanged "$O"
-want "K1: D was not named (with or without the undertake note)" err_re "$taking_re'$D'( \(undertake '$D-$O'\))?$"
+want "K1: D was not named; D comes in directly, so no undertake note (record 116)" err_re "$taking_re'$D'\$"
 want "K1: exit 1" test "$rc" = 1
 want "K1: hint 'pull D O'" named_hint "$D" "$O"
 pull "$D" "$O"
@@ -174,7 +174,7 @@ fact "E1b: at the ref tips D is mine alone (nothing to take)" test "$(nlatest "$
 fact "E1b: with b2's D@B added, D@B and my c-E are 2 latest versions with different bodies" eval 'test "$(nlatest "$D0" "$E" "$VB")" = 2 && ! same_body "$E" "$VB"'
 fact "E1b: b1 introduces D@B, 1 new commit" test "$(newc "$B1")" = 1 -a "$(recat "$B1" D)" = "$VB"
 want "E1b: 'pull D Q' stops, nothing changed" pull_unchanged "$D" "$Q"
-want "E1b: diverged error" stops_with 1 "error: '$D' has 2 latest versions: "
+want "E1b: diverged error" stops_with 1 "error: '$D' has diverged between "
 want "E1b: hint offers D=HEAD with Q" hint_cmd "ait contract pull $D=HEAD $Q -m <why>"
 want "E1b: hint offers D=<commit> with Q" pick_re "'ait contract pull $D=[^ ']+ $Q -m <why>'"
 want "E1b: ... the commit is b1, D@B's introducing commit (record 116)" eval 'cn=$(sed -n "s/.*'"'"'ait contract pull $D=\([^ '"'"']*\) $Q -m <why>'"'"'.*/\1/p" "$T/err" | grep -v "^HEAD$" | head -1); [ -n "$cn" ] && [ "$(git rev-parse -q --verify "$cn^{commit}")" = "$B1" ]'
@@ -194,7 +194,7 @@ fact "K8: neither undertake record is in HEAD" test -z "$(link_at HEAD D O1)" -a
 fact "K8: c1 has D-O1, d1 has D2-O1, 1 new commit each" test "$(link_at c D O1)" = "$L1" -a "$(link_at d D2 O1)" = "$L2" -a "$(newc "$C1")" = 1 -a "$(newc "$DD1")" = 1
 fact "K8: O1, the other end of D-O1, is also an end of D2-O1" eval 'test -n "$(at d ".ait/undertake/$D2-$O1")" && test -n "$(at c ".ait/undertake/$D-$O1")"'
 want "K8: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "K8: the stop of 3" err_re "^error: taking '.*' also changes contracts you did not name: "
+want "K8: the stop of 3: two commits, two names in ID order (record 116)" err_re "^error: taking '[^']+' and '[^']+' also changes contracts you did not name: '$D2', '$O1'\$"
 want "K8: exit 1" test "$rc" = 1
 want "K8: one hint names D, O1 and D2" named_hint "$D" "$O1" "$D2"
 want "K8: ... in contract-ID order (record 116)" err_line "hint: name them too: 'ait contract pull $D $D2 $O1'"

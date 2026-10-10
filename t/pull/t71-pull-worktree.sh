@@ -79,6 +79,7 @@ before=$(snapshot); run nohook merge --ff-only "$A1"
 fact "NEW2: git refuses the merge" test "$rc" != 0 -a "$(snapshot)" = "$before" -a -n "$(grep 'untracked working tree files would be overwritten' "$T/err")"
 want "NEW2: pull Q stops before changing anything" pull_unchanged "$Q"
 want "NEW2: an error" stops 1 "error: "
+want "NEW2: the wording of the output table (record 117)" err_line "error: untracked working tree files would be overwritten by this pull: 'specs/q.yaml'"
 want "NEW2: hint: move the untracked files" err_line "hint: move or remove 'specs/q.yaml' before you pull"
 want "NEW2: the untracked file is still there" test "$(cat specs/q.yaml)" = "my data"
 
@@ -114,6 +115,7 @@ fact "SH1: the real introducing commit of a's D is a1" test "$(git -C "$T/r" rev
 run git merge-tree --write-tree HEAD origin/a
 fact "SH1: merge-tree refuses: unrelated histories" test "$rc" = 128 -a -n "$(grep 'refusing to merge unrelated histories' "$T/err")"
 want "SH1: pull D stops, nothing changed" pull_unchanged "$D"
-want "SH1: an error with the state hint" test -n "$(stops 1 "error: " && grep "^hint: '[^']*' can be taken once this clone has its history down to the merge base with HEAD$" "$T/err")"
+want "SH1: fatal (128), as git is when it cannot judge (record 117)" test -n "$(stops 128 "fatal: '<c>' is beyond the shallow boundary of this clone" && echo y)"
+want "SH1: the state hint" test -n "$(grep "^hint: '[^']*' can be taken once this clone has its history down to the merge base with HEAD$" "$T/err")"
 want "SH1: no git command in the hints" no_git_hint
 done_testing
