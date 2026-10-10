@@ -75,6 +75,21 @@ tick; run ait offer src/stock.c specs/pass.yaml -m o -r "$W"; O=$(new_id)
 check "the message names the new ID" sh -c "git log -1 --format=%B | grep -q 'task: $O:specs/pass.yaml'"
 git reset -q --hard "$H"
 
+# 5.5-1: the index is read with its intent-to-add entries, which git write-tree leaves out
+echo 'body: new' > specs/n.yaml && git add -N specs/n.yaml
+tick; expect_err "an intent-to-add spec file is not staged whole" E_INCOMPLETE ait future offer src/stock.c specs/n.yaml -m o
+check "says so" err_has "'specs/n.yaml' is partly staged"
+git reset -q --hard "$H"; rm -f specs/n.yaml
+
+# 5.8: git's stderr line goes into ait's message without git's own "error: "; E_GIT names the git command
+mkdir real && echo 'body: x' > real/s.yaml && ln -s real link && git add real link && tick && git commit -q --no-verify -m link
+tick; run ait future offer src/stock.c link/s.yaml -m o
+check "one prefix" err_has "error: spec files do not match the contract: 'link/s.yaml' is beyond a symbolic link"
+echo 'echo "fatal: boom" >&2; exit 1' > "$T/before-update-ref"
+tick; run env PATH="$T/bin:$PATH" ait future offer src/stock.c specs/p.yaml -m o
+check "E_GIT with the command" sh -c "[ $rc = 128 ] && grep -qx \"fatal: git failed: 'git update-ref': boom\" '$T/err'"
+git reset -q --hard "$H"; rm -rf real link
+
 # 4: the state files hold a path a line; a worktree path with a line feed is not supported
 git worktree add -q "$T/a
 b" -b nl

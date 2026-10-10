@@ -13,7 +13,8 @@
 struct request {
 	struct state s;		/* every record keeps its HEAD version in ->old */
 	struct tree *ht, *v;	/* HEAD's tree and the tree judged */
-	struct tree *noted;	/* the index when the request began (5.5-1) */
+	struct tree *noted;	/* the tree of the index when the request began: what git commit would commit (5.5-1) */
+	struct tree *index;	/* the entries of the index then, as git read-tree compares them (5.5-1) */
 	int gate, fulfill, force, seq;
 	const char *result, *file;	/* -r and -F */
 	int has_msg;			/* -m or -F was given */
@@ -131,11 +132,11 @@ static int sparse(void)
  * the index still has O's and refusing everything when one was staged
  * otherwise (git v2.53.0 unpack-trees.c twoway_merge). O is C with, on the
  * paths C changed from H, the entries the index had when the request began
- * (NOTED), so nothing else is touched. Then .ait/ follows in the work tree,
+ * (INDEX, intent-to-add entries too), so nothing else is touched. Then .ait/ follows in the work tree,
  * apart from skip-worktree entries, as git checkout-index keeps them, and a
  * sparse worktree gets its patterns back. What is not done is warned about.
  */
-static void follow(struct tree *h, struct tree *noted, const char *c)
+static void follow(struct tree *h, struct tree *index, const char *c)
 {
 	struct tree *ct = tree_load(c);
 	struct string_list paths = STRING_LIST_INIT_DUP, ait = STRING_LIST_INIT_DUP, rest = STRING_LIST_INIT_DUP;
@@ -146,7 +147,7 @@ static void follow(struct tree *h, struct tree *noted, const char *c)
 
 	tree_diff(h, ct, &paths);
 	for_each_string_list_item(item, &paths) {
-		struct entry *was = tree_get(noted, item->string);
+		struct entry *was = tree_get(index, item->string);
 
 		strbuf_addf(&info, "%s %s\t%s\n", was ? was->mode : "0",
 			    was ? was->oid : "0000000000000000000000000000000000000000", item->string);
@@ -172,7 +173,7 @@ static void follow(struct tree *h, struct tree *noted, const char *c)
 		git_run(NULL, NULL, &unset, "update-index -q --refresh");
 		git_run(NULL, NULL, &unset, "sparse-checkout reapply");
 		if (unset)
-			warning("committed '%s' to '%s', but 'git sparse-checkout reapply' failed: %s", c, headref, git_error);
+			warning("committed '%s' to '%s', but %s", c, headref, git_failed());
 	}
 	if (!at(c))
 		rc = 1;
@@ -199,7 +200,7 @@ static void follow(struct tree *h, struct tree *noted, const char *c)
  * from H to C or not at all (the compare-and-swap); no hook sees it (11.2).
  * Returns 1 when R moved meanwhile; other failures stop with git's reason.
  */
-int publish(const char *tree, const char *msg, struct tree *noted)
+int publish(const char *tree, const char *msg, struct tree *index)
 {
 	char *c = line1(head ? git_run(msg, NULL, NULL, "commit-tree %s -p %s", tree, head) :
 			git_run(msg, NULL, NULL, "commit-tree %s", tree)), oid[48];
@@ -207,13 +208,13 @@ int publish(const char *tree, const char *msg, struct tree *noted)
 
 	git_run(NULL, NULL, &rc, "update-ref %s %s %s", headref, c, head ? head : "0000000000000000000000000000000000000000");
 	if (rc) {
-		char *why = xstrdup(git_error);
+		char *why = git_failed();
 
 		if (object(headref, 0, oid, NULL) ? strcmp(oid, head ? head : "") != 0 : head != NULL)
 			return 1;
-		reject(128, NULL, "git failed: %s", why);
+		reject(128, NULL, "%s", why);
 	}
-	follow(head_tree(), noted, c);
+	follow(head_tree(), index, c);
 	return 0;
 }
 
@@ -234,6 +235,7 @@ static void load(struct request *q)
 	q->ht = head_tree();
 	/* spec 5.5-1: the index as the request found it */
 	q->noted = tree_load(line1(git("write-tree")));
+	q->index = index_load();
 	state_load(&q->s, q->ht);
 }
 
@@ -1413,7 +1415,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 	 */
 	if (strcmp(git_run(q->msg.buf, NULL, NULL, "interpret-trailers --parse --no-divider"), trailers.buf))
 		reject(129, NULL, "the message hides the trailers");
-	if (publish(tree, q->msg.buf, q->noted))
+	if (publish(tree, q->msg.buf, q->index))
 		reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 	printf("request %s\n", rid);
 	/* 6.7 and 7.7.5: one kind after another, by ID within a kind, but new in the order made */
@@ -1448,7 +1450,7 @@ static int finish(struct request *q)
 				warning("skipping malformed '.ait/%s' at 'index'", q->s.r[k]->id);
 		if (!strcmp(q->v->oid, q->ht->oid))
 			puts("noop");
-		else if (publish(q->v->oid, q->msg.buf, q->noted))
+		else if (publish(q->v->oid, q->msg.buf, q->index))
 			reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 		return 0;
 	}
@@ -1640,7 +1642,7 @@ static struct tree *candidate(struct request *q)
 		reject(1, NULL, "spec files do not match the contract: %s", git_error);
 	u = tree_load(tree);
 	for_each_string_list_item(item, &q->files) {
-		struct entry *e = tree_get(u, item->string), *staged = tree_get(q->noted, item->string);
+		struct entry *e = tree_get(u, item->string), *staged = tree_get(q->index, item->string);
 		const char *was = blob_at(q->ht, item->string);
 
 		/* 2.1.4: a spec file is a regular file; and it is staged as a whole, or not at all (7.3.3) */

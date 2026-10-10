@@ -6,7 +6,9 @@
 #include "string-list.h"
 
 extern const char *top, *gindex, *headref, *head, *gitdir, *commondir;
-extern char *git_error;		/* the first stderr line of the last git call */
+extern char *git_error;		/* the first stderr line of the last git call, without git's "fatal: " or "error: " */
+extern char *git_cmd;		/* the subcommand of the last git call */
+char *git_failed(void);
 extern size_t git_out_len;	/* the length of the last git output */
 
 /* ait.c: process, messages and the commands that are not requests */
@@ -31,6 +33,7 @@ struct entry { const char *path; char mode[8], oid[48]; };
 struct tree { char oid[48]; size_t nr; struct entry *e; };
 struct tree *tree_load(const char *treeish);
 struct tree *head_tree(void);
+struct tree *index_load(void);
 struct entry *tree_get(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
 const char *blob_text(const char *oid);
@@ -120,5 +123,5 @@ struct string_list *def_get(struct tree *t, const char *path);
 int cmd_request(int argc, const char **argv);
 int cmd_fulfill(int argc, const char **argv);
 void precondition(int allow_unborn);
-int publish(const char *tree, const char *msg, struct tree *noted);
+int publish(const char *tree, const char *msg, struct tree *index);
 #endif

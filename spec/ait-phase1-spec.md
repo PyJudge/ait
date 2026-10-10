@@ -210,7 +210,7 @@ prev -
 
 ### 2.5 명세 정의와 환경 정의 (YAML)
 
-- 2.5.1 **YAML 부분집합**: UTF-8, LF. `#` 주석, 블록 map, 블록 list, flow list(`[a, b]`)와 flow map(`{K: v}`)(서로 중첩 가능), scalar(plain·`'…'`·`"…"`. `"…"`의 이스케이프는 YAML과 같다), 10진 정수, `|` 블록 문자열(들여쓰기·끝 행 처리 표시 `|2`·`|-`·`|+`를 붙일 수 있다)만 쓴다. 놓이는 자리는 YAML 1.2와 같다: map의 키도 scalar(plain·`'…'`·`"…"`)이고, 문서 전체가 flow map일 수 있으며, flow collection은 여러 행에 걸치고 그 안에 주석을 둘 수 있다. anchor·alias·tag·여러 문서·중복 키·알 수 없는 키는 `E_FORMAT`이다.
+- 2.5.1 **YAML 부분집합**: UTF-8, LF. `#` 주석, 블록 map, 블록 list, flow list(`[a, b]`)와 flow map(`{K: v}`)(서로 중첩 가능), scalar(plain·`'…'`·`"…"`. `"…"`의 이스케이프는 YAML과 같다), 10진 정수, `|` 블록 문자열(들여쓰기·끝 행 처리 표시 `|2`·`|-`·`|+`를 붙일 수 있다)만 쓴다. 놓이는 자리는 YAML 1.2와 같다: map의 키도 scalar(plain·`'…'`·`"…"`)이고, 문서 전체가 flow map일 수 있으며, flow collection은 여러 행에 걸치고 그 안에 주석을 둘 수 있다. 문서는 하나이고 `---`·`...` 표시는 써도 된다. anchor·alias·tag·지시(`%YAML` 등)·여러 문서·중복 키·알 수 없는 키는 `E_FORMAT`이다.
 - 2.5.2 **명세 정의**(아무 경로). 틀은 `ait contract new spec`이 준다(7.4.1a):
 
 ```yaml

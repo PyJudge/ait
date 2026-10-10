@@ -14,6 +14,24 @@ static int cmp_entry(const void *a, const void *b)
 	return strcmp(((const struct entry *)a)->path, ((const struct entry *)b)->path);
 }
 
+/* the entries of T from git's NUL-ended "... TAB PATH" lines, mode and object ID read by FMT */
+static void listing(struct tree *t, char *p, const char *fmt)
+{
+	size_t alloc = 0;
+	char *end;
+
+	for (; *p; p = end + 1) {
+		struct entry *e;
+
+		end = p + strlen(p);
+		ALLOC_GROW(t->e, t->nr + 1, alloc);
+		e = &t->e[t->nr++];
+		sscanf(p, fmt, e->mode, e->oid);
+		e->path = strchr(p, '\t') + 1;
+	}
+	QSORT(t->e, t->nr, cmp_entry);
+}
+
 /*
  * One sorted listing per tree: lookups are a bsearch, a diff is a merge walk.
  * Callers name trees by object ID; a commit and its tree share one listing.
@@ -23,13 +41,12 @@ struct tree *tree_load(const char *treeish)
 	static struct string_list named = STRING_LIST_INIT_DUP, listed = STRING_LIST_INIT_DUP;
 	struct string_list_item *hit = string_list_lookup(&named, treeish);
 	struct tree *t;
-	size_t alloc = 0;
-	char *p, *end, oid[48];
+	char oid[48];
 
 	if (hit)
 		return hit->util;
 	if (!object(xstrfmt("%s^{tree}", treeish), 0, oid, NULL))
-		reject(128, NULL, "git failed: not a tree: '%s'", treeish);
+		reject(128, NULL, "git failed: 'git cat-file': not a tree: '%s'", treeish);
 	hit = string_list_lookup(&listed, oid);
 	if (hit) {
 		string_list_insert(&named, treeish)->util = hit->util;
@@ -39,16 +56,20 @@ struct tree *tree_load(const char *treeish)
 	strcpy(t->oid, oid);
 	string_list_insert(&named, treeish)->util = t;
 	string_list_insert(&listed, oid)->util = t;
-	for (p = git("ls-tree -r -t -z --full-tree %s", t->oid); *p; p = end + 1) {
-		struct entry *e;
+	listing(t, git("ls-tree -r -t -z --full-tree %s", t->oid), "%7s %*s %47s");
+	return t;
+}
 
-		end = p + strlen(p);
-		ALLOC_GROW(t->e, t->nr + 1, alloc);
-		e = &t->e[t->nr++];
-		sscanf(p, "%7s %*s %47s", e->mode, e->oid);
-		e->path = strchr(p, '\t') + 1;
-	}
-	QSORT(t->e, t->nr, cmp_entry);
+/*
+ * The entries of the index as they are, intent-to-add ones too (with the
+ * empty blob, as git lists them), which git write-tree leaves out; it has no
+ * tree ID. git read-tree -m compares the index with these (spec 5.5-1, 5.5-4).
+ */
+struct tree *index_load(void)
+{
+	struct tree *t = xcalloc(1, sizeof(*t));
+
+	listing(t, git("ls-files -s -z"), "%7s %47s");
 	return t;
 }
 
@@ -120,7 +141,7 @@ char *tree_with(const char *base, const char *index_info, struct string_list *pa
 	unlink(index);
 	rmdir(dir);
 	if (rc && !paths)
-		reject(128, NULL, "git failed: %s", git_error);
+		reject(128, NULL, "%s", git_failed());
 	return tree;
 }
 
@@ -1066,8 +1087,9 @@ int read_text(struct strbuf *sb, const char *path)
 /*
  * The YAML subset of spec 2.5.1, read by libyaml as YAML places it. What the
  * subset leaves out shows in libyaml's events and is refused here: aliases,
- * anchors, tags, document markers and directives, folded blocks, keys that
- * are not scalars, a root that is not a map. The values are flattened into
+ * anchors, tags, directives, a second document, folded blocks, keys that are
+ * not scalars, a root that is not a map. The markers "---" and "..." of the
+ * one document are YAML's, and libyaml's emitter writes "..." itself. The values are flattened into
  * KV: "a: x" is "a", list items are "a.0", keys inside them "a.0.b"; '.' and
  * '\' in a key are escaped, so a path names one value. Every value keeps
  * where its text starts (a byte offset) and its kind.
@@ -1111,12 +1133,11 @@ static const char *yaml_outside(yaml_event_t *e, int docs)
 	case YAML_ALIAS_EVENT:
 		return "an alias";
 	case YAML_DOCUMENT_START_EVENT:
-		return docs ? "more than one document" : !e->data.document_start.implicit ||
-		       e->data.document_start.version_directive ||
+		if (docs)
+			return "more than one document";
+		return e->data.document_start.version_directive ||
 		       e->data.document_start.tag_directives.start != e->data.document_start.tag_directives.end ?
-		       "a document marker or directive" : NULL;
-	case YAML_DOCUMENT_END_EVENT:
-		return e->data.document_end.implicit ? NULL : "a document marker or directive";
+		       "a directive" : NULL;
 	case YAML_SCALAR_EVENT:
 		return e->data.scalar.anchor ? "an anchor" :
 		       !e->data.scalar.plain_implicit && !e->data.scalar.quoted_implicit ? "a tag" :

@@ -18,6 +18,7 @@ def 'body: &a x\n' "an anchor"
 def 'body: *a\n' "an alias"
 def 'body: !t x\n' "a tag"
 def 'body: >\n  x\n' "a folded block"
+def '%%YAML 1.2\n---\nbody: x\n' "a directive"
 def 'body: x\n---\nbody: y\n' "a second document"
 def "body: 'x\n" "an unterminated quote"
 def 'body: "a\\qb"\n' "an escape other than \\\" and \\\\"
@@ -38,9 +39,10 @@ bad MINI "environment" ait future offer src/order.c specs/f.yaml -m m
 rm -f specs/f.yaml
 # YAML 1.2: a flow map may be the whole document, and keys may be quoted scalars
 for ok in '{"body":"x"}\n' '{body: x, inputs: []}\n' '# a note\n{"body": "x"}\n' "'body': x\n" '"body": x\ninputs: [tests/pass.sh]\n' \
-	'{"body": x, '"'"'inputs'"'"': [tests/pass.sh]}\n' 'body: see http://x.y/z\n'; do
-	printf "$ok" > specs/f.yaml
-	tick; expect_ok "standard YAML: $(printf "$ok" | tr '\n' ' ')" ait future offer src/order.c specs/f.yaml -m m
+	'{"body": x, '"'"'inputs'"'"': [tests/pass.sh]}\n' 'body: see http://x.y/z\n' '---\nbody: x\n...\n' \
+	'body: |+\n  x\n\n...\n' 'body: "a\\nb\\tc"\n'; do
+	printf -- "$ok" > specs/f.yaml
+	tick; expect_ok "standard YAML: $(printf -- "$ok" | tr '\n\t' '  ')" ait future offer src/order.c specs/f.yaml -m m
 	git reset -q --hard "$H"
 done
 def '{body: x}\nmore: y\n' "text after a flow map document"
@@ -52,7 +54,7 @@ def 'body: x\nengine: exec\ncommand: [sh,,x]\n' "an empty item in a flow list"
 def '"body: x\n' "an unterminated quoted key"
 for ok in 'body: |\n  a\n  b\n' "body: 'it''s'\n" 'body: "a\\"b\\\\c"\n' 'body: x # note\n' 'body: x\ninputs: []\n' \
 	'body: x\nengine: exec\ncommand:\n  - ./tests/pass.sh\nsuccess: [0, 1]\ninputs: [tests/pass.sh]\n'; do
-	printf "$ok" > specs/f.yaml
+	printf -- "$ok" > specs/f.yaml
 	tick; expect_ok "a definition $(printf "$ok" | head -1)" ait future offer src/order.c specs/f.yaml -m m
 	git reset -q --hard "$H"
 done

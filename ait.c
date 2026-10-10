@@ -12,6 +12,7 @@
 
 const char *top, *gindex, *headref, *head, *gitdir, *commondir;
 char *git_error;
+char *git_cmd;
 size_t git_out_len;
 char agent[72], sid[16];
 
@@ -85,6 +86,8 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 {
 	struct child_process cmd = CHILD_PROCESS_INIT;
 	struct strbuf out = STRBUF_INIT, err = STRBUF_INIT;
+	const char *reason;
+	size_t i;
 	int code;
 
 	strvec_pushl(&cmd.args, "git", "-c", "core.quotePath=false", "-c", "trailer.separators=:",
@@ -94,14 +97,27 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 	if (index)
 		strvec_pushf(&cmd.env, "GIT_INDEX_FILE=%s", index);
 	code = pipe_command(&cmd, in, in ? strlen(in) : 0, &out, 0, &err, 0);
+	/* git's first stderr line, its "fatal: " or "error: " left to the message ait writes around it */
 	free(git_error);
 	git_error = xstrndup(err.buf, strcspn(err.buf, "\n"));
+	if (skip_prefix(git_error, "fatal: ", &reason) || skip_prefix(git_error, "error: ", &reason))
+		memmove(git_error, reason, strlen(reason) + 1);
+	for (i = 0; args->v[i] && *args->v[i] == '-'; i++)
+		;
+	free(git_cmd);
+	git_cmd = xstrdup(args->v[i] ? args->v[i] : "");
 	if (rc)
 		*rc = code;
 	else if (code)
-		reject(128, top ? NULL : "run this command inside a git repository", "git failed: %s", git_error);
+		reject(128, top ? NULL : "run this command inside a git repository", "%s", git_failed());
 	strbuf_release(&err);
 	return strbuf_detach(&out, &git_out_len);
+}
+
+/* E_GIT (5.8): the git command that failed last, and its stderr's first line */
+char *git_failed(void)
+{
+	return xstrfmt("git failed: 'git %s': %s", git_cmd, git_error);
 }
 
 /* git_args() with the words of FMT, each "%s" word taking one argument verbatim */
@@ -140,14 +156,14 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 		strvec_pushl(&cat.args, "cat-file", "--batch-command", NULL);
 		cat.in = cat.out = -1;
 		if (start_command(&cat))
-			reject(128, NULL, "git failed: cannot run 'git cat-file'");
+			reject(128, NULL, "git failed: 'git cat-file': cannot run it");
 		/* the pipes are ait's alone, not for the git commands and hooks it runs later */
 		fcntl(cat.in, F_SETFD, FD_CLOEXEC);
 		fcntl(cat.out, F_SETFD, FD_CLOEXEC);
 		out = xfdopen(cat.out, "r");
 	}
 	if (write_in_full(cat.in, cmd, strlen(cmd)) < 0 || !fgets(line, sizeof(line), out))
-		reject(128, NULL, "git failed: 'git cat-file' stopped");
+		reject(128, NULL, "git failed: 'git cat-file': it stopped");
 	if (sscanf(line, "%47s %15s %zu", id, type, &n) != 3)
 		return NULL;
 	if (oid)
@@ -158,7 +174,7 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 		return xstrdup("");
 	buf = xmallocz(n);
 	if (fread(buf, 1, n, out) != n || fgetc(out) != '\n')
-		reject(128, NULL, "git failed: 'git cat-file' stopped");
+		reject(128, NULL, "git failed: 'git cat-file': it stopped");
 	return buf;
 }
 
@@ -204,7 +220,7 @@ static void setup(int bare_ok)
 	string_list_split(&lines, git_run(NULL, NULL, &rc, "rev-parse --absolute-git-dir --path-format=absolute "
 					  "--git-common-dir --show-object-format --show-toplevel"), "\n", -1);
 	if (lines.nr < 4 || (rc && !bare_ok))
-		reject(128, lines.nr < 4 ? "run this command inside a git repository" : NULL, "git failed: %s", git_error);
+		reject(128, lines.nr < 4 ? "run this command inside a git repository" : NULL, "%s", git_failed());
 	/* one value a line, and the state files of spec 4 hold a path a line */
 	if (lines.nr > (rc ? 4u : 5u))
 		unsupported("a repository path with a line feed");
@@ -567,7 +583,7 @@ static int cmd_init(int argc, const char **argv)
 	precondition(1);
 	/* spec 7.1.1-5: if another init won the race, its init file is ours too */
 	if (publish(tree_with(t->oid, xstrfmt("100644 %s\t.ait/init\n", line1(git_run("version 1\n", NULL, NULL,
-		    "hash-object -w --stdin"))), NULL), "[CONTRACT] ait init\n", tree_load(line1(git("write-tree"))))) {
+		    "hash-object -w --stdin"))), NULL), "[CONTRACT] ait init\n", index_load())) {
 		const char *now = object("HEAD:.ait/init", 1, NULL, NULL);
 
 		if (!now || strcmp(now, "version 1\n"))
