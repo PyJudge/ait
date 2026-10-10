@@ -5,6 +5,7 @@ ait-mini 실행 파일(macOS arm64)과 ait-mini 스킬을 묶은 것이다.
 ```sh
 sh install.sh          # ait를 ~/.local/bin에 설치(PREFIX로 바꿀 수 있다). PATH에 있어야 hook이 ait를 부른다
 sh try.sh ~/ait-play   # 명세만 있는 실험 저장소와 에이전트 a, b의 worktree를 만든다
+sh ait-graph.sh        # (실험 저장소 안에서) 계약 커밋의 그래프와, 커밋마다 바뀐 계약의 종류·상태
 ```
 
 - `bin/ait`: ait-mini. git 2.36 이상이 필요하다.

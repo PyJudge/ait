@@ -46,5 +46,5 @@ playground ready: $top
 Open one Claude Code session in each of a/ and b/. For example:
   a: "너는 에이전트 a다. doc/spec.md를 ait-mini로 b와 함께 구현한다. 먼저 명세의 조항을 계약으로 걸고, 주문(3조)을 맡아라."
   b: "너는 에이전트 b다. doc/spec.md를 ait-mini로 a와 함께 구현한다. a가 건 조항 계약을 들인 뒤 재고(1, 2조)를 맡아라."
-Watch: git -C $top/main log --branches --graph --oneline
+Watch: cd $top/main && sh $here/ait-graph.sh
 MSG

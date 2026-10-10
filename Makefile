@@ -43,7 +43,7 @@ bundle: ait
 	mkdir -p dist/ait-mini/bin dist/ait-mini/skills
 	cp ait dist/ait-mini/bin/
 	cp -R spec/skills/ait-mini dist/ait-mini/skills/
-	cp bundle/README.md bundle/install.sh bundle/try.sh dist/ait-mini/
+	cp bundle/README.md bundle/install.sh bundle/try.sh bundle/ait-graph.sh dist/ait-mini/
 	tar -czf dist/ait-mini.tar.gz -C dist ait-mini
 
 clean:
