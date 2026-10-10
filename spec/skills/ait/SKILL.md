@@ -172,11 +172,12 @@ current를 만들거나 확인하는 명령(`fulfill`, `ait commit`, current `de
 - 멈추면 무엇이 왜 안 되는지가 `error:` 행에, 따를 명령이나 받을 수 있게 되는 상태가 `hint:`에 있다. 그대로 따른다.
   - 갈라짐(`has diverged between …`): 같은 계약을 두 쪽이 따로 바꿨다. hint의 선택 중 하나를 고른다(`D=<커밋>`이나 내 판 `D=HEAD`, `-m "왜"`). 고르지 않은 판도 결과에 남고, 그 판을 만든 쪽에 알림이 간다. 한쪽이 끝낸(cancel·철회) 계약이면 고르지 않고 끝난 쪽을 받는다(경고가 나온다). 그 일이 여전히 필요하면 새 계약을 만든다.
   - 지정(`also changes contracts you did not name`): 받을 이력이 다른 계약도 바꾼다. hint대로 그 이름을 더한다. 보지 않은 계약은 들어오지 않는다.
+  - 명세 고정(`spec files do not match the contract`): 이미 합친 이력의 판을 복원할 때, 한 파일에 서로 다른 고정을 함께 둘 수 없으면 멈춘다. hint대로 같은 명세 파일을 고정한 판을 고른다. `--force`로 넘기지 못한다.
   - 확인(`changes what contract … checked` 등): 받으면 current 계약이 확인한 코드나 조건이 바뀐다. hint대로 같은 요청에서 되돌리거나(`… future amend K -m "왜"`), 정말 사소하면 `--force -m "왜"`로 책임지고 받는다.
   - 같은 파일이 두 번 충돌(`both change …`): hint의 차례대로 나눠 받는다. 함께만 받을 수 있으면 hint가 받을 수 있게 되는 상태를 알려 준다.
   - 사고(`was changed outside ait's rules`): 그 브랜치를 고칠 때까지 그 판은 받을 수 없다. 남의 브랜치이면 그 쪽이 고친다.
   - 로컬 변경(`would be overwritten by this pull`): hint대로 커밋하거나 치운 뒤 다시 실행한다. stash 목록은 이 저장소의 모든 worktree가 함께 쓰므로 치운 것이 남의 것과 섞이지 않게 한다.
-- 코드가 충돌하면 git처럼 멈춘다. 충돌을 풀고 stage한 뒤, hint의 마치는 커밋(`git commit --allow-empty --no-edit --cleanup=strip`)을 하고 git의 안내대로 잇는다. 계약 파일과 명세 파일은 pull이 이미 정해 두었다.
+- 코드가 충돌하면 git처럼 멈춘다. 충돌을 풀고 stage한 뒤, hint의 마치는 커밋(`git commit --allow-empty --no-edit --cleanup=strip`)을 하고 git의 안내대로 잇는다. 계약 파일은 pull이 정해 두었다. 명세 파일도 git이 충돌로 남겼으면 함께 풀고 stage한다.
 - 받을 때 건너뛴 것(남의 브랜치의 사고 판, 지운 레코드, 고정한 파일 지우기)은 경고로 나온다. 그 경고는 그 브랜치가 고칠 때까지 받을 때마다 나온다.
 
 ## git 조작에서 계약이 충돌했다

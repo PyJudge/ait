@@ -20,6 +20,8 @@ A=D00000000000c B=D00000000000d C=D00000000000e
 O=O000000000001 O1=O000000000002 O2=O000000000003 OE=O000000000004 O6=O000000000006
 X=X000000000001
 SA="agent-a S00000000000a" SQ="agent-q S00000000000f"
+# A blob variable must not silently change the creator of every later fixture.
+readonly SA SQ
 id_of() { eval "echo \$$1"; }
 spec_of() { echo "specs/$(echo "$1" | tr 'A-Z' 'a-z').yaml"; }
 

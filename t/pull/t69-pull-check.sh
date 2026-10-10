@@ -156,11 +156,11 @@ pbase s0
 rec D spec=specs/shared.yaml >/dev/null; c "D declares shared" >/dev/null
 git checkout -q -b a; echo 'body: s-A' > specs/shared.yaml; VA=$(rec D spec=specs/shared.yaml); A1=$(c "a: shared spec"); git checkout -q master
 K5V=$(rec K5 current spec=specs/shared.yaml provider=src/order.c creator="$SE"); E1=$(c "e: K5")
-M=$(mtree HEAD a); SA=$(at a specs/shared.yaml)
+M=$(mtree HEAD a); SHARED_A=$(at a specs/shared.yaml)
 fact "S2: K5 is current and pins shared.yaml as s0" test "$(state_of "$K5V")" = current -a "$(pin_of "$K5V" specs/shared.yaml)" = "$(at HEAD specs/shared.yaml)"
 fact "S2: merge-tree HEAD a1 has no conflict" test -z "$(mt HEAD a)"
 fact "S2: merging changes .ait/D and specs/shared.yaml" test "$(changed HEAD "$M")" = ".ait/$D specs/shared.yaml"
-fact "S2: merged shared.yaml (s-A) differs from K5's pin" test "$(git rev-parse "$M:specs/shared.yaml")" = "$SA" -a "$SA" != "$(pin_of "$K5V" specs/shared.yaml)"
+fact "S2: merged shared.yaml (s-A) differs from K5's pin" test "$(git rev-parse "$M:specs/shared.yaml")" = "$SHARED_A" -a "$SHARED_A" != "$(pin_of "$K5V" specs/shared.yaml)"
 want "S2: stops, nothing changed" pull_unchanged "$D"
 want "S2: exit 1" test "$rc" = 1
 want "S2: 'taking ... changes what contract K5 checked: specs/shared.yaml'" err_re "^error: taking $SCOPE changes what contract '$K5' checked: 'specs/shared.yaml'\$"
@@ -169,12 +169,13 @@ want "S2: hint: or --force" err_line "hint: or, if the change is trivial for '$K
 # follow the first hint (flows.py S1/S2: K5 re-pinned, validate passes)
 pull "$D" future amend "$K5" -m why
 want "S2 follow: succeeds" test "$rc" = 0
-want "S2 follow: D is a1's D, shared.yaml s-A" test "$(recat HEAD D)" = "$VA" -a "$(at HEAD specs/shared.yaml)" = "$SA"
-want "S2 follow: K5 is future, pins s-A, contains my K5" eval 'test "$(state_of "$(recat HEAD K5)")" = future -a "$(pin_of "$(recat HEAD K5)" specs/shared.yaml)" = "$SA" && contains "$(recat HEAD K5)" "$K5V"'
+want "S2 follow: D is a1's D, shared.yaml s-A" test "$(recat HEAD D)" = "$VA" -a "$(at HEAD specs/shared.yaml)" = "$SHARED_A"
+want "S2 follow: K5 is future, pins s-A, contains my K5" eval 'test "$(state_of "$(recat HEAD K5)")" = future -a "$(pin_of "$(recat HEAD K5)" specs/shared.yaml)" = "$SHARED_A" && contains "$(recat HEAD K5)" "$K5V"'
 want "S2 follow: 'K5' is reopened by this pull" warns "'$K5' is reopened by this pull"
 
 # S3  main's current K6 provides src/stock.c (pins g0) ; a1 fulfils D changing stock.c line 1
 pbase
+fact "S3: the previous fixture did not change the default creator" test "$(git cat-file -p "$(recat HEAD D)" | sed -n 's/^creator //p')" = 'agent-a S00000000000a'
 git checkout -q -b a; line 1 A; VA=$(rec D current); A1=$(c "a: fulfil D"); git checkout -q master
 cond K6 k6; K6V=$(rec K6 current provider=src/stock.c creator="$SE"); E1=$(c "e: K6")
 M=$(mtree HEAD a); G0=$(at HEAD src/stock.c)

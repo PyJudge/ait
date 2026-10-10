@@ -588,4 +588,22 @@ run git merge --no-edit f
 want "HD2: the plain git merge passes" test "$rc" = 0
 want "HD2: 'warning: '.ait/D' keeps an error from HEAD'" err_line "warning: '.ait/$D' keeps an error from HEAD"
 want "HD2: the merge commit's parents are bM and f1" parents_are HEAD "$BM" "$F1"
+# CD1  modify/delete writes conflict stages even though the resulting file equals HEAD
+cd1_init() { echo base > src/x.c; cond Q q0; rec Q >/dev/null; }
+pbase cd1_init
+git checkout -q -b a; git rm -q src/x.c; cond Q q-A; rec Q >/dev/null; cd1_a=$(c a1)
+git checkout -q master; echo ours > src/x.c; cond D d-E; rec D >/dev/null; cd1_head=$(c e1)
+git merge-tree --write-tree "$cd1_head" "$cd1_a" > "$T/cd1-merge"
+cd1_tree=$(head -1 "$T/cd1-merge")
+fact "CD1: Git reports a modify/delete conflict" grep -q '^CONFLICT (modify/delete): src/x.c ' "$T/cd1-merge"
+fact "CD1: the result blob is exactly HEAD with no conflict markers" test "$(at "$cd1_tree" src/x.c)" = "$(at HEAD src/x.c)" -a "$(git show "$cd1_tree:src/x.c")" = ours
+fact "CD1: Git supplies stages 1 and 2 for the unchanged result file" test "$(awk '$4 == "src/x.c" { print $3 }' "$T/cd1-merge" | tr '\n' ' ')" = '1 2 '
+echo draft > src/x.c
+want "CD1: an unstaged draft blocks writing conflict stages" pull_unchanged "$Q"
+want "CD1: the local-change diagnostic includes src/x.c" test "$rc" = 1 -a "$(head -1 "$T/err")" = "error: your local changes to 'src/x.c' would be overwritten by this pull"
+git -c core.hooksPath=/dev/null checkout -- src/x.c
+pull "$Q"
+want "CD1: pull stops in merge state on the conflict" test "$rc" = 1 -a -n "$(merging && echo yes)"
+want "CD1: the worktree retains the HEAD content without markers" test "$(cat src/x.c)" = ours
+want "CD1: the index holds stages 1 and 2" test "$(git ls-files -u src/x.c | awk '{ print $3 }' | tr '\n' ' ')" = '1 2 '
 done_testing

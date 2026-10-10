@@ -683,7 +683,7 @@ def classify(repo, path, base_, rev, result_pins):
     if b0 == b1:
         return "no change", b1, False
     # a change that is not taken is given to git as the result's pin (or, when the result does not pin the path at
-    # one content, as the merge base's content): then no merge base git picks later sees it as a change (X1)
+    # one content, as the classification base's content). A later Git base stays unchanged and can conflict (SF3).
     put = next(iter(result_pins)) if len(result_pins) == 1 else b0
     if b1 is not None and b1 in result_pins:
         return "take (the result pins it)", b1, False
@@ -723,6 +723,16 @@ def pull_merge(repo, ends, result_pins, head="HEAD"):
     the given order. Returns (merged commit, conflicting paths, [(side, path, verdict)])."""
     head = repo.out("rev-parse", head)
     ends = [repo.out("rev-parse", e) for e in ends]
+    if not ends:
+        # Decision 35: no Git merge can reconcile pins when every end was an ancestor.
+        out = {}
+        for path, pins in result_pins.items():
+            if len(pins) != 1:
+                raise ValueError("conflicting specification pins without merge ends: " + path)
+            pin = next(iter(pins))
+            if entry_at(repo, head, path) != pin:
+                out[path] = pin
+        return taken_out(repo, head, out) if out else head, [], []
     sides = [("my side", head, repo.out("merge-base", head, ends[0]))] + [(repo.name(e), e, repo.out("merge-base", head, e)) for e in ends]
     inputs, notes = [], []
     for who, rev, b in sides:

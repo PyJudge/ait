@@ -72,6 +72,50 @@ want "RV3: D is D@A" test "$(recat HEAD D)" = "$DA"
 want "RV3: specs/d.yaml is D@A's pin" test "$(at HEAD specs/d.yaml)" = "$(pinned "$A1" D specs/d.yaml)"
 want "RV3: a request commit (record 74)" grep -q '^request ' "$T/out"
 
+# RV4  both introducing commits are ancestors after reverting their resolved merge
+rv4_init() { echo 'body: s0' > specs/shared.yaml; rec Q future spec=specs/shared.yaml >/dev/null; }
+pbase rv4_init
+rec D future spec=specs/shared.yaml prev=- >/dev/null; c "D and Q share a specification" >/dev/null
+BASE=$(git rev-parse HEAD)
+git checkout -q -b a; cond D s-A specs/shared.yaml
+DA=$(rec D future spec=specs/shared.yaml); QA=$(rec Q future spec=specs/shared.yaml); A1=$(c a1)
+git checkout -q -b b "$BASE"; cond D s-B specs/shared.yaml
+DB=$(rec D future spec=specs/shared.yaml); QB=$(rec Q future spec=specs/shared.yaml); B1=$(c b1)
+git checkout -q master; cond D s-M specs/shared.yaml
+rec D future spec=specs/shared.yaml prev="$DA $DB" >/dev/null
+rec Q future spec=specs/shared.yaml prev="$QA $QB" >/dev/null
+git add -A; TREE=$(git write-tree)
+M=$(git commit-tree "$TREE" -p "$BASE" -p "$A1" -p "$B1" -m resolved)
+nohook reset --hard "$M" >/dev/null; tick; nohook revert --no-edit -m 1 "$M" >/dev/null
+E=$(git rev-parse HEAD)
+fact "RV4: both introducing commits are ancestors, so there are no ends" is_ancestor "$A1" "$E"
+fact "RV4: b1 is also an ancestor" is_ancestor "$B1" "$E"
+fact "RV4: the revert restored the old records and shared file" test "$(recat HEAD D) $(recat HEAD Q) $(at HEAD specs/shared.yaml)" = "$(recat "$BASE" D) $(recat "$BASE" Q) $(at "$BASE" specs/shared.yaml)"
+fact "RV4: the selected versions require different blobs at one path" test "$(pinned "$A1" D specs/shared.yaml)" != "$(pinned "$B1" Q specs/shared.yaml)"
+nohook merge "$A1" "$B1" >"$T/git-merge" 2>&1
+fact "RV4: git does not merge ancestors again" test "$(git rev-parse HEAD)" = "$E" -a "$(cat "$T/git-merge")" = 'Already up to date.'
+rv4_hints() {
+	grep '^hint: ' "$T/err" | grep -o "'ait contract pull [^']*'" | tr -d "'" | while read -r command; do
+		set -- $command; shift 3
+		for arg; do
+			case $arg in ?*=?*) printf '%s=%s ' "${arg%%=*}" "$(git rev-parse -q --verify "${arg#*=}^{commit}")" ;; *) printf '%s ' "$arg" ;; esac
+		done
+		echo
+	done | sort > "$T/rv4-hints"
+	[ "$(cat "$T/rv4-hints")" = "$(printf '%s\n' "$D=$A1 $Q=$A1 -m <why> " "$D=$B1 $Q=$B1 -m <why> " | sort)" ]
+}
+want "RV4: conflicting pins stop without changing anything" pull_unchanged "$D=$A1" "$Q=$B1" -m why
+want "RV4: the failure is bundle integrity" stops_with 1 'error: spec files do not match the contract:'
+want "RV4: hints contain only the two consistent choices" rv4_hints
+want "RV4: no merge state is created" not merging
+want "RV4: force cannot bypass conflicting pins" pull_unchanged "$D=$A1" "$Q=$B1" --force -m why
+want "RV4: force still stops at bundle integrity" stops_with 1 'error: spec files do not match the contract:'
+pull "$D=$A1" "$Q=$A1" -m why
+want "RV4: choosing consistent pins succeeds" test "$rc" = 0
+want "RV4: the result has HEAD as its only parent" test "$(parents)" = 1 -a "$(par 1)" = "$E"
+want "RV4: the shared file is restored to the selected pin" test "$(at HEAD specs/shared.yaml)" = "$(pinned "$A1" D specs/shared.yaml)"
+want "RV4: consistent restoration does not create merge state" not merging
+
 # R1  a: cancels D (a1), then hand-edits it back to future with prev a1 (a2)
 pbase
 git checkout -q -b a; DX=$(rec D cancelled); A1=$(c "a: cancel"); DH=$(rec D future); A2=$(c "a: hand edit"); git checkout -q master

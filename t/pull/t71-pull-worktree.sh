@@ -103,6 +103,17 @@ want "HD1: pull Q stops at 0, nothing changed" pull_unchanged "$Q"
 want "HD1: HEAD's error, as 5.8 E_INCOMPLETE (v15 5.10)" stops 1 "error: spec files do not match the contract: "
 want "HD1: main's edit of specs/d.yaml is kept" test "$(cat specs/d.yaml)" = "body: edited by hand" -a "$(at HEAD specs/d.yaml)" = "$(git hash-object specs/d.yaml)"
 
+# HD3  input-set integrity fails even when all stored file pins match HEAD
+pbase
+mkdir -p tests; echo data > tests/data
+printf 'body: c0\ninputs: [tests/data]\n' > specs/d.yaml
+rec D >/dev/null; E1=$(c "definition declares an input missing from its file rows")
+fact "HD3: the stored definition pin matches HEAD" test "$(pinned HEAD D specs/d.yaml)" = "$(at HEAD specs/d.yaml)"
+fact "HD3: the definition declares a file that exists" test -n "$(at HEAD tests/data)" -a "$(git show HEAD:specs/d.yaml | tail -1)" = 'inputs: [tests/data]'
+fact "HD3: the record omits that input row" test -z "$(git cat-file -p "$(recat HEAD D)" | grep '^file tests/data ')"
+want "HD3: pull stops without modifying the broken HEAD" pull_unchanged "$D"
+want "HD3: HEAD input-set integrity is checked at start" stops 1 'error: spec files do not match the contract:'
+
 # SH1  a: D c-A (a1) then a code-only commit (a2) ; main is a depth=1 clone of a
 pbase
 git checkout -q -b a; cond D c-A; DA=$(rec D); A1=$(c "a: D"); echo z > src/z.c; A2=$(c "a: code"); git checkout -q master
@@ -118,4 +129,20 @@ want "SH1: pull D stops, nothing changed" pull_unchanged "$D"
 want "SH1: fatal (128), as git is when it cannot judge (record 117)" test -n "$(stops 128 "fatal: '<c>' is beyond the shallow boundary of this clone" && echo y)"
 want "SH1: the state hint" test -n "$(grep "^hint: '[^']*' can be taken once this clone has its history down to the merge base with HEAD$" "$T/err")"
 want "SH1: no git command in the hints" no_git_hint
+# SS1  a fast-forward does not need a session, but a supplied invalid one still fails (5.1)
+pbase
+git checkout -q -b a; cond D c-A; DA=$(rec D); A1=$(c a1); git checkout -q master
+E=$(git rev-parse HEAD)
+fact "SS1: the introducing commit can fast-forward HEAD" is_ancestor "$E" "$A1"
+fact "SS1: a's version contains mine" contains "$DA" "$(recat HEAD D)"
+before=$(snapshot); run env AIT_SESSION=Sffffffffffff ait contract pull "$D"
+want "SS1: an invalid session stops without changing anything" test "$(snapshot)" = "$before"
+want "SS1: invalid session is fatal even without a request commit" stops 128 'fatal: no usable ait session:'
+run env AIT_SESSION=- ait contract pull "$D"
+want "SS1: no session is needed for a fast-forward" test "$rc" = 0 -a "$(git rev-parse HEAD)" = "$A1"
+before=$(snapshot); run env AIT_SESSION=Sffffffffffff ait contract pull "$D"
+want "SS1: already also rejects an invalid session without changing anything" test "$(snapshot)" = "$before"
+want "SS1: already cannot bypass session validity" stops 128 'fatal: no usable ait session:'
+run env AIT_SESSION=- ait contract pull "$D"
+want "SS1: already needs no session" test "$rc" = 0 -a "$(cat "$T/out")" = "already $D"
 done_testing

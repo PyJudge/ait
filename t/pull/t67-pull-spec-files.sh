@@ -734,4 +734,25 @@ for ROW in MD1 MD2; do
 	want "$ROW: one commit has HEAD and a1 as parents" parents_are "$h0" "$a1"
 done
 fact "MD1/MD2: the model restores mode and blob together" python3 "$AIT_DIR/spec/drafts/pull-criteria-runs/verify-v15-mode.py"
+# SF3  a discarded specification still conflicts against Git's later merge base (decision 37)
+sf3_init() { cond Y p0; rec Y >/dev/null; cond Q q0; rec Q >/dev/null; }
+pbase sf3_init
+sf3_head=$(git rev-parse HEAD)
+git checkout -q -b common; cond Y p1; rec Y >/dev/null; sf3_common=$(c common)
+git checkout -q -b a; cond Y p2; sf3_ya=$(rec Y); cond D d-A; rec D >/dev/null; sf3_a=$(c a1)
+git checkout -q -b b "$sf3_common"; sf3_yb=$(rec Y cancelled); cond Y p3; cond Q q-B; rec Q >/dev/null; sf3_b=$(c b1)
+git checkout -q master
+sf3_filtered=$(taken_out "$sf3_a" specs/y.yaml 100644 "$(at "$sf3_head" specs/y.yaml)")
+sf3_first=$(git commit-tree "$(mtree "$sf3_head" "$sf3_filtered")" -p "$sf3_head" -p "$sf3_filtered" -m intermediate)
+fact "SF3: a and b actually forked at the p1 version" test "$(git merge-base "$sf3_a" "$sf3_b")" = "$sf3_common"
+fact "SF3: the first classification base is main's p0" test "$(git merge-base "$sf3_head" "$sf3_a")" = "$sf3_head"
+fact "SF3: after excluding p2, the next Git base still has p1" test "$(git merge-base "$sf3_first" "$sf3_b")" = "$sf3_common" -a "$(at "$sf3_first" specs/y.yaml)" = "$(at "$sf3_head" specs/y.yaml)"
+fact "SF3: Git conflicts on p1 to p0 versus p1 to p3" test "$(codeconf "$sf3_first" "$sf3_b")" = specs/y.yaml
+ROW=SF3
+pull "$D" "$Q" "$Y"
+conflict_stop specs/y.yaml "$sf3_head" "$sf3_a" "$sf3_b"
+want "SF3: Y in the index is cancelled" test "$(git show ":.ait/$Y" 2>/dev/null | sed -n 's/^state //p')" = cancelled
+finish specs/y.yaml 'body: resolved'
+want "SF3: the resolution can be committed" test "$rc" = 0
+want "SF3: Y stays cancelled after resolution" test "$(state_of "$(recat HEAD Y)")" = cancelled
 done_testing

@@ -39,4 +39,16 @@ want "A4: the helper creates a commit instead of already" test "$(git rev-parse 
 want "A4: D is future" test "$(state_of "$(recat HEAD D)")" = future
 want "A4: D includes its former current version" contains "$(recat HEAD D)" "$d0"
 want "A4: a request is printed" grep -q '^request ' "$T/out"
+# HC1  a current empty amend still asks for a check (decision 36)
+DSTATE=current pbase
+d0=$(recat HEAD D); h0=$(git rev-parse HEAD)
+fact "HC1: D is current and its check is reported" test "$(state_of "$d0")" = current -a "$(git cat-file -p "$d0" | sed -n 's/^check //p' | cut -d ' ' -f 1)" = reported
+want "HC1: the check request leaves the repository unchanged" pull_unchanged "$D" amend "$D" -m why
+want "HC1: a current empty amend requires a check" test "$rc" = 1 -a "$(head -1 "$T/err" | cut -c 1-29)" = 'error: check results required:'
+want "HC1: a task and check files are printed" test -n "$(grep "^task $D:specs/d.yaml prompt$" "$T/out")" -a -n "$(grep '^check-request /' "$T/out")" -a -n "$(grep '^check-result /' "$T/out")"
+want "HC1: the hint adds force" grep -qF "ait contract pull $D amend $D --force -m <why>" "$T/err"
+want "HC1: no unusable -r hint" not grep -q -- '-r ' "$T/err"
+pull "$D" amend "$D" --force -m why
+want "HC1: force confirms unchanged reported pins without a commit" test "$rc" = 0 -a "$(git rev-parse HEAD)" = "$h0" -a "$(recat HEAD D)" = "$d0"
+want "HC1: after the check there is nothing to write" out_line "already $D"
 done_testing
