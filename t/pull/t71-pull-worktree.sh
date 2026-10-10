@@ -100,7 +100,7 @@ pbase
 echo 'body: edited by hand' > specs/d.yaml; E1=$(c "e1: plain edit of a pinned spec")
 fact "HD1: HEAD's D pins specs/d.yaml otherwise than HEAD has it" test "$(pinned HEAD D specs/d.yaml)" = "$(at init specs/d.yaml)" -a "$(at HEAD specs/d.yaml)" != "$(at init specs/d.yaml)"
 want "HD1: pull Q stops at 0, nothing changed" pull_unchanged "$Q"
-want "HD1: an error (HEAD's error, 5.10)" stops 1 "error: "
+want "HD1: HEAD's error, as 5.8 E_INCOMPLETE (v15 5.10)" stops 1 "error: spec files do not match the contract: "
 want "HD1: main's edit of specs/d.yaml is kept" test "$(cat specs/d.yaml)" = "body: edited by hand" -a "$(at HEAD specs/d.yaml)" = "$(git hash-object specs/d.yaml)"
 
 # SH1  a: D c-A (a1) then a code-only commit (a2) ; main is a depth=1 clone of a
