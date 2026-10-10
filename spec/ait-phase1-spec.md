@@ -902,7 +902,7 @@ git은 커밋을 보낼 때 조상을 모두 함께 보내므로 보내는 쪽�
   - `tree`: 확인할 tree의 OID. fulfill·`ait commit`이면 stage된 상태 T0, 관문이면 정규화된 후보 T다. 모든 파일을 꺼내려면 `top=$(git rev-parse --show-toplevel) && d=$(mktemp -d) && GIT_INDEX_FILE="$d/index" git -C "$top" read-tree TREE && GIT_INDEX_FILE="$d/index" git -C "$top" checkout-index -a --prefix="$d/tree/"`를 쓴다(index 파일은 git이 새로 만들게 둔다. 하위 디렉터리에서 실행해도 전부 꺼내도록 `-C`로 뿌리에서 실행한다).
   - `tasks`: 과제마다 `task`, `contract`, `role`, `consumer`(demand), `provider`, `engine`(`exec`·`prompt`), `body`. 범위 목록은 표시를 `,`로 이은 한 문자열이다. `=SCOPES`를 줬으면 그 범위다.
   - exec 과제면 이어서 `command`, `success`와, environment가 있으면 그 환경 정의 파일의 행들을 들여써서 `environment` 아래에 그대로 싣는다.
-  - 쓰기 규칙(확인 요청 파일과 결과 틀): 읽은 값이 쓴 값과 같도록 YAML의 규칙대로 쓴다. 문자열 값은 `"…"`이고 YAML의 이스케이프를 쓴다. 여러 행이 될 수 있는 문자열(`body`)은 `|` 블록 문자열이고, 앞의 공백이나 끝의 행바꿈은 표시(`|2`, `|-`, `|+`)로 지키며, 블록으로 담을 수 없는 값이면 `"…"`다. 문자열의 목록(`command`)은 flow list이고 원소도 `"…"`다. 정수 목록(`success`)은 flow list다. `tasks`는 블록 list이고 키보다 들여쓰지 않을 수 있다. 빈 값은 값을 쓰지 않는다.
+  - 쓰기 규칙(확인 요청 파일과 결과 틀): 읽은 값이 쓴 값과 같도록 YAML의 규칙대로 쓴다. 문자열 값은 `"…"`이고 YAML의 이스케이프를 쓴다. 여러 행이 될 수 있는 문자열(`body`)은 `|` 블록 문자열이고, 앞의 공백이나 끝의 행바꿈은 표시(`|2`, `|-`, `|+`)로 지킨다. 쓰는 쪽(ait-mini에서는 libyaml)이 블록으로 쓰지 않는 값(줄 끝 공백이 있는 값 등)은 `"…"`다. 문자열의 목록(`command`)은 flow list이고 원소도 `"…"`다. 정수 목록(`success`)은 flow list다. `tasks`는 블록 list이고 키보다 들여쓰지 않을 수 있다. 빈 값은 값을 쓰지 않는다.
 
 ```yaml
 input: "5d41402abc4b2a76b9719d911017c592ae2b1c3f"

@@ -9,6 +9,7 @@ extern const char *top, *gindex, *headref, *head, *gitdir, *commondir;
 extern char *git_error;		/* the first stderr line of the last git call, without git's "fatal: " or "error: " */
 extern char *git_cmd;		/* the subcommand of the last git call */
 char *git_failed(void);
+char *quoted(const char *s);
 extern size_t git_out_len;	/* the length of the last git output */
 
 /* ait.c: process, messages and the commands that are not requests */
@@ -29,11 +30,11 @@ int integrating(void);
 extern char agent[72], sid[16];
 
 /* record.c: trees, records and the judgements computed from them */
-struct entry { const char *path; char mode[8], oid[48]; };
+struct entry { const char *path; char mode[8], oid[48]; int ita; };
 struct tree { char oid[48]; size_t nr; struct entry *e; };
 struct tree *tree_load(const char *treeish);
 struct tree *head_tree(void);
-struct tree *index_load(void);
+struct tree *index_load(struct tree *noted);
 struct entry *tree_get(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
 const char *blob_text(const char *oid);
@@ -118,7 +119,7 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 void yaml(const char *text, struct string_list *kv, const char *what);
 void yaml_check(struct string_list *kv, const char *const *schema, const char *what, const char *hint);
 char *yline(struct string_list *kv, const char *key);
-size_t yat(struct string_list *kv, const char *key);
+void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size_t len, const char *with);
 const char *yget(struct string_list *kv, const char *key);
 struct string_list *def_get(struct tree *t, const char *path);
 

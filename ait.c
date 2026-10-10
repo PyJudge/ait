@@ -90,8 +90,9 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 	size_t i;
 	int code;
 
+	/* git's output as ait parses it, whatever the user's config would add to it */
 	strvec_pushl(&cmd.args, "git", "-c", "core.quotePath=false", "-c", "trailer.separators=:",
-		     "-c", "core.commentChar=#", NULL);
+		     "-c", "core.commentChar=#", "-c", "log.showSignature=false", NULL);
 	at_repository(&cmd.args);
 	strvec_pushv(&cmd.args, args->v);
 	if (index)
@@ -155,6 +156,8 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 		at_repository(&cat.args);
 		strvec_pushl(&cat.args, "cat-file", "--batch-command", NULL);
 		cat.in = cat.out = -1;
+		/* what NAME does not resolve to is the "missing" line; git's note on stderr is not ait's to show */
+		cat.no_stderr = 1;
 		if (start_command(&cat))
 			reject(128, NULL, "git failed: 'git cat-file': cannot run it");
 		/* the pipes are ait's alone, not for the git commands and hooks it runs later */
@@ -337,7 +340,8 @@ static int gone(const char *wt)
 	return access(wt, F_OK) || !string_list_has_string(worktrees(), wt);
 }
 
-static char *quoted(const char *s)
+/* S as one shell word, for the commands hints give (5.9a) */
+char *quoted(const char *s)
 {
 	struct strbuf sb = STRBUF_INIT;
 
@@ -586,7 +590,7 @@ static int cmd_init(int argc, const char **argv)
 	index_line(&info, "100644", line1(git_run("version 1\n", NULL, NULL, "hash-object -w --stdin")), ".ait/init");
 	if (!(tree = tree_with(t->oid, info.buf, NULL)))
 		reject(128, NULL, "%s", git_failed());
-	if (publish(tree, "[CONTRACT] ait init\n", index_load())) {
+	if (publish(tree, "[CONTRACT] ait init\n", index_load(tree_load(line1(git("write-tree")))))) {
 		const char *now = object("HEAD:.ait/init", 1, NULL, NULL);
 
 		if (!now || strcmp(now, "version 1\n"))
@@ -655,8 +659,9 @@ static int pre_push(void)
 		if (strspn(oid, "0") != 40 && object(xstrfmt("%s^{commit}", oid), 0, NULL, NULL))
 			validate_at(tree_load(oid));
 	}
+	/* 5.6: a message is one line */
 	if (*p)
-		reject(128, NULL, "bad pre-push input '%s'", p);
+		reject(128, NULL, "bad pre-push input '%.*s'", (int)strcspn(p, "\n"), p);
 	return 0;
 }
 

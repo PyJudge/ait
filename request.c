@@ -14,7 +14,7 @@ struct request {
 	struct state s;		/* every record keeps its HEAD version in ->old */
 	struct tree *ht, *v;	/* HEAD's tree and the tree judged */
 	struct tree *noted;	/* the tree of the index when the request began: what git commit would commit (5.5-1) */
-	struct tree *index;	/* the entries of the index then, as git read-tree compares them (5.5-1) */
+	struct tree *index;	/* the entries of the index then, intent-to-add ones marked, as git read-tree compares them */
 	int gate, fulfill, force, seq;
 	const char *result, *file;	/* -r and -F */
 	int has_msg;			/* -m or -F was given */
@@ -120,43 +120,59 @@ static char *quoted_paths(struct string_list *paths)
 /* this worktree is sparse as git takes it: core.sparseCheckout with its own patterns file (git-sparse-checkout(1)) */
 static int sparse(void)
 {
-	int rc;
+	int rc, gone;
+	char *patterns = line1(git_run(NULL, NULL, &gone, "rev-parse --path-format=absolute --git-path info/sparse-checkout"));
 
-	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool core.sparseCheckout")), "true") &&
-	       !access(line1(git("rev-parse --path-format=absolute --git-path info/sparse-checkout")), F_OK);
+	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool core.sparseCheckout")), "true") && !gone &&
+	       !access(patterns, F_OK);
 }
 
 /*
- * spec 5.5-4/5 by git's own commands. git read-tree -i -m O C moves the index
- * from O to C under git's index lock in one step, taking C's entry only where
- * the index still has O's and refusing everything when one was staged
- * otherwise (git v2.53.0 unpack-trees.c twoway_merge). O is C with, on the
- * paths C changed from H, the entries the index had when the request began
- * (INDEX, intent-to-add entries too), so nothing else is touched. Then .ait/ follows in the work tree,
- * apart from skip-worktree entries, as git checkout-index keeps them, and a
- * sparse worktree gets its patterns back. What is not done is warned about.
+ * spec 5.5-4, made before the commit is published so that nothing after it
+ * can fail but git's own steps: the paths H→T changes, and O, which is T
+ * with, on those paths, the entries the index has now (5.5-1). An
+ * intent-to-add entry is git's "not staged": on a path T leaves out, O
+ * leaves it out too, and git read-tree keeps it as git commit does.
  */
-static void follow(struct tree *h, struct tree *index, const char *c)
+static char *index_before(struct tree *h, struct tree *t, struct tree *index, struct string_list *paths)
 {
-	struct tree *ct = tree_load(c);
-	struct string_list paths = STRING_LIST_INIT_DUP, ait = STRING_LIST_INIT_DUP, rest = STRING_LIST_INIT_DUP;
-	struct string_list skipped = STRING_LIST_INIT_DUP, left = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct strbuf info = STRBUF_INIT;
-	char *o = NULL;
-	int fd = lock_worktree(top), rc = fd < 0 || !at(c), unset;
+	char *o;
 
-	tree_diff(h, ct, &paths);
-	for_each_string_list_item(item, &paths) {
+	tree_diff(h, t, paths);
+	for_each_string_list_item(item, paths) {
 		struct entry *was = tree_get(index, item->string);
 
+		if (was && was->ita && !tree_get(t, item->string))
+			was = NULL;
 		index_line(&info, was ? was->mode : "0", was ? was->oid : "0000000000000000000000000000000000000000",
 			   item->string);
-		string_list_append(starts_with(item->string, ".ait/") ? &ait : &rest, item->string);
 	}
-	if (!rc && paths.nr && !(o = tree_with(ct->oid, info.buf, NULL)))
-		rc = 1;
-	if (!rc && paths.nr)
+	if (paths->nr && !(o = tree_with(t->oid, info.buf, NULL)))
+		reject(128, NULL, "%s", git_failed());
+	return paths->nr ? o : NULL;
+}
+
+/*
+ * spec 5.5-4/5 by git's own commands, after C is published; each step only
+ * reports its failure. git read-tree -i -m O C moves the index from O to C
+ * under git's index lock in one step, taking C's entry only where the index
+ * still has O's and refusing everything when one was staged otherwise (git
+ * v2.53.0 unpack-trees.c twoway_merge). Then .ait/ follows in the work
+ * tree, apart from skip-worktree entries, git refreshes what it wrote, and a
+ * sparse worktree gets its patterns back. What is not done is warned about.
+ */
+static void follow(struct string_list *paths, const char *o, struct tree *ct, const char *c)
+{
+	struct string_list ait = STRING_LIST_INIT_DUP, rest = STRING_LIST_INIT_DUP;
+	struct string_list skipped = STRING_LIST_INIT_DUP, left = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	int fd = lock_worktree(top), rc = fd < 0 || !at(c), unset;
+
+	for_each_string_list_item(item, paths)
+		string_list_append(starts_with(item->string, ".ait/") ? &ait : &rest, item->string);
+	if (!rc && o)
 		git_run(NULL, NULL, &rc, "read-tree -i -m %s %s", o, c);
 	if (!rc && ait.nr)
 		string_list_split(&skipped, git_run(NULL, NULL, &unset, "ls-files -t -- .ait"), "\n", -1);
@@ -172,8 +188,10 @@ static void follow(struct tree *h, struct tree *index, const char *c)
 		if (bad)
 			string_list_append(&left, item->string);
 	}
-	if (!rc && ait.nr && sparse()) {
+	/* read-tree and checkout-index leave the entries without the files' stat data */
+	if (!rc && o)
 		git_run(NULL, NULL, &unset, "update-index -q --refresh");
+	if (!rc && ait.nr && sparse()) {
 		git_run(NULL, NULL, &unset, "sparse-checkout reapply");
 		if (unset)
 			warning("committed '%s' to '%s', but %s", c, headref, git_failed());
@@ -200,15 +218,18 @@ static void follow(struct tree *h, struct tree *index, const char *c)
 
 /*
  * spec 5.5: C is TREE on HEAD with MSG, and git's update-ref moves the branch R
- * from H to C or not at all (the compare-and-swap); no hook sees it (11.2).
- * Returns 1 when R moved meanwhile; other failures stop with git's reason.
+ * from HEAD to C or refuses (the CAS); then the index and work tree follow
+ * from INDEX, the entries noted when the request began. 1 when R moved meanwhile.
  */
 int publish(const char *tree, const char *msg, struct tree *index)
 {
-	char *c = line1(head ? git_run(msg, NULL, NULL, "commit-tree %s -p %s", tree, head) :
-			git_run(msg, NULL, NULL, "commit-tree %s", tree)), oid[48];
+	struct tree *t = tree_load(tree);
+	struct string_list paths = STRING_LIST_INIT_DUP;
+	char *o = index_before(head_tree(), t, index, &paths), *c, oid[48];
 	int rc;
 
+	c = line1(head ? git_run(msg, NULL, NULL, "commit-tree %s -p %s", tree, head) :
+		  git_run(msg, NULL, NULL, "commit-tree %s", tree));
 	git_run(NULL, NULL, &rc, "update-ref %s %s %s", headref, c, head ? head : "0000000000000000000000000000000000000000");
 	if (rc) {
 		char *why = git_failed();
@@ -217,7 +238,7 @@ int publish(const char *tree, const char *msg, struct tree *index)
 			return 1;
 		reject(128, NULL, "%s", why);
 	}
-	follow(head_tree(), index, c);
+	follow(&paths, o, t, c);
 	return 0;
 }
 
@@ -238,7 +259,7 @@ static void load(struct request *q)
 	q->ht = head_tree();
 	/* spec 5.5-1: the index as the request found it */
 	q->noted = tree_load(line1(git("write-tree")));
-	q->index = index_load();
+	q->index = index_load(q->noted);
 	state_load(&q->s, q->ht);
 }
 
@@ -560,6 +581,39 @@ static void apply(struct request *q, struct clause *c)
 }
 
 /*
+ * spec 8.4: a "|" block of the result file goes into the message without its
+ * trailing blank lines: a run of blank lines goes when what follows it is less
+ * indented than what is before it (the block ended), or nothing follows
+ */
+static void block_ends(struct strbuf *sb)
+{
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	struct strbuf out = STRBUF_INIT;
+	size_t i, j;
+	int before = 0;
+
+	string_list_split(&lines, sb->buf, "\n", -1);
+	for (i = 0; i < lines.nr; i = j) {
+		const char *l = lines.items[i].string;
+
+		for (j = i; j < lines.nr && !lines.items[j].string[strspn(lines.items[j].string, " ")]; j++)
+			;
+		if (j == i) {
+			strbuf_addf(&out, "%s\n", l);
+			before = strspn(l, " ");
+			j++;
+			continue;
+		}
+		if (j < lines.nr && (int)strspn(lines.items[j].string, " ") >= before)
+			for (; i < j; i++)
+				strbuf_addf(&out, "%s\n", lines.items[i].string);
+	}
+	strbuf_reset(sb);
+	strbuf_add(sb, out.buf, out.len);
+	strbuf_release(&out);
+}
+
+/*
  * spec 8.4: in the task values of a result file, a new contract's +SEQ becomes
  * its ID, read once and spliced from the last task back so the places hold
  */
@@ -577,8 +631,7 @@ static void rename_tasks(struct request *q, struct strbuf *sb)
 			continue;
 		for (i = 0; i < q->s.nr; i++)
 			if (!q->s.r[i]->old && q->s.r[i]->seq && q->s.r[i]->seq == atoi(t + 1))
-				strbuf_splice(sb, yat(&kv, xstrfmt("results.%d.task", n)), strcspn(t, ":"),
-					      q->s.r[i]->id, strlen(q->s.r[i]->id));
+				yreplace(sb, &kv, xstrfmt("results.%d.task", n), strcspn(t, ":"), q->s.r[i]->id);
 	}
 }
 
@@ -1121,11 +1174,12 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	text_or_die(text, q->result);
 	if (yaml_parse(text->buf, &kv, q->result, &err))
 		reject(128, hint, "%s", err);
+	/* 8.4: the subset of 2.5.1, its unknown keys and kinds too, then the input */
+	yaml_check(&kv, schema, q->result, hint);
 	if (!yget(&kv, "input"))
 		reject(128, hint, "bad format: '%s': no 'input'", q->result);
 	if (strcmp(yget(&kv, "input"), input))
 		return 0;
-	yaml_check(&kv, schema, q->result, hint);
 	for (n = 0; (t = yget(&kv, xstrfmt("results.%d.task", n))); n++) {
 		const char *outcome = yget(&kv, xstrfmt("results.%d.outcome", n));
 		const char *basis = yget(&kv, xstrfmt("results.%d.basis", n));
@@ -1400,6 +1454,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 		return;
 	}
 	if (results->len) {
+		block_ends(results);
 		strbuf_complete_line(results);
 		hides(results->buf);
 		strbuf_addf(&q->msg, "\n%s", results->buf);
@@ -1475,7 +1530,7 @@ static int finish(struct request *q)
 		report(q, req, res, input && q->tasks.nr);
 		if (q->first.code)
 			reject(q->first.code, q->first.hint, "%s", q->first.msg);
-		add_hint(q, xstrfmt("check each task, fill '%s', and rerun with -r '%s'", res, res));
+		add_hint(q, xstrfmt("check each task, fill '%s', and rerun with -r %s", res, quoted(res)));
 		add_hint(q, "if it is trivial, add --force instead (recorded as forced)");
 		next_hints(q, &q->conf);
 		reject(1, hints(q), "check results required: %d task(s)", (int)q->tasks.nr);
@@ -1483,7 +1538,7 @@ static int finish(struct request *q)
 	if (failed.len) {
 		/* 5.8 E_CHECK_FAILED: an unknown task is checked again elsewhere, a failed one is fixed */
 		if (failing.nr > fails.nr) {
-			add_hint(q, xstrfmt("check it where its environment is available (see '%s') and rerun with -r '%s'", req, res));
+			add_hint(q, xstrfmt("check it where its environment is available (see '%s') and rerun with -r %s", req, quoted(res)));
 			add_hint(q, "if it is trivial, add --force (recorded as forced)");
 		}
 		fix_hints(q, &fails);
@@ -1613,7 +1668,7 @@ int cmd_fulfill(int argc, const char **argv)
 
 /*
  * why PATH, there in the work tree, is not a file of it (7.3.3), or NULL: it is
- * reached through a symlink, or is a directory; what the file is, git says
+ * reached through a symlink, or is a directory, a FIFO or the like
  */
 static const char *not_a_file(const char *path)
 {
@@ -1623,7 +1678,9 @@ static const char *not_a_file(const char *path)
 	for (slash = strchr(path, '/'); slash; slash = strchr(slash + 1, '/'))
 		if (!lstat(xstrfmt("%s/%.*s", top, (int)(slash - path), path), &st) && S_ISLNK(st.st_mode))
 			return "is beyond a symbolic link";
-	return !lstat(xstrfmt("%s/%s", top, path), &st) && S_ISDIR(st.st_mode) ? "is not a regular file" : NULL;
+	/* a symlink is staged as git stages it, and judged by its mode then */
+	return !lstat(xstrfmt("%s/%s", top, path), &st) && !S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode) ?
+	       "is not a regular file" : NULL;
 }
 
 /* two versions of a path are the same: both absent, or the same mode and blob */
@@ -1657,7 +1714,8 @@ static struct tree *stage_files(struct request *q)
 		reject(128, NULL, "%s", git_failed());
 	u = tree_load(tree);
 	for_each_string_list_item(item, &q->files) {
-		struct entry *e = tree_get(u, item->string), *staged = tree_get(q->index, item->string);
+		/* the index as git commit takes it: an intent-to-add entry is not staged */
+		struct entry *e = tree_get(u, item->string), *staged = tree_get(q->noted, item->string);
 
 		/* 2.1.4: a spec file is a regular file */
 		if (!e || (strcmp(e->mode, "100644") && strcmp(e->mode, "100755")))

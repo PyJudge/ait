@@ -19,7 +19,7 @@ run git push origin "HEAD^{/bad commit}:refs/heads/spaced"
 check "a local name with spaces does not get past pre-push" sh -c "[ $rc != 0 ] && ! git ls-remote --exit-code origin refs/heads/spaced >/dev/null"
 git reset -q --hard "$H"
 
-# 5.4: trailers as git's parser reads them; a folded value is unfolded and is no check
+# 5.4: trailers as the parser of 5.4 reads them; a folded value is kept as written and is no check
 tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out"; O=$(new_id)
 git rm -q src/stock.c && tick && git commit -q -m gone 2>/dev/null
 tick; git commit -q --allow-empty -m "$(printf 'note\n\nAit-Check: see\n  the other branch')"

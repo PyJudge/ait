@@ -28,6 +28,7 @@ static void listing(struct tree *t, char *p, const char *fmt)
 		e = &t->e[t->nr++];
 		sscanf(p, fmt, e->mode, e->oid);
 		e->path = strchr(p, '\t') + 1;
+		e->ita = 0;
 	}
 	QSORT(t->e, t->nr, cmp_entry);
 }
@@ -61,15 +62,18 @@ struct tree *tree_load(const char *treeish)
 }
 
 /*
- * The entries of the index as they are, intent-to-add ones too (with the
- * empty blob, as git lists them), which git write-tree leaves out; it has no
- * tree ID. git read-tree -m compares the index with these (spec 5.5-1, 5.5-4).
+ * The entries of the index as they are (spec 5.5-1), which git read-tree -m
+ * compares with: intent-to-add ones too, listed by git with the empty blob
+ * and marked here as what NOTED, the index's write-tree, leaves out. No tree ID.
  */
-struct tree *index_load(void)
+struct tree *index_load(struct tree *noted)
 {
 	struct tree *t = xcalloc(1, sizeof(*t));
+	size_t i;
 
 	listing(t, git("ls-files -s -z"), "%7s %47s");
+	for (i = 0; i < t->nr; i++)
+		t->e[i].ita = !tree_get(noted, t->e[i].path);
 	return t;
 }
 
@@ -905,8 +909,9 @@ char *pins(struct record *r)
 }
 
 /*
- * every Ait-Check value in HEAD's history as git's trailer parser gives it (5.4),
- * a folded one unfolded, with the commit that holds it as util; read once.
+ * every Ait-Check value in HEAD's history as the parser of 5.4 gives it (its
+ * values as written, so a folded one is no check), with the commit that holds
+ * it as util; read once.
  * "COMMIT NUL KEY \1 VALUE NUL ... NUL" per commit: the key is kept, since a
  * value alone cannot tell an empty value from none, and no value holds NUL
  */
@@ -918,7 +923,7 @@ static struct string_list *check_trailers(void)
 
 	if (loaded++ || !head)
 		return &values;
-	p = git("log -z --format=%H%x00%(trailers:key=Ait-Check,unfold,separator=%x00,key_value_separator=%x01) %s", head);
+	p = git("log -z --format=%H%x00%(trailers:key=Ait-Check,separator=%x00,key_value_separator=%x01) %s", head);
 	/* an item always holds \1, a commit's ID never; an empty field ends a commit without trailers */
 	for (end = p + git_out_len; p < end; p += strlen(p) + 1)
 		if (strchr(p, '\x01') && commit)
@@ -998,8 +1003,8 @@ static int same_pins(const char *text, struct record *r)
  * with the pins it has now: going back from HEAD while the commit holds R current
  * with these pins and R is unverified there, the last such commit. Verified at C
  * is what unverified() says at HEAD: a commit with the check is C or an ancestor
- * of C, and C's tree has what the pins name. NULL when the 100 commits ait looks
- * at end before that.
+ * of C, and C's tree has what the pins name. Each commit's record is looked up
+ * by itself, and a tree is read only where a check was confirmed.
  */
 const char *unverified_since(struct record *r)
 {
@@ -1018,18 +1023,19 @@ const char *unverified_since(struct record *r)
 					  "\n", -1);
 		}
 	string_list_sort(&confirmed);
-	string_list_split(&walk, git("log --first-parent -n 100 --format=%H %s", head), "\n", -1);
+	string_list_split(&walk, git("log --first-parent --format=%H %s", head), "\n", -1);
 	for (i = 0; i < walk.nr && *walk.items[i].string; i++) {
-		struct tree *t = tree_load(walk.items[i].string);
-		const char *there = blob_at(t, xstrfmt(".ait/%s", r->id));
+		const char *c = walk.items[i].string;
+		char there[48];
 
 		/* 9.1: the same pins (provider and file lines) of a current contract; prev alone is no change */
-		if (!there || (strcmp(there, record) && !same_pins(blob_text(there), r)) ||
-		    (string_list_has_string(&confirmed, walk.items[i].string) && !off_pins(r, t)))
+		if (!object(xstrfmt("%s:.ait/%s", c, r->id), 0, there, NULL) ||
+		    (strcmp(there, record) && !same_pins(blob_text(there), r)) ||
+		    (string_list_has_string(&confirmed, c) && !off_pins(r, tree_load(c))))
 			return since;
-		since = walk.items[i].string;
+		since = c;
 	}
-	return walk.nr > 100 ? NULL : since;
+	return since;
 }
 
 /* spec 2.5.2: the input KEY of the definition DEF, parsed in KV, is a PATH of 3.1 */
@@ -1120,8 +1126,9 @@ int read_text(struct strbuf *sb, const char *path)
  */
 struct yval {
 	char *s;
-	size_t at;
-	int line;
+	size_t start, at, end;	/* where the node starts, where the value's text starts, where the node ends */
+	int line, literal;	/* LITERAL: the text from AT spells the value as it is */
+	int plain;
 	char kind;	/* 'l' a list, 'm' a map, '?' a key with nothing under it, 0 a scalar */
 };
 
@@ -1140,10 +1147,10 @@ static char *yaml_path(const char *path, const char *key)
 	return strbuf_detach(&sb, NULL);
 }
 
-/* the byte offset of the character MARK (libyaml counts characters) */
+/* the byte offset of the character MARK (libyaml counts characters, after a byte order mark) */
 static size_t yaml_byte(const char *text, yaml_mark_t mark)
 {
-	const char *p = text;
+	const char *p = text + (starts_with(text, "\xef\xbb\xbf") ? 3 : 0);
 	size_t n = 0;
 
 	for (; *p && (n < mark.index || ((unsigned char)*p & 0xc0) == 0x80); p++)
@@ -1164,13 +1171,12 @@ static const char *yaml_outside(yaml_event_t *e, int docs)
 		       e->data.document_start.tag_directives.start != e->data.document_start.tag_directives.end ?
 		       "a directive" : NULL;
 	case YAML_SCALAR_EVENT:
-		return e->data.scalar.anchor ? "an anchor" :
-		       !e->data.scalar.plain_implicit && !e->data.scalar.quoted_implicit ? "a tag" :
+		return e->data.scalar.anchor ? "an anchor" : e->data.scalar.tag ? "a tag" :
 		       e->data.scalar.style == YAML_FOLDED_SCALAR_STYLE ? "a folded block" : NULL;
 	case YAML_SEQUENCE_START_EVENT:
-		return e->data.sequence_start.anchor ? "an anchor" : !e->data.sequence_start.implicit ? "a tag" : NULL;
+		return e->data.sequence_start.anchor ? "an anchor" : e->data.sequence_start.tag ? "a tag" : NULL;
 	case YAML_MAPPING_START_EVENT:
-		return e->data.mapping_start.anchor ? "an anchor" : !e->data.mapping_start.implicit ? "a tag" : NULL;
+		return e->data.mapping_start.anchor ? "an anchor" : e->data.mapping_start.tag ? "a tag" : NULL;
 	default:
 		return NULL;
 	}
@@ -1244,11 +1250,14 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 		v = xcalloc(1, sizeof(*v));
 		v->s = xstrdup(e->type == YAML_SCALAR_EVENT ? (char *)e->data.scalar.value : "");
 		v->kind = yaml_kind(e);
+		v->plain = e->type == YAML_SCALAR_EVENT && e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE;
 		v->line = e->start_mark.line + 1;
+		v->start = yaml_byte(text, e->start_mark);
+		v->end = yaml_byte(text, e->end_mark);
 		/* a quoted scalar's text starts after its quote */
-		v->at = yaml_byte(text, e->start_mark) + (e->type == YAML_SCALAR_EVENT &&
-			(e->data.scalar.style == YAML_SINGLE_QUOTED_SCALAR_STYLE ||
-			 e->data.scalar.style == YAML_DOUBLE_QUOTED_SCALAR_STYLE));
+		v->at = v->start + (e->type == YAML_SCALAR_EVENT && (e->data.scalar.style == YAML_SINGLE_QUOTED_SCALAR_STYLE ||
+								      e->data.scalar.style == YAML_DOUBLE_QUOTED_SCALAR_STYLE));
+		v->literal = !strncmp(text + v->at, v->s, strlen(v->s));
 		string_list_append(kv, path)->util = v;
 	}
 	if (e->type == YAML_SCALAR_EVENT)
@@ -1273,9 +1282,13 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 	size_t line = 0;
 
 	*err = NULL;
-	/* 2.5.1: UTF-8 and LF; where a tab may stand is YAML's, for libyaml to judge */
-	if (!is_utf8(text) || strchr(text, '\r')) {
-		*err = xstrfmt("bad format: '%s': %s", what, is_utf8(text) ? "a CR" : "not UTF-8");
+	/*
+	 * 2.5.1: UTF-8, and LF the only line break; libyaml takes CR, NEL, LS and
+	 * PS as line breaks too (YAML 1.1). Where a tab may stand is YAML's.
+	 */
+	if (!is_utf8(text) || strchr(text, '\r') || strstr(text, "\xc2\x85") || strstr(text, "\xe2\x80\xa8") ||
+	    strstr(text, "\xe2\x80\xa9")) {
+		*err = xstrfmt("bad format: '%s': %s", what, is_utf8(text) ? "a line break other than LF" : "not UTF-8");
 		return -1;
 	}
 	yaml_parser_initialize(&parser);
@@ -1314,16 +1327,47 @@ const char *yget(struct string_list *kv, const char *key)
 	return item ? ((struct yval *)item->util)->s : NULL;
 }
 
-/* where the value of KEY starts in the parsed text */
-size_t yat(struct string_list *kv, const char *key)
+/*
+ * In TEXT, which KV was parsed from, the first LEN bytes of KEY's value become
+ * WITH: in place where the text spells the value as it is, else the scalar is
+ * written anew as "..." (its line breaks after it kept). Replacing from the
+ * last value back keeps the places of the others.
+ */
+void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size_t len, const char *with)
 {
-	return ((struct yval *)unsorted_string_list_lookup(kv, key)->util)->at;
+	struct yval *v = unsorted_string_list_lookup(kv, key)->util;
+	struct strbuf sb = STRBUF_INIT;
+	const char *c;
+	size_t end = v->end;
+
+	if (v->literal) {
+		strbuf_splice(text, v->at, len, with, strlen(with));
+		return;
+	}
+	while (end > v->start && text->buf[end - 1] == '\n')
+		end--;
+	strbuf_addch(&sb, '"');
+	for (c = xstrfmt("%s%s", with, v->s + len); *c; c++)
+		if (*c == '"' || *c == '\\')
+			strbuf_addf(&sb, "\\%c", *c);
+		else if ((unsigned char)*c < 0x20)
+			strbuf_addf(&sb, "\\x%02x", (unsigned char)*c);
+		else
+			strbuf_addch(&sb, *c);
+	strbuf_addch(&sb, '"');
+	strbuf_splice(text, v->start, end - v->start, sb.buf, sb.len);
 }
 
 /* " in line N" of the value of KEY, for E_FORMAT (5.8: the file and the line) */
 char *yline(struct string_list *kv, const char *key)
 {
 	return xstrfmt(" in line %d", ((struct yval *)unsorted_string_list_lookup(kv, key)->util)->line);
+}
+
+/* 2.5.1: a decimal integer, as YAML 1.2 reads one: a plain scalar of digits, no leading zero */
+static int decimal(struct yval *v)
+{
+	return v->plain && *v->s && !v->s[strspn(v->s, "0123456789")] && (*v->s != '0' || !v->s[1]);
 }
 
 /*
@@ -1354,7 +1398,7 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 			reject(128, hint, "bad format: '%s': unknown key '%s' in line %d", what, item->string, v->line);
 		/* a key with nothing under it is an empty list, map or scalar; "" is a scalar only */
 		if (strchr("lm", kind) ? v->kind != kind && v->kind != '?' :
-		    (v->kind && v->kind != '?') || (kind == 'i' && (!*v->s || v->s[strspn(v->s, "0123456789")])))
+		    (v->kind && v->kind != '?') || (kind == 'i' && !decimal(v)))
 			reject(128, hint, "bad format: '%s': bad value of '%s' in line %d", what, item->string, v->line);
 	}
 }

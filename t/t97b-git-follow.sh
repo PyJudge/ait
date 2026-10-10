@@ -85,11 +85,16 @@ tick; expect_ok "the inputs git stages" ait offer src/stock.c specs/f.yaml --for
 check "are staged with it" git cat-file -e HEAD:tests/n.sh
 git config --unset filter.un.clean; rm -f .gitattributes specs/f.yaml tests/n.sh; git reset -q --hard "$H"
 
-# 5.5-1: the index is read with its intent-to-add entries, which git write-tree leaves out
+# 5.5-1 and 7.3.3: an intent-to-add entry is git's "not staged"; the index takes the committed file
 echo 'body: new' > specs/n.yaml && git add -N specs/n.yaml
-tick; expect_err "an intent-to-add spec file is not staged whole" E_INCOMPLETE ait future offer src/stock.c specs/n.yaml -m o
-check "says so" err_has "'specs/n.yaml' is partly staged"
+tick; expect_ok "an intent-to-add spec file" ait future offer src/stock.c specs/n.yaml -m o
+check "is committed and the index follows" sh -c "[ ! -s '$T/err' ] && [ -z \"\$(git status --porcelain)\" ]"
 git reset -q --hard "$H"; rm -f specs/n.yaml
+# and a code path the commit leaves out keeps its intent-to-add entry, as git commit keeps it
+git rm -q --cached src/order.c && git add -N src/order.c
+tick; run ait commit -m gone
+check "the intent-to-add entry stays" sh -c "[ $rc = 0 ] && git status --porcelain | grep -qx ' A src/order.c'"
+git reset -q --hard "$H"
 
 # 5.8: git's stderr line goes into ait's message without git's own "error: "; E_GIT names the git command
 mkdir real && echo 'body: x' > real/s.yaml && ln -s real link && git add real link && tick && git commit -q --no-verify -m link
