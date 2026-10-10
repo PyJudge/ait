@@ -151,4 +151,12 @@ git reset -q --hard "$H"
 result '  basis: ok\n'
 sed 's/^input: .*/input: 0123456789012345678901234567890123456789/; s/^  outcome: pass$/  outcome: [pass]/' "$T/r.yaml" > "$T/s.yaml"
 bad E_NEEDS_RESULTS "a stale result with a list as outcome" ait offer src/stock.c specs/pass.yaml -m o -r "$T/s.yaml"
+
+# 5.4: ait's trailer keys are read and written as they are, whatever trailer.<token>.key says (user decision)
+git config trailer.ait-check.key X-Check
+tick; expect_ok "a request with a check under a trailer alias" ait offer src/stock.c specs/pass.yaml --force -m o
+O=$(new_id)
+run ait todo $O
+check "and its check is read" sh -c "! grep -q 'unverified yes' '$T/out'"
+git config --unset trailer.ait-check.key; git reset -q --hard "$H"
 done_testing

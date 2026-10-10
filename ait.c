@@ -92,7 +92,10 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 
 	/* git's output as ait parses it, whatever the user's config would add to it or recode it to */
 	strvec_pushl(&cmd.args, "git", "-c", "core.quotePath=false", "-c", "trailer.separators=:",
-		     "-c", "core.commentChar=#", "-c", "log.showSignature=false", "-c", "i18n.logOutputEncoding=UTF-8", NULL);
+		     "-c", "core.commentChar=#", "-c", "log.showSignature=false", "-c", "i18n.logOutputEncoding=UTF-8",
+		     /* ait's trailer keys as they are, whatever alias trailer.<token>.key gives them (user decision) */
+		     "-c", "trailer.Ait-Check.key=Ait-Check", "-c", "trailer.Ait-Request.key=Ait-Request",
+		     "-c", "trailer.Ait-Agent.key=Ait-Agent", "-c", "trailer.Ait-Session.key=Ait-Session", NULL);
 	at_repository(&cmd.args);
 	strvec_pushv(&cmd.args, args->v);
 	if (index)
