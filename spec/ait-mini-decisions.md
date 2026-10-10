@@ -17,7 +17,7 @@
 11. **libyaml의 오류 문구를 그대로 씀.** 선택. `bad format: 'FILE': <libyaml의 problem> in line N`. 부분집합 밖의 것(alias, anchor, tag, 지시, 둘째 문서, `>` 블록, scalar가 아닌 키, map이 아닌 문서, 16단 넘는 중첩, 중복 키)은 ait 문구다.
 12. **확인 요청·결과 틀의 모양이 libyaml emitter의 모양이 됨.** "표준 escape"와 "libyaml 동봉"(사용자 결정)에서 도출. `tasks`/`results` list는 들여쓰지 않고, body는 값에 맞는 `|`·`|-`·`|2` 표시를 붙이며, 결과 틀의 `input`도 `"…"`다. spec 8.2의 규칙과 예를 이렇게 고쳤다.
 13. **결과 틀의 안내 주석을 문서 앞에 둠.** 선택. emitter는 주석을 쓰지 못하므로, 예전처럼 `input`과 `results` 사이가 아니라 맨 앞에 둔다.
-14. **문서 하나의 `---`·`...` 표시를 받음(2.5.1에 적음).** "libyaml 동봉·표준 escape"(사용자 결정)에서 도출. emitter는 끝 행바꿈을 지키는 `|+` body 뒤에 `...`를 쓰므로, 받지 않으면 ait가 쓴 파일을 ait가 거절한다. 지시와 둘째 문서는 그대로 막는다.
+14. **문서 하나의 `---`·`...` 표시를 받음(2.5.1에 적음).** 선택. `...`를 받아야 하는 것은 "libyaml 동봉·표준 escape"(사용자 결정)에서 도출되지만, 입력의 `---`까지 받는 것은 YAML 표준을 따른 선택이다. emitter는 끝 행바꿈을 지키는 `|+` body 뒤에 `...`를 쓰므로, 받지 않으면 ait가 쓴 파일을 ait가 거절한다. 지시와 둘째 문서는 그대로 막는다.
 15. **git의 stderr 행은 git의 `fatal: `·`error: `를 떼고 ait 문구 안에 넣음.** 선택. ait가 제 접두어를 붙이므로 `error: … error: …`로 겹치지 않게 한다. E_GIT은 5.8 표의 "git 명령과 그 stderr 첫 행"대로 `fatal: git failed: 'git SUB': 이유`다. ait가 직접 만드는 E_GIT(`cat-file`이 멈춤, tree가 아님)도 이 모양이다.
 16. **시작 때의 index는 두 사실로 읽음.** 5.5-1에서 도출. 커밋할 tree(T0)는 `git write-tree`(git commit처럼 intent-to-add를 뺀다), index 항목은 `git ls-files -s`(intent-to-add도 빈 blob으로 든다)다. 부분 stage 판정과 follow의 O는 index 항목으로 한다. 그래서 `git add -N`한 명세 파일은 예전처럼 "partly staged"다.
 17. **명세 정의는 git이 stage한 blob에서 읽음.** 7.3.3("git이 stage하는 대로")과 2.1.4에서 도출. 그래서 clean filter를 거친 내용의 inputs를 따르고, 디렉터리인 정의는 E_READ가 아니라 E_INCOMPLETE다.
