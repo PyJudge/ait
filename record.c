@@ -99,9 +99,9 @@ struct tree *head_tree(void)
 
 const char *blob_at(struct tree *t, const char *path)
 {
-	struct entry *e = tree_get(t, path);
+	struct entry *e = file_entry(t, path);
 
-	return e && strcmp(e->mode, "040000") && strcmp(e->mode, "160000") ? e->oid : NULL;
+	return e && strcmp(e->mode, "160000") ? e->oid : NULL;
 }
 
 /* the text of a blob, or NULL when it holds a NUL and so is not text; each blob is read once */
@@ -260,14 +260,6 @@ int undertaken(struct record *l)
 	return *l->id == 'u' && !l->bad && in_state(l, "undertaken");
 }
 
-/* the other end of L when L is a readable undertaken link with R at one end, else NULL */
-struct record *partner(struct state *s, struct record *l, struct record *r)
-{
-	if (!l || !undertaken(l) || (link_end(s, l, 0) != r && link_end(s, l, 1) != r))
-		return NULL;
-	return link_end(s, l, link_end(s, l, 0) == r);
-}
-
 int is_current(struct record *r)
 {
 	return *r->id != 'u' && in_state(r, "current");
@@ -364,6 +356,14 @@ struct record *record_copy(struct record *r)
 struct record *link_end(struct state *s, struct record *l, int offer)
 {
 	return state_get(s, offer ? l->id + 24 : xstrndup(l->id + 10, 13));
+}
+
+/* the other end of L when L is a readable undertaken link with R at one end, else NULL */
+struct record *partner(struct state *s, struct record *l, struct record *r)
+{
+	if (!l || !undertaken(l) || (link_end(s, l, 0) != r && link_end(s, l, 1) != r))
+		return NULL;
+	return link_end(s, l, link_end(s, l, 0) == r);
 }
 
 /* spec 2.2.1: a stored record reads back as exactly its canonical text */
@@ -853,15 +853,6 @@ char *reopen_hint(struct state *s, struct record *k)
 	return xstrfmt("to change '%s' without a check, reopen it: 'ait %s -m <why>'", k->id, reopen_clauses(s, k, NULL));
 }
 
-/* the provider of R can be found in T: each scope that names a file is one there (spec 1.5c, 7.7.3-4) */
-int code_found(struct record *r, struct tree *t)
-{
-	struct string_list missing = STRING_LIST_INIT_DUP;
-
-	missing_code(r, t, &missing);
-	return !missing.nr;
-}
-
 /* the scopes of R's provider whose file T does not have, "new:PATH" ones too; "DIR/" and "/" are no file (1.5c) */
 void missing_code(struct record *r, struct tree *t, struct string_list *out)
 {
@@ -870,6 +861,15 @@ void missing_code(struct record *r, struct tree *t, struct string_list *out)
 	for_each_string_list_item(item, &r->f[PROVIDER])
 		if (!ends_with(scope_path(item->string), "/") && !blob_at(t, scope_path(item->string)))
 			string_list_append(out, item->string);
+}
+
+/* the provider of R can be found in T: each scope that names a file is one there (spec 1.5c, 7.7.3-4) */
+int code_found(struct record *r, struct tree *t)
+{
+	struct string_list missing = STRING_LIST_INIT_DUP;
+
+	missing_code(r, t, &missing);
+	return !missing.nr;
 }
 
 /* spec 1.5b: the change A to B touches the provider of current R, found in A */

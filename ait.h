@@ -30,8 +30,17 @@ void write_state(const char *path, const char *text);
 int integrating(void);
 
 /* record.c: trees as git lists them; the index as git read-tree compares it */
-struct entry { const char *path; char mode[8], oid[48]; int ita; };	/* ita: an intent-to-add index entry */
-struct tree { char oid[48]; size_t nr; struct entry *e; };
+struct entry {
+	const char *path;
+	char mode[8];
+	char oid[48];
+	int ita;		/* an intent-to-add index entry */
+};
+struct tree {
+	char oid[48];
+	size_t nr;
+	struct entry *e;
+};
 struct tree *tree_load(const char *treeish);
 struct tree *head_tree(void);
 struct tree *index_load(struct tree *noted);
@@ -58,7 +67,11 @@ struct record {
 	int seq, recheck;
 	int clause;			/* 1 + the helper clause that made it */
 };
-struct state { size_t nr, alloc; struct record **r; };
+struct state {
+	size_t nr;
+	size_t alloc;
+	struct record **r;
+};
 void state_load(struct state *s, struct tree *t);
 struct record *state_get(struct state *s, const char *id);
 struct record *state_add(struct state *s, const char *id);
@@ -79,7 +92,14 @@ struct record *link_end(struct state *s, struct record *l, int offer);
 struct record *partner(struct state *s, struct record *l, struct record *r);
 
 /* record.c: validity (5.9, 5.10); a failed check: exit code, porcelain word, hint, message, and K (and O for 5.9 d) */
-struct verdict { int code; const char *word; char *hint, *msg; struct record *k, *o; };
+struct verdict {
+	int code;
+	const char *word;
+	char *hint;
+	char *msg;
+	struct record *k;
+	struct record *o;
+};
 int check_state(struct state *s, struct tree *t, struct verdict *v);
 void validate(struct state *s, struct tree *t);
 void validate_at(struct tree *t);

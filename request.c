@@ -31,7 +31,7 @@ struct request {
 	struct string_list renamed;	/* "results.N.task" -> its value with +SEQ made the new ID (8.4) */
 	struct string_list scoped;	/* IDs given with =SCOPES */
 	struct string_list selected;	/* the promises fulfill was asked to keep */
-	struct string_list conf;	/* the check set, ID -> record */
+	struct string_list check_set;	/* the check set, ID -> record */
 	struct string_list missing;	/* the check set without code to check */
 	struct string_list tasks;	/* "CONTRACT:DEF" -> record */
 	struct string_list hints;
@@ -47,7 +47,7 @@ struct request {
 
 #define REQUEST_INIT { .msg = STRBUF_INIT, .files = STRING_LIST_INIT_DUP, .declared = STRING_LIST_INIT_DUP, \
 	.results = STRING_LIST_INIT_DUP, .renamed = STRING_LIST_INIT_DUP, .scoped = STRING_LIST_INIT_DUP, \
-	.selected = STRING_LIST_INIT_DUP, .conf = STRING_LIST_INIT_DUP, .missing = STRING_LIST_INIT_DUP, \
+	.selected = STRING_LIST_INIT_DUP, .check_set = STRING_LIST_INIT_DUP, .missing = STRING_LIST_INIT_DUP, \
 	.tasks = STRING_LIST_INIT_DUP, .hints = STRING_LIST_INIT_DUP, .carried = STRING_LIST_INIT_DUP, \
 	.mixed = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
 
@@ -442,13 +442,19 @@ static void scope_list(struct string_list *out, const char *list, struct tree *t
 	}
 }
 
+/* V is the lone "-" that keeps what a clause's contract has (7.3.1) */
+static int keeps(const char *v)
+{
+	return v && !strcmp(v, "-");
+}
+
 /* a helper's scope argument, pinned at HEAD (spec 3.3); "-" keeps the old one */
 static void scopes(struct request *q, struct record *r, enum key k, const char *list)
 {
 	struct string_list vals = STRING_LIST_INIT_DUP;
 	int future = in_state(r, "future");
 
-	if (strcmp(list, "-")) {
+	if (!keeps(list)) {
 		scope_list(&vals, list, q->ht, q->index, future || k == CONSUMER, future && k == PROVIDER);
 		r->f[k] = vals;
 	}
@@ -460,7 +466,7 @@ static void defs(struct request *q, struct record *r, const char *list)
 	struct string_list parts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
-	if (!strcmp(list, "-"))
+	if (keeps(list))
 		return;
 	string_list_split(&parts, list, ",", -1);
 	string_list_clear(&r->f[FILES], 0);
@@ -503,12 +509,6 @@ static int alias_used(struct request *q, const char *alias)
 		if (q->cl[i].alias && !strcmp(q->cl[i].alias, alias))
 			return 1;
 	return 0;
-}
-
-/* V is the lone "-" that keeps what a clause's contract has (7.3.1) */
-static int keeps(const char *v)
-{
-	return v && !strcmp(v, "-");
 }
 
 /* the shapes of a clause's arguments (3.1-3.2), before any tree is read (5.13-1) */
@@ -1384,11 +1384,11 @@ static void check_set(struct request *q)
 			repin(r, PROVIDER, q->v, 1);
 		}
 		if (checked(q, r))
-			string_list_append(&q->conf, r->id)->util = r;
+			string_list_append(&q->check_set, r->id)->util = r;
 	}
-	string_list_sort(&q->conf);
+	string_list_sort(&q->check_set);
 	for_each_string_list_item(item, &q->scoped)
-		if (!unsorted_string_list_has_string(&q->conf, item->string))
+		if (!unsorted_string_list_has_string(&q->check_set, item->string))
 			reject(128, NULL, "bad scope: '%s' is not checked by this command", item->string);
 }
 
@@ -1397,7 +1397,7 @@ static void code_present(struct request *q)
 {
 	struct string_list_item *item, *sc;
 
-	for_each_string_list_item(item, &q->conf) {
+	for_each_string_list_item(item, &q->check_set) {
 		struct string_list write = STRING_LIST_INIT_DUP, stage = STRING_LIST_INIT_DUP, missing = STRING_LIST_INIT_DUP;
 		struct string_list one = STRING_LIST_INIT_DUP;
 		struct record *k = item->util;
@@ -1448,7 +1448,7 @@ static char *check_input(struct request *q)
 	struct string_list_item *item, *f;
 	struct strbuf in = STRBUF_INIT;
 
-	for_each_string_list_item(item, &q->conf) {
+	for_each_string_list_item(item, &q->check_set) {
 		struct record *r = item->util;
 
 		for_each_string_list_item(f, &r->f[FILES])
@@ -1478,7 +1478,7 @@ static void report(struct request *q, const char *req, const char *res, int with
 	for_each_string_list_item(item, &q->selected)
 		printf("id %s\n", item->string);
 	if (!q->gate) {
-		for_each_string_list_item(item, &q->conf)
+		for_each_string_list_item(item, &q->check_set)
 			for_each_string_list_item(sc, &((struct record *)item->util)->f[PROVIDER])
 				printf("provider %s %s\n", item->string, show(sc->string, q->v, was_current(item->util)));
 		for_each_string_list_item(sc, &q->mixed)
@@ -1487,7 +1487,7 @@ static void report(struct request *q, const char *req, const char *res, int with
 			printf("invalid %s %s\n", q->invalid.word, q->invalid.msg);
 		for_each_string_list_item(item, &q->missing)
 			printf("code-required %s\n", item->string);
-		for_each_string_list_item(item, &q->conf)
+		for_each_string_list_item(item, &q->check_set)
 			if (touches(((struct record *)item->util)->old, q->ht, q->v))
 				printf("touch %s\n", item->string);
 		putchar('\n');
@@ -1535,10 +1535,10 @@ static void commit_request(struct request *q, struct strbuf *results)
 	int kind;
 
 	newid(rid, 'R');
-	for_each_string_list_item(item, &q->conf)
+	for_each_string_list_item(item, &q->check_set)
 		repin(item->util, PROVIDER, q->v, 0);
 	tree = judged_tree(q, &changed);
-	if (!strcmp(tree, q->ht->oid) && !q->conf.nr) {
+	if (!strcmp(tree, q->ht->oid) && !q->check_set.nr) {
 		puts("noop");
 		return;
 	}
@@ -1549,7 +1549,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 		strbuf_addf(&q->msg, "\n%s", results->buf);
 	}
 	strbuf_addf(&trailers, "Ait-Request: %s\nAit-Agent: %s\nAit-Session: %s\n", rid, agent, sid);
-	for_each_string_list_item(item, &q->conf)
+	for_each_string_list_item(item, &q->check_set)
 		strbuf_addf(&trailers, "Ait-Check: %s %s %s\n", item->string, q->force ? "forced" : "reported", pins(item->util));
 	strbuf_addf(&q->msg, "\n%s", trailers.buf);
 	/*
@@ -1568,7 +1568,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 		for_each_string_list_item(item, kind ? &sorted : &changed)
 			if (!strcmp(kind_of(q, item->util), kinds[kind]))
 				print_change(q, item->util);
-	for_each_string_list_item(item, &q->conf)
+	for_each_string_list_item(item, &q->check_set)
 		printf("check %s %s\n", item->string, q->force ? "forced" : "reported");
 	for_each_string_list_item(item, &changed)
 		also_undertaken(q, item->util);
@@ -1586,7 +1586,7 @@ static int finish(struct request *q)
 
 	transitions(q);
 	check_set(q);
-	if (!q->gate && !q->fulfill && !q->conf.nr && !q->first.code) {
+	if (!q->gate && !q->fulfill && !q->check_set.nr && !q->first.code) {
 		/* 7.7a.1: nothing to check is a plain commit, without validate, session or trailers (5.10) */
 		for (k = 0; k < q->s.nr; k++)
 			if (q->s.r[k]->bad)
@@ -1623,7 +1623,7 @@ static int finish(struct request *q)
 			reject(q->first.code, q->first.hint, "%s", q->first.msg);
 		add_hint(q, xstrfmt("check each task, fill '%s', and rerun with -r %s", res, quoted(res)));
 		add_hint(q, "if it is trivial, add --force instead (recorded as forced)");
-		next_hints(q, &q->conf);
+		next_hints(q, &q->check_set);
 		reject(1, hints(q), "check results required: %d task(s)", (int)q->tasks.nr);
 	}
 	if (failed.len) {
