@@ -122,11 +122,12 @@ const char *blob_text(const char *oid)
 
 /*
  * a line of git update-index --index-info, the path quoted as git reads it
- * back when it holds '"', a control character or more (git-update-index(1))
+ * back when it holds '"', a control character or more (git-update-index(1));
+ * without MODE, the line that removes PATH
  */
 void index_line(struct strbuf *sb, const char *mode, const char *oid, const char *path)
 {
-	strbuf_addf(sb, "%s %s\t", mode, oid);
+	strbuf_addf(sb, "%s %s\t", mode ? mode : "0", mode ? oid : "0000000000000000000000000000000000000000");
 	quote_c_style(path, sb, NULL, 0);
 	strbuf_addch(sb, '\n');
 }
@@ -261,19 +262,6 @@ struct record *partner(struct state *s, struct record *l, struct record *r)
 int is_current(struct record *r)
 {
 	return *r->id != 'u' && in_state(r, "current");
-}
-
-/* R was current in one of its earlier versions, which its prev chain names (2.2.4): it was reopened (1.5d) */
-int reopened(struct record *r)
-{
-	const char *prev = val(r, PREV), *text;
-
-	while (strcmp(prev, "-") && (text = blob_text(prev))) {
-		if (strstr(text, "\nstate current\n"))
-			return 1;
-		prev = strstr(text, "\nprev ") ? line1(xstrdup(strstr(text, "\nprev ") + 6)) : "-";
-	}
-	return 0;
 }
 
 /* current in HEAD: only such a provider shows "?changed" (spec 3.8) */
@@ -536,7 +524,7 @@ static const char *const contract_states[] = { "future", "current", "cancelled",
 static const char *const link_states[] = { "undertaken", "released", NULL };
 
 /* R means what its HEAD version means: the request did not change it (prev aside, 6.2) */
-static int as_in_head(struct record *r)
+int as_in_head(struct record *r)
 {
 	return r->old && !strcmp(record_text(r, MEANING_KEYS), record_text(r->old, MEANING_KEYS));
 }
@@ -851,12 +839,20 @@ char *reopen_hint(struct state *s, struct record *k)
 /* the provider of R can be found in T: each scope is a file there (spec 1.5c, 7.7.3-4) */
 int code_found(struct record *r, struct tree *t)
 {
+	struct string_list missing = STRING_LIST_INIT_DUP;
+
+	missing_code(r, t, &missing);
+	return !missing.nr;
+}
+
+/* the scopes of R's provider whose file T does not have, "new:PATH" ones too; "DIR/" and "/" are no file (1.5c) */
+void missing_code(struct record *r, struct tree *t, struct string_list *out)
+{
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &r->f[PROVIDER])
-		if (!blob_at(t, scope_path(item->string)))
-			return 0;
-	return 1;
+		if (!ends_with(scope_path(item->string), "/") && !blob_at(t, scope_path(item->string)))
+			string_list_append(out, item->string);
 }
 
 /* spec 1.5b: the change A to B touches the provider of current R, found in A */
@@ -977,18 +973,25 @@ static char *check_of(const char *value)
 	return NULL;
 }
 
-/* the confirmed pins: "ID PINS" of every check in HEAD's history */
+/* the confirmed pins: "ID PINS" of every check in HEAD's history, each with the commits that hold it */
 static struct string_list *checks(void)
 {
 	static struct string_list confirmed = STRING_LIST_INIT_DUP;
 	static int loaded;
-	struct string_list_item *item;
+	struct string_list_item *item, *pin;
 
 	if (loaded++)
 		return &confirmed;
-	for_each_string_list_item(item, check_trailers())
-		if (check_of(item->string))
-			string_list_insert(&confirmed, check_of(item->string));
+	for_each_string_list_item(item, check_trailers()) {
+		if (!check_of(item->string))
+			continue;
+		if (!(pin = string_list_lookup(&confirmed, check_of(item->string)))) {
+			pin = string_list_insert(&confirmed, check_of(item->string));
+			pin->util = xcalloc(1, sizeof(struct string_list));
+			string_list_init_dup(pin->util);
+		}
+		string_list_append(pin->util, item->util);
+	}
 	return &confirmed;
 }
 
@@ -1022,17 +1025,37 @@ int unverified(struct record *r, struct tree *t)
 	return !string_list_has_string(checks(), xstrfmt("%s %s", r->id, pins(r))) || off_pins(r, t);
 }
 
-/* the record TEXT is R as a current contract with R's pins (the provider and file lines of 5.4) */
-static int same_pins(const char *text, struct record *r)
+/* the record TEXT of a past version, as record_parse() reads it; NULL when there is none or it is malformed */
+static struct record *record_read(const char *text)
 {
-	struct record x = { "" };
+	struct record *x = xcalloc(1, sizeof(*x));
 	int k;
 
 	for (k = 0; k < NKEYS; k++)
-		string_list_init_dup(&x.f[k]);
+		string_list_init_dup(&x->f[k]);
 	if (text)
-		record_parse(&x, text);
-	return text && !x.bad && in_state(&x, "current") && !strcmp(record_text(&x, PIN_KEYS), record_text(r, PIN_KEYS));
+		record_parse(x, text);
+	return text && !x->bad ? x : NULL;
+}
+
+/* the record TEXT is R as a current contract with R's pins (the provider and file lines of 5.4) */
+static int same_pins(const char *text, struct record *r)
+{
+	struct record *x = record_read(text);
+
+	return x && in_state(x, "current") && !strcmp(record_text(x, PIN_KEYS), record_text(r, PIN_KEYS));
+}
+
+/* R was current in one of its earlier versions, which its prev chain names (2.2.4): it was reopened (1.5d) */
+int reopened(struct record *r)
+{
+	const char *prev = val(r, PREV);
+	struct record *x;
+
+	for (; strcmp(prev, "-") && (x = record_read(blob_text(prev))); prev = val(x, PREV))
+		if (in_state(x, "current"))
+			return 1;
+	return 0;
 }
 
 /* the facts of 9.1 for R over HEAD's history, each commit's verdict remembered */
@@ -1101,16 +1124,16 @@ const char *unverified_since(struct record *r)
 			     STRING_LIST_INIT_DUP };
 	struct string_list commits = STRING_LIST_INIT_DUP;
 	struct strvec paths = STRVEC_INIT;
-	struct string_list_item *item;
-	char *want = xstrfmt("%s %s", r->id, pins(r));
+	struct string_list_item *item, *pin = string_list_lookup(checks(), xstrfmt("%s %s", r->id, pins(r)));
 	size_t i;
 
 	if (!head)
 		return NULL;
-	for_each_string_list_item(item, check_trailers())
-		if (check_of(item->string) && !strcmp(check_of(item->string), want)) {
-			string_list_insert(&h.confirmed, item->util);
-			string_list_split(&h.confirmed, git("rev-list --ancestry-path %s", xstrfmt("%s..%s", (char *)item->util, head)),
+	/* where a check of these pins holds: its commit and the commits between it and HEAD */
+	if (pin)
+		for_each_string_list_item(item, (struct string_list *)pin->util) {
+			string_list_insert(&h.confirmed, item->string);
+			string_list_split(&h.confirmed, git("rev-list --ancestry-path %s", xstrfmt("%s..%s", item->string, head)),
 					  "\n", -1);
 		}
 	string_list_sort(&h.confirmed);

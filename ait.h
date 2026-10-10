@@ -80,6 +80,7 @@ struct record *partner(struct state *s, struct record *l, struct record *r);
 int is_current(struct record *r);
 int was_current(struct record *r);
 int reopened(struct record *r);
+int as_in_head(struct record *r);
 /* a failed check: exit code, porcelain word, hint, message, and the records it is about (K, and O for 5.9 d) */
 struct verdict { int code; const char *word; char *hint, *msg; struct record *k, *o; };
 int check_state(struct state *s, struct tree *t, struct verdict *v);
@@ -104,6 +105,7 @@ char *show(const char *scope, struct tree *t, int current);
 char *shows(struct record *r, enum key k, struct tree *t, int current);
 char *pins(struct record *r);
 int code_found(struct record *r, struct tree *t);
+void missing_code(struct record *r, struct tree *t, struct string_list *out);
 char *moved_arg(struct record *r, struct tree *t);
 void reopen_set(struct state *s, struct record *k, struct string_list *out);
 char *amend_clause(struct record *k, const char *provider, const char *files);

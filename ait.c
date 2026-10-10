@@ -788,13 +788,14 @@ static void recheck_hint(struct state *s, struct record *r, struct tree *h, int 
 /* H10: fulfil my promise P, with a scope for P and each abstract future demand it undertakes, or where its code went */
 static void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 {
+	struct string_list missing = STRING_LIST_INIT_DUP;
 	struct strbuf args = STRBUF_INIT;
 	struct string_list_item *item;
 	size_t j;
 
-	for_each_string_list_item(item, &p->f[PROVIDER])
-		if (!starts_with(item->string, "new:") && !ends_with(scope_path(item->string), "/") &&
-		    !blob_at(t, scope_path(item->string))) {
+	missing_code(p, t, &missing);
+	for_each_string_list_item(item, &missing)
+		if (!starts_with(item->string, "new:")) {
 			suggest("'%s' has no code under its scope; if it was moved, run 'ait fulfill %s=%s -m <why>' to get the tasks",
 				p->id, p->id, moved_arg(p, t));
 			suggest("if it is gone for good, run 'ait future cancel %s -m <why>'", p->id);

@@ -153,8 +153,7 @@ static char *index_before(struct tree *h, struct tree *t, struct tree *index, st
 
 		if (was && was->ita && !tree_get(t, item->string))
 			was = NULL;
-		index_line(&info, was ? was->mode : "0", was ? was->oid : "0000000000000000000000000000000000000000",
-			   item->string);
+		index_line(&info, was ? was->mode : NULL, was ? was->oid : NULL, item->string);
 	}
 	if (paths->nr && !(o = tree_with(t->oid, info.buf, NULL)))
 		reject(128, NULL, "%s", git_failed());
@@ -658,8 +657,7 @@ static void rename_tasks(struct request *q, struct strbuf *sb)
 
 static int unchanged(struct record *r)
 {
-	return r->old ? !strcmp(record_text(r, MEANING_KEYS), record_text(r->old, MEANING_KEYS)) :
-	       *r->id == 'u' && in_state(r, "released");
+	return r->old ? as_in_head(r) : *r->id == 'u' && in_state(r, "released");
 }
 
 /* rule 5 (1.6, 7.7.2): D is checked, and fulfilled if future, with a target offer that undertakes it */
@@ -1336,7 +1334,7 @@ static void check_set(struct request *q)
 /* spec 7.7.3-4: the code to check is there; abstract contracts need a scope first */
 static void code_present(struct request *q)
 {
-	struct string_list write = STRING_LIST_INIT_DUP, stage = STRING_LIST_INIT_DUP;
+	struct string_list write = STRING_LIST_INIT_DUP, stage = STRING_LIST_INIT_DUP, missing = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *sc;
 	int moved = 0;
 
@@ -1348,12 +1346,11 @@ static void code_present(struct request *q)
 		if (is_abstract(k))
 			reject(128, xstrfmt("give it the scope you implemented: '%s'", rerun(q, &one, "<scope>")),
 			       "bad scope: '%s' becomes current without a scope", k->id);
-		for_each_string_list_item(sc, &k->f[PROVIDER]) {
+		missing_code(k, q->v, &missing);
+		for_each_string_list_item(sc, &missing) {
 			char *file = scope_path(sc->string);
 			int written = !access(xstrfmt("%s/%s", top, file), F_OK), new = starts_with(sc->string, "new:");
 
-			if (blob_at(q->v, file))
-				continue;
 			if (!written && new)
 				string_list_append(&write, file);
 			if (written || new)
@@ -1374,6 +1371,7 @@ static void code_present(struct request *q)
 			string_list_append(&q->missing, item->string)->util = item->util;
 		string_list_clear(&write, 0);
 		string_list_clear(&stage, 0);
+		string_list_clear(&missing, 0);
 		moved = 0;
 	}
 	if (!q->missing.nr)
@@ -1775,8 +1773,7 @@ static struct tree *stage_files(struct request *q)
 	for_each_string_list_item(item, &q->files) {
 		struct entry *was = file_entry(q->noted, item->string);
 
-		index_line(&info, was ? was->mode : "0", was ? was->oid : "0000000000000000000000000000000000000000",
-			   item->string);
+		index_line(&info, was ? was->mode : NULL, was ? was->oid : NULL, item->string);
 	}
 	if (!(tree = tree_with(q->ht->oid, info.buf, &q->files)))
 		reject(128, NULL, "%s", git_failed());
