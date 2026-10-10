@@ -31,7 +31,13 @@ libyaml/%.o: libyaml/%.c libyaml/yaml.h libyaml/yaml_private.h
 test: ait
 	@sh t/run.sh
 
+# a copy, not a link: the hooks of this repository run the installed ait, not the one being built
+prefix ?= $(HOME)/.local
+install: ait
+	install -d $(prefix)/bin
+	install ait $(prefix)/bin/ait
+
 clean:
 	rm -f ait $(YAML)
 
-.PHONY: test clean
+.PHONY: test install clean
