@@ -108,6 +108,8 @@ current를 만들거나 다시 확인하는 명령(`fulfill`, `ait commit`, `fut
 
 ## 일의 흐름
 
+명세 문서만 있고 그것을 구현한 코드가 아직 전혀 없으면, 먼저 [references/spec-only.md](references/spec-only.md)를 읽는다. 명세의 조항마다 계약을 걸고 하나씩 떠맡아 구현하는 절차다. 아래 흐름은 그 위에서도 그대로 쓴다.
+
 **시작·재시작**
 - `ait init`을 한다. hook이 없거나 ait 명령이 `this clone is not set up for ait`를 쓰면 다시 한다. 저장소가 이미 hook을 쓰면 ait는 덮어쓰지 않고 넣을 행을 hint로 준다.
 - 에이전트마다 worktree와 브랜치를 따로 둔다: `git worktree add ../<내 이름> -b <내 이름>` 하고 그 디렉터리로 간다. 다른 에이전트가 쓰는 worktree에서 session을 열면 경고와 hint가 나온다.
