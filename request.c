@@ -128,7 +128,9 @@ static char *quoted_paths(struct string_list *paths)
 /* two versions of a path are the same: both absent, or the same mode and blob */
 static int same_entry(struct entry *a, struct entry *b)
 {
-	return !a || !b ? a == b : !strcmp(a->mode, b->mode) && !strcmp(a->oid, b->oid);
+	if (!a || !b)
+		return a == b;
+	return !strcmp(a->mode, b->mode) && !strcmp(a->oid, b->oid);
 }
 
 /* this worktree is sparse as git takes it: core.sparseCheckout with its own patterns file (git-sparse-checkout(1)) */
@@ -232,12 +234,7 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
 		suggest("bring %s to '%s' in the index", quoted_paths(&rest), c);
 }
 
-/*
- * spec 5.5: C is TREE on HEAD with MSG, and git's update-ref moves the branch R
- * from HEAD to C or refuses (the CAS); then the index and work tree follow
- * from INDEX, the entries noted when the request began. 1 when R moved
- * meanwhile; else C is PUBLISHED, which nothing after it needs to read again.
- */
+/* the commit the last publish() put on the branch (init prints it) */
 const char *published;
 
 /* the branch R is no longer H: another commit is on it, or it is gone where H was a commit */
@@ -248,6 +245,12 @@ static int moved(void)
 	return object(headref, 0, oid, NULL) ? strcmp(oid, head ? head : "") != 0 : head != NULL;
 }
 
+/*
+ * spec 5.5: C is TREE on HEAD with MSG, and git's update-ref moves the branch R
+ * from HEAD to C or refuses (the CAS); then the index and work tree follow
+ * from INDEX, the entries noted when the request began, and what fails there
+ * is only warned about. 1 when R moved meanwhile; else C is PUBLISHED.
+ */
 int publish(const char *tree, const char *msg, struct tree *index)
 {
 	struct tree *t = tree_load(tree);
@@ -531,7 +534,11 @@ static void shapes(const char *list, int defs, int keep)
 	}
 }
 
-/* spec 7.3.1: request := ["contract"|"ct"] clause+ option*, read before anything else (5.13-1) */
+/*
+ * spec 7.3.1: ["contract"|"ct"] clause+, from the arguments parse_options()
+ * left; options stand between clauses, never among a clause's arguments
+ * (after_option). Read before the repository is (5.13-1).
+ */
 static void parse_clauses(struct request *q)
 {
 	const char **v = q->args.v;
@@ -705,7 +712,7 @@ static int names(struct request *q, struct clause *c, int i, struct record *k)
 	return k->clause == i + 1 || ((!strcmp(c->verb, "amend") || !strcmp(c->verb, "cancel")) && is_named(c->k[0], k));
 }
 
-/* BASE ("o" an offer, "x" a drop), or BASE and a number, as an alias the request does not use yet (5.9a) */
+/* an alias the request does not use yet: BASE, or BASE and a number (5.9a) */
 static const char *free_alias(struct request *q, const char *base)
 {
 	char *alias = xstrdup(base);
