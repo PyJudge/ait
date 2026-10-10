@@ -649,8 +649,17 @@ def reopen_commit_v14(repo, commit, rel):
 
 # ---------------------------------------------------------------- pinned spec files (record 107): ait decides which side
 # changes are not taken; those are taken out of that side; git merges everything like code (same order and merge bases)
+def entry_at(repo, rev, path):
+    """a tree entry's (mode, blob), or None; specification files pin both (2.4.1)."""
+    text = repo.out("--literal-pathspecs", "ls-tree", "-z", rev, "--", path)
+    if not text:
+        return None
+    mode, kind, oid = text.split("\t", 1)[0].split()
+    return mode, oid
+
+
 def pins_at(repo, rev, path):
-    """versions at rev that pin path -> {pinned blob: [IDs]}. Well-formed versions pin only when future or current
+    """versions at rev that pin path -> {(mode, blob): [IDs]}. Well-formed versions pin only when future or current
     (2.4.1; ended versions pin nothing). A malformed version's state cannot be trusted: every `file` row naming the
     path counts, read as words split on white space."""
     out = {}
@@ -663,14 +672,14 @@ def pins_at(repo, rev, path):
         for l in text.split("\n"):
             t = l.split()
             if len(t) >= 4 and t[0] == "file" and t[1] == path:
-                out.setdefault(t[3], []).append(rel[5:])
+                out.setdefault((t[2], t[3]), []).append(rel[5:])
     return out
 
 
 def classify(repo, path, base_, rev, result_pins):
     """one side's change of one path -> (verdict, content to give git, warned). result_pins: the blobs the result's
-    future/current contracts pin at this path (none if it pins none)."""
-    b0, b1 = repo.blob_at(base_, path), repo.blob_at(rev, path)
+    future/current contracts pin at this path as (mode, blob) pairs (none if it pins none)."""
+    b0, b1 = entry_at(repo, base_, path), entry_at(repo, rev, path)
     if b0 == b1:
         return "no change", b1, False
     # a change that is not taken is given to git as the result's pin (or, when the result does not pin the path at
@@ -693,13 +702,14 @@ def classify(repo, path, base_, rev, result_pins):
 
 
 def taken_out(repo, rev, contents):
-    """a child commit of rev with the given paths set to the given contents (None = absent)"""
+    """a child commit of rev with the given paths set to (mode, blob) pairs (None = absent)"""
     idx = os.path.join(repo.path, ".git", "pull-taken-out-index")
     env = dict(ENV, GIT_INDEX_FILE=idx)
     run(repo.path, "git", "read-tree", rev, env=env)
-    for path, blob in contents.items():
-        if blob:
-            run(repo.path, "git", "update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", env=env)
+    for path, entry in contents.items():
+        if entry:
+            mode, blob = entry
+            run(repo.path, "git", "update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}", env=env)
         else:
             run(repo.path, "git", "update-index", "--force-remove", path, env=env)
     t = run(repo.path, "git", "write-tree", env=env).stdout.strip()
@@ -722,7 +732,7 @@ def pull_merge(repo, ends, result_pins, head="HEAD"):
                 continue
             verdict, content, warned = classify(repo, p, b, rev, set(result_pins.get(p, ())))
             notes.append((who, p, verdict))
-            if content != repo.blob_at(rev, p):
+            if content != entry_at(repo, rev, p):
                 out[p] = content
         inputs.append(taken_out(repo, rev, out) if out else rev)
     acc, conflicts = inputs[0], []
@@ -740,7 +750,7 @@ def pull_merge(repo, ends, result_pins, head="HEAD"):
 
 def result_pins(repo, named, head="HEAD"):
     """the pins of the received result before helper clauses and 6.2: the named contracts' result versions, and my
-    versions of every other contract (unnamed contracts keep mine). Only future/current versions pin. -> {path: {blobs}}"""
+    versions of every other contract (unnamed contracts keep mine). Only future/current versions pin. -> {path: {(mode, blob)}}"""
     head = repo.out("rev-parse", head)
     versions = {}
     for rel in repo.out("ls-tree", "-r", "--name-only", head, ".ait").split():
@@ -753,7 +763,8 @@ def result_pins(repo, named, head="HEAD"):
         if not t or not well_formed(t) or fields(t)["state"][0] not in ("future", "current"):
             continue
         for fl in fields(t).get("file", []):
-            out.setdefault(fl.split()[0], set()).add(fl.split()[2])
+            parts = fl.split()
+            out.setdefault(parts[0], set()).add((parts[1], parts[2]))
     return out
 
 
@@ -768,8 +779,8 @@ def judge_pinned(repo, path, ends, named, label="", head="HEAD"):
     if path in conflicts:
         print(f"     {label}{path}: git conflicts on it (a code conflict, decision 29)")
     else:
-        m = repo.blob_at(acc, path)
-        txt = (repo.cat(m) or "").splitlines() if m else None
+        m = entry_at(repo, acc, path)
+        txt = (repo.cat(m[1]) or "").splitlines() if m else None
         show = None if txt is None else (txt[0] if len(txt) < 3 else f"{txt[0]} ... {txt[-1]}")
         tail = "" if m in pins or m is None or not pins else " -> 6.2 re-pin (future) / stop at 5 (current)"
         print(f"     {label}{path}: git's merge = {show!r} ; equals a result pin? {m in pins}{tail}")

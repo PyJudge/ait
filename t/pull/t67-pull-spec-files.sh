@@ -23,9 +23,9 @@ newv() { nv=$1; shift; { body "$nv"; printf 'prev %s\n' "$@" | sort; } | git has
 diverged() { contains "$1" "$3" && contains "$2" "$3" && ! contains "$1" "$2" && ! contains "$2" "$1" && ! same_body "$1" "$2"; }
 # hist_mentions TIP PATH: record rows naming PATH in the commits of TIP that HEAD does not have
 hist_mentions() { for hr in $(git rev-list "$1" ^HEAD); do git grep -h -F -e "$2" "$hr" -- .ait; done; }
-# taken_out REV PATH BLOB: a child of REV with PATH set to BLOB (1절: a change not taken, put back on that side)
+# taken_out REV PATH MODE BLOB: a child of REV with PATH set to its full pin (2.4.1)
 taken_out() {
-	GIT_INDEX_FILE=$T/to.idx git read-tree "$1" && GIT_INDEX_FILE=$T/to.idx git update-index --cacheinfo "100644,$3,$2" &&
+	GIT_INDEX_FILE=$T/to.idx git read-tree "$1" && GIT_INDEX_FILE=$T/to.idx git update-index --cacheinfo "$3,$4,$2" &&
 	git commit-tree "$(GIT_INDEX_FILE=$T/to.idx git write-tree)" -p "$1" -m "taken out"
 }
 # seqmerge END...: git merges HEAD and the ends one by one; prints the tree, code conflicts go to $T/sconf
@@ -623,7 +623,7 @@ pbase sp11_init
 git checkout -q -b a; edit tests/t.sh t1 't1 A'; pin_input specs/d.yaml c-A tests/t.sh; DA=$(rec D future inputs=tests/t.sh); a1=$(c a1)
 edit tests/t.sh 't1 A' 't1 X'; a2=$(c "a2: plain edit"); cond Q q-A; QA=$(rec Q); a3=$(c "a3: Q")
 git checkout -q master; edit tests/t.sh t9 't9 E'; c "e1: code" >/dev/null
-tk=$(taken_out "$a3" tests/t.sh "$(pinof "$DA" tests/t.sh)"); tt=$(mtree HEAD "$tk")
+tk=$(taken_out "$a3" tests/t.sh "$(git cat-file -p "$DA" | awk '$1 == "file" && $2 == "tests/t.sh" { print $3 }')" "$(pinof "$DA" tests/t.sh)"); tt=$(mtree HEAD "$tk")
 fact "SP11: a3's D is D@A ; a3's tests/t.sh (line 1 X) is not its pin" test "$(recat "$a3" D)" = "$DA" -a "$(at "$a3" tests/t.sh)" != "$(pinof "$DA" tests/t.sh)"
 fact "SP11: with a's side read as its pin, git merges without conflict" test -z "$(codeconf HEAD "$tk")"
 fact "SP11: that merge has line 1 A" has_line "$tt" tests/t.sh 't1 A'
@@ -709,4 +709,29 @@ want "MF3: Q is a1's" test "$(recat HEAD Q)" = "$QA"
 want "MF3: tests/f.sh is base" test "$(at HEAD tests/f.sh)" = "$base"
 want "MF3: W does not come in" test "$rc" = 0 -a -z "$(recat HEAD W)"
 want "MF3: specs/w.yaml (pinned only by W) does not come in" test "$rc" = 0 -a -z "$(at HEAD specs/w.yaml)"
+# MD1/MD2: an incoming spec accident changes the mode, with or without changing the blob
+mode_init() {
+	mkdir -p tests; printf '#!/bin/sh\nexit 0\n' > tests/mode.sh; chmod +x tests/mode.sh
+	q0; pin_input specs/d.yaml c0 tests/mode.sh
+}
+for ROW in MD1 MD2; do
+	pbase mode_init; rec D future inputs=tests/mode.sh prev=- >/dev/null
+	mode_blob=$(at HEAD tests/mode.sh)
+	edit ".ait/$D" "file tests/mode.sh 100644 $mode_blob input" "file tests/mode.sh 100755 $mode_blob input"
+	reinit
+	base=$(at HEAD tests/mode.sh); h0=$(git rev-parse HEAD)
+	git checkout -q -b a; cond Q q-A; QA=$(rec Q); chmod -x tests/mode.sh
+	[ "$ROW" = MD2 ] && printf '#!/bin/sh\nexit 1\n' > tests/mode.sh
+	a1=$(c "a1: Q and input accident"); git checkout -q master
+	fact "$ROW: D pins the input's executable mode" test "$(git cat-file -p "$(recat HEAD D)" | awk '$1 == "file" && $2 == "tests/mode.sh" { print $3 }')" = 100755
+	fact "$ROW: incoming input is non-executable" test "$(git ls-tree "$a1" tests/mode.sh | awk '{print $1}')" = 100644
+	pull "$Q"
+	want "$ROW: pull Q succeeds" test "$rc" = 0
+	want "$ROW: Q is the incoming version" test "$(recat HEAD Q)" = "$QA"
+	want "$ROW: the input keeps the pinned blob" test "$(at HEAD tests/mode.sh)" = "$base"
+	want "$ROW: the input keeps the pinned mode" test "$(git ls-tree HEAD tests/mode.sh | awk '{print $1}')" = 100755
+	want "$ROW: the input accident is warned" err_re "warning: skipping 'tests/mode.sh' at '[^']+': it was changed outside ait's rules"
+	want "$ROW: one commit has HEAD and a1 as parents" parents_are "$h0" "$a1"
+done
+fact "MD1/MD2: the model restores mode and blob together" python3 "$AIT_DIR/spec/drafts/pull-criteria-runs/verify-v15-mode.py"
 done_testing

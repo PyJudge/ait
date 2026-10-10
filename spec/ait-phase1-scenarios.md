@@ -2,7 +2,7 @@
 
 판: v15 · 기준 규격: `ait-phase1-spec.md` v15
 
-이 시나리오들이 1단계의 수용 시험이다. 모두 통과해야 1단계를 완료한 것으로 본다. `contract pull`(7.12)의 시험은 `drafts/pull-criteria.md` 3절의 150행이고, `t/pull/`에 그대로 옮겨 두었다(T33). 각 시나리오는 shell 시험(git `t/*.sh` 방식)으로 그대로 옮길 수 있게 썼다. 괄호 안의 숫자는 규격(`ait-phase1-spec.md`)의 절 번호이고, "규칙 N"은 규격 첫머리의 규칙이다.
+이 시나리오들이 1단계의 수용 시험이다. 모두 통과해야 1단계를 완료한 것으로 본다. `contract pull`(7.12)의 시험은 `drafts/pull-criteria.md` 3절의 154행이고, `t/pull/`에 그대로 옮겨 두었다(T33). 각 시나리오는 shell 시험(git `t/*.sh` 방식)으로 그대로 옮길 수 있게 썼다. 괄호 안의 숫자는 규격(`ait-phase1-spec.md`)의 절 번호이고, "규칙 N"은 규격 첫머리의 규칙이다.
 
 ## 0. 공통 준비와 표기
 
@@ -940,7 +940,7 @@ W가 아래를 차례로 실행하고, 매번 `settle`한다. S6은 listener가 
 
 ## T33 contract pull (7.12)
 
-`contract pull`의 시험은 `drafts/pull-criteria.md` 3절의 기대 테스트 150행이다. 행마다 git으로 만든 이력과 그 이력에서 확인한 사실, 그리고 pull의 기대 결과를 적었고, 모두 실제 git으로 이력을 만들어 확인했다(`drafts/pull-criteria-runs/`). `t/pull/`에 그대로 옮겨 두었다(`make test-pull`). 각 행의 `fact`는 이력이 그 행이 말하는 상태인지 보고, `want`는 pull의 결과를 본다. 4절의 "모든 테스트에서 확인하는 것"도 함께 본다.
+`contract pull`의 시험은 `drafts/pull-criteria.md` 3절의 기대 테스트 154행이다. 행마다 git으로 만든 이력과 그 이력에서 확인한 사실, 그리고 pull의 기대 결과를 적었고, 모두 실제 git으로 이력을 만들어 확인했다(`drafts/pull-criteria-runs/`). `t/pull/`에 그대로 옮겨 두었다(`make test-pull`). 각 행의 `fact`는 이력이 그 행이 말하는 상태인지 보고, `want`는 pull의 결과를 본다. 4절의 "모든 테스트에서 확인하는 것"도 함께 본다.
 
 | 기준 3절 | 규격 | `t/pull/` |
 | --- | --- | --- |
@@ -1333,7 +1333,7 @@ wa(A): `tick; ait future demand src/order.c / p as d -m "어딘가가 막아야 
 | 7.7a commit | T43 |
 | 7.8 todo | T08, T09-8, T17-7, T20, T21, T22, T28-11, T28-23, T45-2, T45-7, T45-8, T45-9, T45-10, T46-2 |
 | 7.9 peek·이력·elsewhere | T05, T14, T15, T16, T18, T22, T22-3, T36, T42, T45-7, T45-8, T46-1 |
-| 7.10–7.12 contract push·pull(이력째 받기, 지정, 고르기, 들인 미확인의 경고, 기준 3절의 150행) | T13, T28-2a, T28-8, T28-20, T30, T33–T35, T34-5, T34-12, T42-2, T42-15, T45-4, T47-6, T47-9, T47-11 |
+| 7.10–7.12 contract push·pull(이력째 받기, 지정, 고르기, 들인 미확인의 경고, 기준 3절의 154행) | T13, T28-2a, T28-8, T28-20, T30, T33–T35, T34-5, T34-12, T42-2, T42-15, T45-4, T47-6, T47-9, T47-11 |
 | 7.13 driver | T28, T28-24, T28-25, T29, T29-12, T35 |
 | 7.9.5 이력의 `verified`·`unverified`·사본 | T13-6, T13-8, T15-6, T42-10 |
 | 9 알림(9.2-1 `prev`의 판, 9.3 버려진 내 변경, 9.5 사건의 키) | T30–T32, T31-6, T34, T35, T37, T40, T42, T45, T46, T46-4, T47, T47-2 |

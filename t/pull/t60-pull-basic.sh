@@ -29,4 +29,14 @@ fact "A3: both contain init's Q" contains "$QA" "$Q0"
 want "A3: stops, nothing changed" pull_unchanged "$D" "$Q"
 want "A3: diverged error on Q" stops_with 1 "error: '$Q' has diverged between "
 want "A3: hint offers Q=a1 and Q=b1 with D kept" grep -q "ait contract pull $D $Q=.* -m <why>" "$T/err"
+# A4  D is already current at every ref; the helper still reopens it
+DSTATE=current pbase
+d0=$(recat HEAD D); h0=$(git rev-parse HEAD)
+fact "A4: HEAD has the only version of D, current" test "$(state_of "$d0")" = current -a "$(git for-each-ref --format='%(refname)' refs/heads | wc -l | tr -d ' ')" = 1
+pull "$D" future amend "$D" -m why
+want "A4: pull with a helper succeeds" test "$rc" = 0
+want "A4: the helper creates a commit instead of already" test "$(git rev-parse HEAD)" != "$h0"
+want "A4: D is future" test "$(state_of "$(recat HEAD D)")" = future
+want "A4: D includes its former current version" contains "$(recat HEAD D)" "$d0"
+want "A4: a request is printed" grep -q '^request ' "$T/out"
 done_testing

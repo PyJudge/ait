@@ -327,4 +327,17 @@ want "REV4: nothing changes" pull_unchanged "$D"
 want "REV4: already D" eval 'test "$rc" = 0 && out_line "already $D"'
 want "REV4: warning: skipping D at b" skipping_b
 want "REV4: D stays cancelled" test "$(recat HEAD D)" = "$vC"
+# REV5  the hand-edited result is itself cancelled, but differs from the earlier cancelled version
+pbase
+vC=$(rec D cancelled); c "c1: cancel D" >/dev/null
+git checkout -q -b m init; cond D c-M; vM=$(rec D); c "m1: c-M" >/dev/null
+git checkout -q -b b master; cond D c-V; vV=$(rec D cancelled prev="$vC $vM"); c "b1: different cancelled body" >/dev/null
+git checkout -q master; git branch -q -D m
+fact "REV5: V is cancelled and has a normal future source" test "$(state_of "$vV") $(state_of "$vM")" = "cancelled future"
+fact "REV5: V contains the earlier cancelled C but has a different body" eval 'contains "$vV" "$vC" && not same_body "$vV" "$vC"'
+fact "REV5: V includes itself, which must not satisfy the terminal check" contains "$vV" "$vV"
+want "REV5: nothing changes" pull_unchanged "$D"
+want "REV5: already D" eval 'test "$rc" = 0 && out_line "already $D"'
+want "REV5: warning: skipping D at b" skipping_b
+want "REV5: D remains the original cancelled version" test "$(recat HEAD D)" = "$vC"
 done_testing
