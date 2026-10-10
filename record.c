@@ -1061,7 +1061,7 @@ int reopened(struct record *r)
 /* the facts of 9.1 for R over HEAD's history, each commit's verdict remembered */
 struct history {
 	struct string_list confirmed;	/* commits a check of R's pins holds at: a check commit and its descendants */
-	struct string_list changed;	/* commits that change R's record, code or spec files against a parent */
+	struct string_list changed;	/* commits that change R's code or spec files against their first parent */
 	struct string_list parent;	/* commit -> its first parent */
 	struct string_list seen, off;	/* commit -> unverified there; commit -> off its pins there */
 };
@@ -1137,8 +1137,8 @@ const char *unverified_since(struct record *r)
 					  "\n", -1);
 		}
 	string_list_sort(&h.confirmed);
-	/* the commits that change R's code or spec files against any parent, by git's full history */
-	strvec_pushl(&paths, "log", "--full-history", "-m", "--format=%H", head, "--", NULL);
+	/* the commits that change R's code or spec files against their first parent, the one off_at() inherits from */
+	strvec_pushl(&paths, "log", "--full-history", "--diff-merges=first-parent", "--format=%H", head, "--", NULL);
 	for (i = 0; i < NKEYS; i++)
 		if (i == PROVIDER || i == FILES)
 			for_each_string_list_item(item, &r->f[i])

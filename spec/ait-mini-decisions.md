@@ -8,7 +8,7 @@
 2. **sparse로 다루는 조건은 `core.sparseCheckout`이 true이고 `info/sparse-checkout`이 있을 때.** "git이 하는 대로"에서 도출. 패턴 파일이 없으면 git도 sparse로 다루지 않으므로 reapply하지 않는다.
 3. **pre-push 입력은 오른쪽부터 읽음.** git 출력 형식(transport.c:1355)에서 도출. 로컬 필드에 공백과 LF가 있어도 된다. 형식에 맞지 않는 남은 입력은 `fatal: bad pre-push input '…'`(128)이다. 문구와 종료 코드는 선택.
 4. **symlink이거나 일반 파일이 아닌 명세 파일은 E_INCOMPLETE `'…' is not a regular file`.** 2.1.4와 spec 표에서 도출. 문구는 선택.
-5. **대소문자만 다른 경로는 받지 않음(사용자 결정, 7.3.3에 적음).** core.ignorecase에서 HEAD나 index에 대소문자만 다른 경로가 있으면 명세 파일은 E_INCOMPLETE, 계약 범위는 E_SCOPE다. hint는 git의 경로를 알려 주고, HEAD와 index의 철자가 서로 다르면 두 곳의 철자를 맞추라고 한다(맴도는 hint를 막는다). `git add`가 그 경로를 stage하지 않는 것을 따랐다.
+5. **대소문자만 다른 경로는 받지 않음(사용자 결정, 7.3.3에 적음).** core.ignorecase에서 HEAD나 index에 대소문자만 다른 경로가 있으면 명세 파일은 E_INCOMPLETE, 계약 범위는 E_SCOPE다(도우미에서는 HEAD와 index, 이행에서 `new:` 범위를 찾을 때도). hint는 git의 경로를 알려 주고, HEAD와 index의 철자가 서로 다르면 두 곳의 철자를 맞추라고 한다(맴도는 hint를 막는다). `git add`가 그 경로를 stage하지 않는 것을 따랐다.
 6. **noop일 때 index를 맞추지 않음.** 5.5-4 "noop일 때도 같다"에서 도출. 부분 stage 검사가 먼저 막으므로, noop까지 오면 명세 파일의 index 판은 HEAD와 같고 맞출 것이 없다. 문구는 그대로 둔다.
 7. **5.5-5의 경고와 hint 문구.** spec 5.5-5의 형식을 따른다. refresh가 실패하면 5.5-4를 다 하지 못한 것이라 `but the index and work tree were not updated`와 bring hint를 쓰고, sparse reapply가 실패하면 `.ait/` 경로를 맞추지 못한 경로로 친다.
 8. **ID를 만들 수 없을 때의 문구 `unable to get random bytes`.** 선택. git의 tempfile 문구를 따랐다.
@@ -39,3 +39,4 @@
 33. **ait의 메시지(오류 한 행) 안의 제어문자는 `?`로 바꿈.** 5.6("메시지는 영어 한 행")에서 도출. 값에 든 줄바꿈이 가짜 `fatal:`·`hint:` 줄을 만들지 못한다. git의 vreportf가 다른 제어문자에 하는 것과 같다.
 34. **macOS에서 인자를 git처럼 NFC로 바꿈.** "git이 할 수 있는 일은 git에게서 받는다"(CLAUDE.md)에서 도출. git의 compat/precompose_utf8.c를 옮겨 core.precomposeUnicode일 때 argv를 조합형으로 바꾼다. 그래서 셸 glob 등이 준 NFD 철자의 경로도 git이 가진 경로로 찾는다.
 35. **고정이 맞는지는 레코드의 `file`·`provider` 행을 그 tree의 항목과 그대로 비교함.** 1.5a에서 도출. 정의를 파싱하지 않으므로 과거의 깨진 blob이 todo를 멈추지 않는다. H8의 since는 그 경로들이 바뀐 커밋에서만 다시 계산하고 나머지는 부모를 따른다(13.4).
+36. **명세 파일의 상위 경로가 HEAD나 index에서 파일이면 E_INCOMPLETE.** 규칙 3("계약 커밋은 코드를 바꾸지 않는다")에서 도출. git add는 그 파일 자리에 디렉터리를 넣으므로 받으면 `[CONTRACT]` 커밋이 그 파일을 지운다. hint는 그 파일을 지우고 `ait commit`으로 먼저 커밋하라는 것이다.

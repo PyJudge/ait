@@ -405,14 +405,21 @@ static struct record *resolve(struct request *q, const char *k)
 }
 
 /* spec 3.2a: a scope list "A,B", each pinned at T; the same scope twice is a bad scope */
-static void scope_list(struct string_list *out, const char *list, struct tree *t, int allow_new, int allow_abs)
+static void scope_list(struct string_list *out, const char *list, struct tree *t, struct tree *index, int allow_new,
+		       int allow_abs)
 {
 	struct string_list parts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
 	string_list_split(&parts, list, ",", -1);
-	for_each_string_list_item(item, &parts)
+	for_each_string_list_item(item, &parts) {
+		char *path = scope_path(item->string);
+
+		/* decision 5: a twin in the index refuses it too, unless the index spells it so */
+		if (!tree_get(index, path) && case_twin(index, path))
+			reject(128, xstrfmt("give it as git has it: '%s'", case_twin(index, path)), "bad scope: '%s'", item->string);
 		string_list_append(out, pin(item->string, t, allow_new, allow_abs));
+	}
 }
 
 /* a helper's scope argument, pinned at HEAD (spec 3.3); "-" keeps the old one */
@@ -422,7 +429,7 @@ static void scopes(struct request *q, struct record *r, enum key k, const char *
 	int future = in_state(r, "future");
 
 	if (strcmp(list, "-")) {
-		scope_list(&vals, list, q->ht, future || k == CONSUMER, future && k == PROVIDER);
+		scope_list(&vals, list, q->ht, q->index, future || k == CONSUMER, future && k == PROVIDER);
 		r->f[k] = vals;
 	}
 }
@@ -1341,6 +1348,9 @@ static void code_present(struct request *q)
 			char *file = scope_path(sc->string);
 			int written = !access(xstrfmt("%s/%s", top, file), F_OK), new = starts_with(sc->string, "new:");
 
+			/* decision 5: the file came in another case; git add keeps that spelling */
+			if (case_twin(q->v, file))
+				reject(128, xstrfmt("give it as git has it: '%s'", case_twin(q->v, file)), "bad scope: '%s'", sc->string);
 			if (!written && new)
 				string_list_append(&write, file);
 			if (written || new)
@@ -1588,7 +1598,7 @@ static void given_scopes(struct request *q, struct record *r, const char *list)
 		if (is_abstract(r) && !inside)
 			reject(128, NULL, "bad scope: '%s' is outside the scope of '%s'", item->string, r->id);
 	}
-	scope_list(&vals, list, q->v, 0, 0);
+	scope_list(&vals, list, q->v, q->index, 0, 0);
 	r->f[PROVIDER] = vals;
 }
 
@@ -1740,12 +1750,13 @@ static struct tree *stage_files(struct request *q)
 
 	for_each_string_list_item(item, &q->files) {
 		const char *why = not_a_file(item->string);
-		const char *in_head = case_twin(q->ht, item->string), *in_index = case_twin(q->index, item->string);
+		const char *in_head = case_twin(q->ht, item->string), *in_index = case_twin(q->index, item->string), *slash;
 		struct stat st;
 
 		/* decision 5: a path of HEAD or the index differs from it in case only; git add stages nothing then */
 		if (in_head && in_index && strcmp(in_head, in_index))
-			reject(1, NULL, "spec files do not match the contract: '%s' is '%s' and '%s' in git", item->string, in_head, in_index);
+			reject(1, "spell it the same in HEAD and the index, then rerun this command",
+			       "spec files do not match the contract: '%s' is '%s' and '%s' in git", item->string, in_head, in_index);
 		if ((in_head || in_index) && (tree_get(q->ht, item->string) || tree_get(q->index, item->string)))
 			reject(1, xstrfmt("spell it the same in HEAD and the index ('%s' there), then rerun this command",
 					  in_head ? in_head : in_index),
@@ -1755,6 +1766,14 @@ static struct tree *stage_files(struct request *q)
 			       "spec files do not match the contract: '%s' is '%s' in git", item->string, in_head ? in_head : in_index);
 		if (why)
 			reject(1, NULL, "spec files do not match the contract: '%s' %s", item->string, why);
+		for (slash = strchr(item->string, '/'); slash; slash = strchr(slash + 1, '/')) {
+			char *up = xstrndup(item->string, slash - item->string);
+
+			/* rule 3: a contract commit changes no code; git add would put the directory in that file's place */
+			if (file_entry(q->ht, up) || file_entry(q->noted, up))
+				reject(1, xstrfmt("remove '%s' and run 'ait commit -m <why>' first, then rerun this command", up),
+				       "spec files do not match the contract: '%s' is under the file '%s' in git", item->string, up);
+		}
 		if (lstat(xstrfmt("%s/%s", top, item->string), &st))
 			reject(1, missing_hint(q, item->string), "spec files do not match the contract: missing '%s'", item->string);
 	}

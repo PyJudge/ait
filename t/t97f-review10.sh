@@ -30,4 +30,23 @@ git reset -q --hard "$H"
 printf '? |-\n  body\n: hello\n' > specs/k.yaml
 bad E_FORMAT "a block as a key" ait future offer src/stock.c specs/k.yaml -m o
 rm -f specs/k.yaml
+
+# decision 5: a new scope whose file came in another case is refused, at the helper and at fulfill
+if [ "$(git config --bool core.ignorecase)" = true ]; then
+	echo x > Foo.c && git add Foo.c
+	bad E_SCOPE "a new scope with a twin in the index" ait future offer new:foo.c specs/p.yaml -m o
+	git reset -q --hard "$H"; rm -f Foo.c
+	tick; ait future offer new:foo.c specs/p.yaml -m o >"$T/out"; O=$(new_id)
+	echo x > Foo.c && git add Foo.c && tick && git commit -q --no-verify -m code
+	bad E_SCOPE "fulfil a new scope that came in another case" ait fulfill $O --force -m f
+	check "names git's spelling" err_has "give it as git has it: 'Foo.c'"
+	git reset -q --hard "$H"; rm -f Foo.c
+fi
+
+# rule 3: a spec file where git has a code file as its directory would delete that file in a contract commit
+echo code > specs/y && git add specs/y && tick && git commit -q --no-verify -m y
+rm specs/y && mkdir specs/y && echo 'body: y' > specs/y/z.yaml
+bad E_INCOMPLETE "a spec file under a code file" ait future offer src/stock.c specs/y/z.yaml -m o
+check "the hint commits the removal with ait first" err_has "remove 'specs/y' and run 'ait commit -m <why>' first"
+git reset -q --hard "$H"; rm -rf specs/y
 done_testing

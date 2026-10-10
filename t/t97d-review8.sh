@@ -88,7 +88,7 @@ check "is committed" sh -c "git ls-tree HEAD specs/p.yaml | grep -q '^100755'"
 git config --unset core.fileMode; git reset -q --hard "$H"
 echo 'body: x' > specs/x && git add specs/x && tick && git commit -q --no-verify -m x && H3=$(git rev-parse HEAD)
 rm specs/x && mkdir specs/x && echo 'body: y' > specs/x/y.yaml
-tick; expect_ok "a file that became a directory" ait offer src/stock.c specs/x/y.yaml --force -m o
+bad E_INCOMPLETE "a spec file where git has a code file as its directory (rule 3)" ait offer src/stock.c specs/x/y.yaml --force -m o
 git reset -q --hard "$H"; rm -rf specs/x
 git sparse-checkout set --no-cone '/src/' '/tests/' '/specs/p.yaml' '/specs/pass.yaml'
 echo 'body: q' > specs/q.yaml
