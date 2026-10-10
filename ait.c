@@ -205,6 +205,9 @@ static void setup(int bare_ok)
 					  "--git-common-dir --show-object-format --show-toplevel"), "\n", -1);
 	if (lines.nr < 4 || (rc && !bare_ok))
 		reject(128, lines.nr < 4 ? "run this command inside a git repository" : NULL, "git failed: %s", git_error);
+	/* one value a line, and the state files of spec 4 hold a path a line */
+	if (lines.nr > (rc ? 4u : 5u))
+		unsupported("a repository path with a line feed");
 	gitdir = lines.items[0].string;
 	commondir = lines.items[1].string;
 	/* object IDs are SHA-1 throughout ait-mini */

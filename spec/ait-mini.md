@@ -32,6 +32,7 @@ git은 2.36 이상이어야 한다. ait는 객체를 `git cat-file --batch-comma
 | 행 범위 `PATH:S-E` | 파일 범위 `PATH`를 쓴다 |
 | `.ait/` 병합 충돌 해결(merge driver) | git의 기본 병합을 쓴다. 충돌이 나면 한쪽 판을 골라 stage하고 merge를 마친다. hook이 결과를 검증한다 |
 | 명세 정의의 `environment` | 쓰지 않는다 |
+| SHA-256 저장소, 경로에 LF가 든 저장소·worktree | SHA-1 저장소에서, LF 없는 경로로 쓴다. 상태 파일(4장)은 경로 하나를 한 행에 담는다 |
 
 ## 한계
 

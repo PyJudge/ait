@@ -58,4 +58,11 @@ B=$(git rev-parse HEAD); Z=0000000000000000000000000000000000000000
 run sh -c "printf 'HEAD^{/bad\nline} %s refs/heads/nl %s\n' $B $Z | ait hook pre-push"
 check "the commit is validated" sh -c "[ $rc != 0 ]"
 git reset -q --hard "$H"
+# 4: the state files hold a path a line; a worktree path with a line feed is not supported
+git worktree add -q "$T/a
+b" -b nl
+(cd "$T/a
+b" && ait todo >/dev/null 2>"$T/err"; echo $? > "$T/rc")
+check "a path with a line feed is refused plainly" sh -c "[ \$(cat '$T/rc') = 128 ]"
+check "as not supported" err_has "not supported in ait-mini: 'a repository path with a line feed'"
 done_testing
