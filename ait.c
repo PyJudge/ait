@@ -47,11 +47,21 @@ void suggest(const char *fmt, ...)
 /* git's error()/die() routines and a hint, with the exit code of spec 5.7 */
 void reject(int code, const char *hint, const char *fmt, ...)
 {
+	struct strbuf msg = STRBUF_INIT;
 	va_list ap;
+	size_t i;
 
 	va_start(ap, fmt);
-	(code == 128 ? get_die_message_routine() : get_error_routine())(fmt, ap);
+	strbuf_vaddf(&msg, fmt, ap);
 	va_end(ap);
+	/* 5.6: a message is one line, whatever a value in it holds; git's vreportf does so for other controls */
+	for (i = 0; i < msg.len; i++)
+		if ((unsigned char)msg.buf[i] < 0x20)
+			msg.buf[i] = '?';
+	if (code == 128)
+		die_message("%s", msg.buf);
+	else
+		error("%s", msg.buf);
 	if (code == 129)
 		fputs("usage: ait <command> [<args>]  (see spec/ait-mini.md)\n", stderr);
 	if (hint)

@@ -601,15 +601,19 @@ static void apply(struct request *q, struct clause *c)
 }
 
 /*
- * S as a YAML string, which is UTF-8: as it is, or, holding other bytes (a
- * path git keeps as bytes), quoted as git shows such a path (core.quotePath)
+ * S as a YAML string: as it is when libyaml takes it as UTF-8, or, holding
+ * other bytes (a path git keeps as bytes), quoted as git shows such a path
+ * (core.quotePath)
  */
 static const char *yaml_text(const char *s)
 {
 	struct strbuf sb = STRBUF_INIT;
+	yaml_event_t e;
 
-	if (is_utf8(s))
+	if (yaml_scalar_event_initialize(&e, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1, YAML_ANY_SCALAR_STYLE)) {
+		yaml_event_delete(&e);
 		return s;
+	}
 	quote_c_style(s, &sb, NULL, 0);
 	return strbuf_detach(&sb, NULL);
 }
@@ -1203,7 +1207,7 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	/* 8.4: the subset of 2.5.1, its unknown keys too, then the input, then the rest */
 	yaml_check(&kv, schema, q->result, hint, 0);
 	if (!yget(&kv, "input"))
-		reject(128, hint, "bad format: '%s': no 'input'%s", q->result, yline(&kv, ""));
+		reject(128, hint, "bad format: '%s': no 'input'%s", q->result, yline(&kv, "input"));
 	if (strcmp(yget(&kv, "input"), input))
 		return 0;
 	yaml_check(&kv, schema, q->result, hint, 1);
@@ -1230,7 +1234,7 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	}
 	if (seen.nr != q->tasks.nr)
 		reject(128, hint, "bad format: '%s': %d of %d tasks%s", q->result, (int)seen.nr, (int)q->tasks.nr,
-		       yline(&kv, yget(&kv, "results") ? "results" : ""));
+		       yline(&kv, "results"));
 	return 1;
 }
 

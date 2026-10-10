@@ -1172,6 +1172,9 @@ int read_text(struct strbuf *sb, const char *path)
  * '\' in a key are escaped, so a path names one value. Every value keeps
  * where its text starts (a byte offset) and its kind.
  */
+/* the path the root map is kept under: no key gives it, as yaml_path() escapes a '\\' of a key */
+#define ROOT "\\"
+
 struct yval {
 	char *s;
 	size_t start, at, end;	/* where the node starts, where the value's text starts, where the node ends */
@@ -1292,9 +1295,9 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 	path = yaml_place(*depth ? &stack[*depth - 1] : NULL, e, &why);
 	if (why)
 		return why;
-	/* the root map, kept under "" for the line of what it lacks */
+	/* the root map, kept under ROOT for the line of what it lacks */
 	if (!*depth)
-		path = xstrdup("");
+		path = xstrdup(ROOT);
 	if (path && unsorted_string_list_has_string(kv, path))
 		return xstrfmt("duplicate key '%s'", path);
 	if (path) {
@@ -1316,7 +1319,7 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 		return NULL;
 	if (*depth == 16)
 		return "nested too deeply";
-	stack[*depth].path = *path ? path : NULL;
+	stack[*depth].path = strcmp(path, ROOT) ? path : NULL;
 	stack[*depth].key = NULL;
 	stack[*depth].n = 0;
 	stack[*depth].kind = yaml_kind(e);
@@ -1447,21 +1450,44 @@ void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size
 	strbuf_splice(text, v->start, end - v->start, sb.buf, sb.len);
 }
 
+/* where the last '.' of the path P stands, its length when it has none; keys escape theirs as "\\." */
+static size_t last_dot(const char *p)
+{
+	size_t i, dot = strlen(p);
+
+	for (i = 0; p[i]; i++)
+		if (p[i] == '\\' && p[i + 1])
+			i++;
+		else if (p[i] == '.')
+			dot = i;
+	return dot;
+}
+
 /*
- * " in line N" of the value of KEY, for E_FORMAT (5.8: the file and the line);
- * "" names the root map, where a missing key belongs. Empty when there is none.
+ * " in line N" of the value of KEY, for E_FORMAT (5.8: the file and the
+ * line); for a KEY that is not there, of the nearest map above it that is,
+ * the root at last, or line 1 of a file with none
  */
 char *yline(struct string_list *kv, const char *key)
 {
-	struct string_list_item *item = unsorted_string_list_lookup(kv, key);
+	char *up = xstrdup(key);
+	struct string_list_item *item;
+	size_t dot;
 
-	return item ? xstrfmt(" in line %d", ((struct yval *)item->util)->line) : xstrdup("");
+	while (!(item = unsorted_string_list_lookup(kv, up)) && *up) {
+		dot = last_dot(up);
+		up[dot < strlen(up) ? dot : 0] = 0;
+	}
+	if (!item)
+		item = unsorted_string_list_lookup(kv, ROOT);
+	return xstrfmt(" in line %d", item ? ((struct yval *)item->util)->line : 1);
 }
 
 /*
  * spec 8.4: the "|" blocks of TEXT, a YAML file, without their trailing blank
- * lines where that leaves the value as it is (not "|+"), as libyaml places
- * each block; from the last one back, so the places of the others hold
+ * lines: whole lines of spaces at the end of a block as libyaml places it,
+ * dropped only where the value reads the same after ("|+" keeps them as its
+ * value); from the last block back, so the places of the others hold
  */
 void yaml_trim_blocks(struct strbuf *text)
 {
@@ -1473,17 +1499,30 @@ void yaml_trim_blocks(struct strbuf *text)
 		return;
 	for (i = kv.nr; i-- > 0;) {
 		struct yval *v = kv.items[i].util;
-		size_t p = v->end, e;
+		struct string_list after = STRING_LIST_INIT_DUP;
+		struct strbuf trimmed = STRBUF_INIT;
+		size_t head = v->start + strcspn(text->buf + v->start, "\n") + 1, e = v->end, p, line;
 
-		if (!v->block || memchr(text->buf + v->start, '+', strcspn(text->buf + v->start, "\n")))
+		if (!v->block)
 			continue;
-		while (p > v->start && (text->buf[p - 1] == '\n' || text->buf[p - 1] == ' '))
-			p--;
-		/* up to the line break that ends the block's last line; the next line keeps its indentation */
-		for (e = v->end; e > p && text->buf[e - 1] != '\n'; e--)
-			;
-		if (e > p)
-			strbuf_splice(text, p, e - p, "\n", 1);
+		/* the end of the block's last line; the next line keeps its indentation */
+		while (e > head && text->buf[e - 1] != '\n')
+			e--;
+		/* back over the lines that hold spaces only */
+		for (p = e; p > head; p = line) {
+			line = p - 1;
+			while (line > head && text->buf[line - 1] != '\n')
+				line--;
+			if (text->buf[line + strspn(text->buf + line, " ")] != '\n')
+				break;
+		}
+		if (p == e)
+			continue;
+		strbuf_add(&trimmed, text->buf, text->len);
+		strbuf_splice(&trimmed, p, e - p, "", 0);
+		if (!yaml_parse(trimmed.buf, &after, "", &err) && yget(&after, kv.items[i].string) &&
+		    !strcmp(yget(&after, kv.items[i].string), v->s))
+			strbuf_splice(text, p, e - p, "", 0);
 	}
 }
 
@@ -1500,19 +1539,6 @@ static char schema_kind(const char *const *schema, const char *pattern)
 		if (starts_with(*schema, pattern) && (*schema)[strlen(pattern)] == ' ')
 			return (*schema)[strlen(pattern) + 1];
 	return 0;
-}
-
-/* where the Nth '.' of the path P stands (its length when there are fewer); keys escape theirs as "\." */
-static size_t nth_dot(const char *p, size_t n)
-{
-	size_t i;
-
-	for (i = 0; p[i]; i++)
-		if (p[i] == '\\' && p[i + 1])
-			i++;
-		else if (p[i] == '.' && !--n)
-			return i;
-	return i;
 }
 
 /*
@@ -1532,25 +1558,24 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 		char kind = 0;
 
 		/* the root map is no key */
-		if (!*item->string)
+		if (!strcmp(item->string, ROOT))
 			continue;
 		string_list_split(&parts, item->string, ".", -1);
 		for_each_string_list_item(part, &parts)
 			strbuf_addf(&pattern, "%s%s", pattern.len ? "." : "",
 				    *part->string && !part->string[strspn(part->string, "0123456789")] ? "N" : part->string);
 		if (!(kind = schema_kind(schema, pattern.buf))) {
-			/* the nearest key the schema knows above it: under a map (or the root) it is an unknown key */
-			size_t up = parts.nr;
-			char above = 0;
+			/*
+			 * a key the schema lacks, in a map the document and the schema both
+			 * have as one (or the root), is unknown; under anything else it is
+			 * its parent's kind that is wrong, and the parent's check says so
+			 */
+			size_t dot = last_dot(item->string);
+			struct string_list_item *parent = unsorted_string_list_lookup(kv, xstrndup(item->string, dot));
 
-			while (!above && --up)
-				above = schema_kind(schema, xstrndup(pattern.buf, nth_dot(pattern.buf, up)));
-			if (!above || above == 'm')
+			if (!item->string[dot] || (parent && ((struct yval *)parent->util)->kind == 'm' &&
+						    schema_kind(schema, xstrndup(pattern.buf, last_dot(pattern.buf))) == 'm'))
 				reject(128, hint, "bad format: '%s': unknown key '%s' in line %d", what, item->string, v->line);
-			/* under a scalar or a list, it is that value that has the wrong kind */
-			if (kinds)
-				reject(128, hint, "bad format: '%s': bad value of '%s' in line %d", what,
-				       xstrndup(item->string, nth_dot(item->string, up)), v->line);
 			continue;
 		}
 		/* a key with nothing under it is an empty list, map or scalar; "" is a scalar only */
@@ -1588,7 +1613,8 @@ struct string_list *def_get(struct tree *t, const char *path)
 		       yline(kv, "engine"));
 	yaml_check(kv, *engine ? exec : prompt, path, NULL, 1);
 	if (!yget(kv, "body") || !*yget(kv, "body") || (*engine && !yget(kv, "command.0")))
-		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'%s", path, yline(kv, ""));
+		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'%s", path,
+		       yline(kv, !yget(kv, "body") || !*yget(kv, "body") ? "body" : "command.0"));
 	string_list_insert(&parsed, oid)->util = kv;
 	return kv;
 }
