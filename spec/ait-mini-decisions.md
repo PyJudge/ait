@@ -8,7 +8,7 @@
 2. **sparse로 다루는 조건은 `core.sparseCheckout`이 true이고 `info/sparse-checkout`이 있을 때.** "git이 하는 대로"에서 도출. 패턴 파일이 없으면 git도 sparse로 다루지 않으므로 reapply하지 않는다.
 3. **pre-push 입력은 오른쪽부터 읽음.** git 출력 형식(transport.c:1355)에서 도출. 로컬 필드에 공백과 LF가 있어도 된다. 형식에 맞지 않는 남은 입력은 `fatal: bad pre-push input '…'`(128)이다. 문구와 종료 코드는 선택.
 4. **symlink이거나 일반 파일이 아닌 명세 파일은 E_INCOMPLETE `'…' is not a regular file`.** 2.1.4와 spec 표에서 도출. 문구는 선택.
-5. **대소문자만 다른 경로는 받지 않음(사용자 결정, 7.3.3에 적음).** core.ignorecase에서 HEAD나 index에 대소문자만 다른 경로가 있으면 명세 파일은 E_INCOMPLETE, 계약 범위는 E_SCOPE이고, hint는 git의 경로를 알려 준다. `git add`가 그 경로를 stage하지 않는 것을 따랐다.
+5. **대소문자만 다른 경로는 받지 않음(사용자 결정, 7.3.3에 적음).** core.ignorecase에서 HEAD나 index에 대소문자만 다른 경로가 있으면 명세 파일은 E_INCOMPLETE, 계약 범위는 E_SCOPE다. hint는 git의 경로를 알려 주고, HEAD와 index의 철자가 서로 다르면 두 곳의 철자를 맞추라고 한다(맴도는 hint를 막는다). `git add`가 그 경로를 stage하지 않는 것을 따랐다.
 6. **noop일 때 index를 맞추지 않음.** 5.5-4 "noop일 때도 같다"에서 도출. 부분 stage 검사가 먼저 막으므로, noop까지 오면 명세 파일의 index 판은 HEAD와 같고 맞출 것이 없다. 문구는 그대로 둔다.
 7. **5.5-5의 경고와 hint 문구.** spec 5.5-5의 형식을 따른다. refresh가 실패하면 5.5-4를 다 하지 못한 것이라 `but the index and work tree were not updated`와 bring hint를 쓰고, sparse reapply가 실패하면 `.ait/` 경로를 맞추지 못한 경로로 친다.
 8. **ID를 만들 수 없을 때의 문구 `unable to get random bytes`.** 선택. git의 tempfile 문구를 따랐다.
@@ -22,7 +22,7 @@
 16. **intent-to-add는 git처럼 "stage되지 않음".** 5.5-1·7.3.3과 git의 동작에서 도출. 커밋할 tree와 부분 stage 판정은 `git write-tree`(intent-to-add를 뺀다)로, follow의 O는 `git ls-files -s`의 항목(intent-to-add도 든다)으로 한다. 그래서 `git add -N`한 명세 파일은 받고 index가 커밋된 판을 따르며, 커밋이 빼는 코드 경로의 intent-to-add 항목은 git commit처럼 남는다.
 17. **명세 정의는 git이 stage한 blob에서 읽음.** 7.3.3("작업 폴더 내용과 mode"를 U에 넣는다)과 2.1.4에서 도출. U에 든 것은 git이 stage한 blob이므로 정의도 그 blob에서 읽는다. 그래서 clean filter를 거친 내용의 inputs를 따른다.
 18. **YAML 값에 NUL이 들면 E_FORMAT(`a NUL character`).** 선택(spec은 정하지 않는다). NUL이 든 파일을 이미 `not a text file`로 막는 것과 맞췄다. 표준 escape(`\0`)로 NUL을 쓸 수 있게 되어 생긴 경우다.
-19. **명세 파일은 `git add -f`로 stage함(임시 index에 HEAD를 깔고 그 경로의 실제 index 판을 얹은 뒤).** 7.3.3과 "git이 하는 대로"에서 도출. 그래서 core.fileMode, 파일이 디렉터리가 된 경로, submodule 안 경로, sparse 밖 경로를 git add가 다루는 대로 다룬다. 작업 폴더의 모양(symlink를 지나는 경로, 디렉터리, FIFO, 없는 파일)은 ait가 먼저 보고 E_INCOMPLETE, git add가 거절하면 E_GIT이다.
+19. **명세 파일은 `git add -f`로 stage함(임시 index에 HEAD를 깔고 그 경로의 실제 index 판을 얹은 뒤).** 7.3.3과 "git이 하는 대로"에서 도출. 그래서 core.fileMode, 파일과 디렉터리가 서로 바뀐 경로, submodule 안 경로, sparse 패턴 밖 경로를 git add가 다루는 대로 다룬다. 경로의 판은 디렉터리가 아닌 항목이다. skip-worktree·assume-unchanged 표시는 임시 index에 옮기지 않으므로 7.3.3대로 작업 폴더 내용을 넣는다. 작업 폴더의 모양(symlink를 지나는 경로, 디렉터리, FIFO, 없는 파일)은 ait가 먼저 보고 E_INCOMPLETE, git add가 거절하면 E_GIT이다.
 20. **E_FORMAT의 행은 값이 있는 자리의 행.** 5.8 "(파일과 행)"에서 도출. 모르는 키, 값의 종류, engine, input, 결과 파일의 task는 그 값의 행을 쓴다. 키가 없으면 결정 29.
 21. **NEL·LS·PS를 거절함.** 선택. 2.5.1은 행바꿈을 LF로만 정하는데 libyaml(YAML 1.1)은 이 셋도 행바꿈으로 읽어 값이 달라지므로, CR과 함께 `a line break other than LF`로 막는다.
 22. **정수는 따옴표 없는 10진수, 앞자리 0·부호 없음.** 선택(2.5.1은 "10진 정수"라고만 한다). YAML 1.2는 `010`·`+1`도 정수로 읽지만, `"0"`은 문자열이고 앞자리 0은 YAML 1.1 독자가 8진수로 읽으므로 막았다.
@@ -37,3 +37,5 @@
 31. **결과 파일의 task 이름은 확인 파일이 쓴 이름(UTF-8이 아니면 git식 인용)으로 맞추고, `+n`을 바꿀 때도 그 이름으로 다시 씀.** 결정 27(사용자 결정)에서 도출.
 32. **ait의 트레일러 키 네 개(`Ait-Check`, `Ait-Request`, `Ait-Agent`, `Ait-Session`)는 `trailer.<키>.key=<키>`로 고정해 읽고 씀(사용자 결정).** 그 키 이름을 별칭으로 쓴 사용자 설정(`trailer.ait-check.key` 등)은 대소문자와 무관하게 막힌다. 다른 별칭 이름으로 이 키들을 가리키게 하는 설정까지는 막지 못한다.
 33. **ait의 메시지(오류 한 행) 안의 제어문자는 `?`로 바꿈.** 5.6("메시지는 영어 한 행")에서 도출. 값에 든 줄바꿈이 가짜 `fatal:`·`hint:` 줄을 만들지 못한다. git의 vreportf가 다른 제어문자에 하는 것과 같다.
+34. **macOS에서 인자를 git처럼 NFC로 바꿈.** "git이 할 수 있는 일은 git에게서 받는다"(CLAUDE.md)에서 도출. git의 compat/precompose_utf8.c를 옮겨 core.precomposeUnicode일 때 argv를 조합형으로 바꾼다. 그래서 셸 glob 등이 준 NFD 철자의 경로도 git이 가진 경로로 찾는다.
+35. **고정이 맞는지는 레코드의 `file`·`provider` 행을 그 tree의 항목과 그대로 비교함.** 1.5a에서 도출. 정의를 파싱하지 않으므로 과거의 깨진 blob이 todo를 멈추지 않는다. H8의 since는 그 경로들이 바뀐 커밋에서만 다시 계산하고 나머지는 부모를 따른다(13.4).

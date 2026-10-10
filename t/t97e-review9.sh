@@ -71,4 +71,51 @@ IN=$(sed -n 's/^input: //p' "$(out_value check-result)" | tr -d '"')
 printf "input: $IN\nresults:\n- task: \"x\\\\nfatal: forged\"\n  outcome: pass\n  basis: b\n" > "$T/s.yaml"
 tick; run ait offer src/stock.c specs/pass.yaml -m o -r "$T/s.yaml"
 check "no forged line" sh -c "! grep -q '^fatal: forged' '$T/err'"
+
+# 7.3.3: a version of a file is no tree: a directory that became a file is staged as git add stages it
+mkdir specs/d && echo 'body: x' > specs/d/x && git add specs/d && tick && git commit -q --no-verify -m d && H5=$(git rev-parse HEAD)
+rm -rf specs/d && echo 'body: file' > specs/d
+tick; expect_ok "a directory become a file" ait offer src/stock.c specs/d --force -m o
+check "the commit holds the file, no made-up path" sh -c "[ \"\$(git ls-tree -r --name-only HEAD specs | grep '^specs/d')\" = specs/d ]"
+git reset -q --hard "$H"; rm -rf specs/d
+
+# 3.3 and 7.3.3: an argument spelled in NFD is the path git has in NFC (macOS, core.precomposeUnicode)
+if [ "$(git config --bool core.precomposeunicode)" = true ]; then
+	printf 'body: k\n' > "$(printf 'specs/\352\260\200.yaml')"
+	tick; expect_ok "a spec file given in NFD" ait offer src/stock.c "$(printf 'specs/\341\204\200\341\205\241.yaml')" --force -m o
+	git reset -q --hard "$H"; rm -f "$(printf 'specs/\352\260\200.yaml')"
+fi
+
+# 8.4: a task renamed is written by libyaml, so ait reads back what it committed (NEL in a name)
+printf 'body: x\nengine: exec\ncommand: [./tests/pass.sh]\n' > "$(printf 'specs/a\302\205b.yaml')"
+tick; run ait offer src/stock.c "$(printf 'specs/a\302\205b.yaml')" -m o
+IN=$(sed -n 's/^input: //p' "$(out_value check-result)" | tr -d '"')
+printf 'input: %s\nresults:\n- task: "+1:specs/a\\Nb.yaml"\n  outcome: pass\n  basis: b\n' "$IN" > "$T/r.yaml"
+tick; run ait offer src/stock.c "$(printf 'specs/a\302\205b.yaml')" -m o -r "$T/r.yaml"
+check "the request is taken" [ "$rc" = 0 ]
+check "the committed task holds no raw NEL" sh -c "! git log -1 --format=%B | grep -q \"\$(printf '\302\205')\""
+git reset -q --hard "$H"; rm -f "$(printf 'specs/a\302\205b.yaml')"
+
+# 1.5a and H8: an old malformed spec blob is not the pin; todo does not parse it
+tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out"; O=$(new_id)
+echo 'body: [' > specs/p.yaml && git add specs/p.yaml && tick && git commit -q --no-verify -m bad
+git checkout -q HEAD~1 -- specs/p.yaml && git rm -q src/stock.c && tick && git commit -q --no-verify -m back
+run ait todo $O
+check "todo reads past an old malformed blob" [ "$rc" = 0 ]
+git reset -q --hard "$H"
+
+# 13.4: H8 works out the pins only where they change
+tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out"; O=$(new_id)
+git rm -q src/stock.c && tick && git commit -q --no-verify -m gone
+i=0; while [ $i -lt 60 ]; do echo $i > other.txt && git add other.txt && git commit -q --no-verify -m e; i=$((i+1)); done
+mkdir -p "$T/cbin" && cat > "$T/cbin/git" <<'GIT'
+#!/bin/sh
+real=$(PATH=$(echo "$PATH" | sed "s|$T/cbin:||") command -v git)
+for a; do case $a in ls-tree) echo x >> "$T/ls-tree.count";; -*|*=*|/*) continue;; esac; break; done
+exec "$real" "$@"
+GIT
+chmod +x "$T/cbin/git"; rm -f "$T/ls-tree.count"
+run env PATH="$T/cbin:$PATH" ait todo $O
+check "a handful of tree listings, not one a commit" sh -c "[ \$(wc -l < '$T/ls-tree.count') -lt 10 ]"
+git reset -q --hard "$H"
 done_testing

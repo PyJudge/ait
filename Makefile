@@ -16,9 +16,14 @@ endif
 ifneq ($(filter Darwin SunOS FreeBSD OpenBSD MirBSD NetBSD,$(uname_S)),)
 	CFLAGS += -DHAVE_ARC4RANDOM
 endif
+# argv precomposed as git does on macOS (git v2.53.0 config.mak.uname:144-145), with iconv
+ifeq ($(uname_S),Darwin)
+	CFLAGS += -DPRECOMPOSE_UNICODE
+	LDLIBS += -liconv
+endif
 
 ait: $(SRC) $(wildcard *.h) $(YAML)
-	$(CC) $(CFLAGS) -Ilibyaml -o $@ $(SRC) $(YAML)
+	$(CC) $(CFLAGS) -Ilibyaml -o $@ $(SRC) $(YAML) $(LDLIBS)
 
 libyaml/%.o: libyaml/%.c libyaml/yaml.h libyaml/yaml_private.h
 	$(CC) $(YAML_CFLAGS) -c -o $@ $<

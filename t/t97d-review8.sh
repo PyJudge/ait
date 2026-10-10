@@ -120,10 +120,11 @@ tick; run ait commit -m c; I2=$(sed -n 's/^input: //p' "$(git rev-parse --git-pa
 check "the submodule's change is in the check input" [ "$I1" != "$I2" ]
 git reset -q --hard "$H"; rm -rf sub .gitmodules
 
-# 7.3.3 and decision 5: a case twin counts only where git has no path spelled so
+# 7.3.3 and decision 5: a case twin in HEAD or the index is refused; when the two spell it apart, they are to agree
 if [ "$(git config --bool core.ignorecase)" = true ]; then
 	git mv specs/p.yaml specs/P.yaml
-	tick; expect_ok "the index's spelling is taken" ait offer src/stock.c specs/P.yaml --force -m o
+	bad E_INCOMPLETE "HEAD and the index spell it apart" ait offer src/stock.c specs/P.yaml --force -m o
+	check "the hint asks for one spelling, not the other one" err_has "spell it the same in HEAD and the index"
 	git reset -q --hard "$H"
 fi
 

@@ -9,6 +9,7 @@ extern const char *top, *gindex, *headref, *head, *gitdir, *commondir;
 extern char *git_error;		/* the first stderr line of the last git call, without git's "fatal: " or "error: " */
 extern char *git_cmd;		/* the subcommand of the last git call */
 char *git_failed(void);
+int ait_config_bool(const char *key);
 char *quoted(const char *s);
 extern size_t git_out_len;	/* the length of the last git output */
 
@@ -36,6 +37,7 @@ struct tree *tree_load(const char *treeish);
 struct tree *head_tree(void);
 struct tree *index_load(struct tree *noted);
 struct entry *tree_get(struct tree *t, const char *path);
+struct entry *file_entry(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
 const char *blob_text(const char *oid);
 void index_line(struct strbuf *sb, const char *mode, const char *oid, const char *path);
@@ -122,6 +124,7 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 char *yline(struct string_list *kv, const char *key);
 char *nul_line(const char *buf);
 void yaml_trim_blocks(struct strbuf *text);
+int yaml_out(void *sb, unsigned char *buf, size_t n);
 void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size_t len, const char *with);
 const char *yget(struct string_list *kv, const char *key);
 struct string_list *def_get(struct tree *t, const char *path);

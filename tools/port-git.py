@@ -114,6 +114,19 @@ write('wrapper.c', '#include "git-compat-util.h"\n#include "strbuf.h"\n', [
 # setup: the standard descriptors open, as git's common main makes them before anything (common-init.c:45)
 write('setup.c', '#include "git-compat-util.h"\n#include "setup.h"\n', [fn('setup.c', 2074)])
 write('setup.h', '#ifndef SETUP_H\n#define SETUP_H\n', ['void sanitize_stdfds(void);\n#endif'])
+# precompose: argv precomposed from NFD to NFC as git does on macOS (core.precomposeUnicode); the setting read by ait
+write('precompose.c', '#include "git-compat-util.h"\n#include "precompose.h"\n#ifdef PRECOMPOSE_UNICODE\n#include <iconv.h>\n'
+      'typedef char *iconv_ibp;\nstatic int precomposed_unicode = -1;\n', [
+    rng('compat/precompose_utf8.c', 19, 20), fn('compat/precompose_utf8.c', 22), fn('utf8.c', 486),
+    fn('compat/precompose_utf8.c', 68), fn('compat/precompose_utf8.c', 98), '#endif'],
+    [('repo_config_get_bool(the_repository, "core.precomposeunicode", &precomposed_unicode);',
+      'precomposed_unicode = ait_config_bool("core.precomposeunicode");')])
+write('precompose.h', '#ifndef PRECOMPOSE_H\n#define PRECOMPOSE_H\n', [
+    '/* ait reads the setting with git config */\nint ait_config_bool(const char *key);\n#ifdef PRECOMPOSE_UNICODE\n'
+    'const char *precompose_string_if_needed(const char *in);\n'
+    'const char *precompose_argv_prefix(int argc, const char **argv, const char *prefix);\n#else',
+    rng('git-compat-util.h', 174, 183), '#endif\n#endif'],
+    [('argc UNUSED,', 'argc MAYBE_UNUSED,'), ('argv UNUSED,', 'argv MAYBE_UNUSED,')])
 # utf8: validity only; is_utf8 steps with pick_one_utf8_char instead of utf8_width, which also measures the column width
 write('utf8.c', '#include "git-compat-util.h"\n#include "utf8.h"\n', [
     fn('utf8.c', 122), fn('utf8.c', 241)],

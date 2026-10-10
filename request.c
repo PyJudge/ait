@@ -128,11 +128,10 @@ static int same_entry(struct entry *a, struct entry *b)
 /* this worktree is sparse as git takes it: core.sparseCheckout with its own patterns file (git-sparse-checkout(1)) */
 static int sparse(void)
 {
-	int rc, gone;
+	int gone;
 	char *patterns = line1(git_run(NULL, NULL, &gone, "rev-parse --path-format=absolute --git-path info/sparse-checkout"));
 
-	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool core.sparseCheckout")), "true") && !gone &&
-	       !access(patterns, F_OK);
+	return ait_config_bool("core.sparseCheckout") && !gone && !access(patterns, F_OK);
 }
 
 /*
@@ -197,8 +196,10 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
 			string_list_append(&left, item->string);
 	}
 	/* read-tree and checkout-index leave the entries without the files' stat data */
-	if (!rc && o)
-		git_run(NULL, NULL, &rc, "update-index -q --refresh");
+	if (!rc && o) {
+		git_run(NULL, NULL, &rc, "update-index --refresh");
+		rc = rc && rc != 1;
+	}
 	/* the sparse patterns back over .ait/; when that fails, those files are left as they are */
 	if (!rc && ait.nr && sparse()) {
 		git_run(NULL, NULL, &unset, "sparse-checkout reapply");
@@ -950,7 +951,7 @@ static void fix_hints(struct request *q, struct string_list *ids)
 					 "then rerun without -r to get the new tasks");
 			else if (q->gate && unsorted_string_list_has_string(&q->files, path))
 				/* 7.3.3: a version staged apart from HEAD's would be partly staged once the file is fixed */
-				add_hint(q, xstrfmt(same_entry(tree_get(q->noted, path), tree_get(q->ht, path)) ?
+				add_hint(q, xstrfmt(same_entry(file_entry(q->noted, path), file_entry(q->ht, path)) ?
 						    "fix '%s', then rerun this command" : "fix '%s' and stage it again, then rerun this command",
 						    path));
 			else if (q->gate)
@@ -1019,12 +1020,6 @@ static char *judged_tree(struct request *q, struct string_list *changed)
  * reads back as it was: strings "...", a body as a "|" block where libyaml
  * can keep it so, escapes as YAML has them
  */
-static int yaml_out(void *sb, unsigned char *buf, size_t n)
-{
-	strbuf_add(sb, buf, n);
-	return 1;
-}
-
 static void emit(yaml_emitter_t *y, yaml_event_t *e)
 {
 	if (!yaml_emitter_emit(y, e))
@@ -1757,15 +1752,20 @@ static struct tree *stage_files(struct request *q)
 	char *tree;
 
 	for_each_string_list_item(item, &q->files) {
-		const char *why = not_a_file(item->string), *twin = NULL;
+		const char *why = not_a_file(item->string);
+		const char *in_head = case_twin(q->ht, item->string), *in_index = case_twin(q->index, item->string);
 		struct stat st;
 
-		/* a twin counts only where git has no path spelled so (3.3's pin() takes an exact one too) */
-		if (!tree_get(q->ht, item->string) && !tree_get(q->index, item->string))
-			twin = case_twin(q->ht, item->string) ? case_twin(q->ht, item->string) : case_twin(q->index, item->string);
-		if (twin)
-			reject(1, xstrfmt("give it as git has it: '%s'", twin),
-			       "spec files do not match the contract: '%s' is '%s' in git", item->string, twin);
+		/* decision 5: a path of HEAD or the index differs from it in case only; git add stages nothing then */
+		if (in_head && in_index && strcmp(in_head, in_index))
+			reject(1, NULL, "spec files do not match the contract: '%s' is '%s' and '%s' in git", item->string, in_head, in_index);
+		if ((in_head || in_index) && (tree_get(q->ht, item->string) || tree_get(q->index, item->string)))
+			reject(1, xstrfmt("spell it the same in HEAD and the index ('%s' there), then rerun this command",
+					  in_head ? in_head : in_index),
+			       "spec files do not match the contract: '%s' is '%s' in git", item->string, in_head ? in_head : in_index);
+		if (in_head || in_index)
+			reject(1, xstrfmt("give it as git has it: '%s'", in_head ? in_head : in_index),
+			       "spec files do not match the contract: '%s' is '%s' in git", item->string, in_head ? in_head : in_index);
 		if (why)
 			reject(1, NULL, "spec files do not match the contract: '%s' %s", item->string, why);
 		if (lstat(xstrfmt("%s/%s", top, item->string), &st))
@@ -1773,7 +1773,7 @@ static struct tree *stage_files(struct request *q)
 	}
 	/* on HEAD, the index's own versions of the files, so git add starts where the index is (core.fileMode) */
 	for_each_string_list_item(item, &q->files) {
-		struct entry *was = tree_get(q->noted, item->string);
+		struct entry *was = file_entry(q->noted, item->string);
 
 		index_line(&info, was ? was->mode : "0", was ? was->oid : "0000000000000000000000000000000000000000",
 			   item->string);
@@ -1783,12 +1783,12 @@ static struct tree *stage_files(struct request *q)
 	u = tree_load(tree);
 	for_each_string_list_item(item, &q->files) {
 		/* the index as git commit takes it: an intent-to-add entry is not staged */
-		struct entry *e = tree_get(u, item->string), *staged = tree_get(q->noted, item->string);
+		struct entry *e = file_entry(u, item->string), *staged = file_entry(q->noted, item->string);
 
 		/* 2.1.4: a spec file is a regular file */
 		if (!e || (strcmp(e->mode, "100644") && strcmp(e->mode, "100755")))
 			reject(1, NULL, "spec files do not match the contract: '%s' is not a regular file", item->string);
-		if (!same_entry(staged, e) && !same_entry(staged, tree_get(q->ht, item->string)))
+		if (!same_entry(staged, e) && !same_entry(staged, file_entry(q->ht, item->string)))
 			reject(1, xstrfmt("stage all of '%s' or none of it", item->string),
 			       "spec files do not match the contract: '%s' is partly staged", item->string);
 	}

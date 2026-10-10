@@ -84,6 +84,14 @@ struct entry *tree_get(struct tree *t, const char *path)
 	return bsearch(&key, t->e, t->nr, sizeof(*t->e), cmp_entry);
 }
 
+/* the version of the file PATH in T, a listing that holds trees too: no tree entry is a file's version */
+struct entry *file_entry(struct tree *t, const char *path)
+{
+	struct entry *e = tree_get(t, path);
+
+	return e && strcmp(e->mode, "040000") ? e : NULL;
+}
+
 struct tree *head_tree(void)
 {
 	return tree_load(head ? head : "4b825dc642cb6eb9a060e54bf8d69288fbee4904");	/* the empty tree */
@@ -723,10 +731,9 @@ const char *case_twin(struct tree *t, const char *path)
 {
 	static int ignorecase = -1;
 	size_t i;
-	int rc;
 
 	if (ignorecase < 0)
-		ignorecase = !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool core.ignorecase")), "true");
+		ignorecase = ait_config_bool("core.ignorecase");
 	for (i = 0; ignorecase && i < t->nr; i++)
 		if (!strcasecmp(t->e[i].path, path) && strcmp(t->e[i].path, path))
 			return t->e[i].path;
@@ -985,13 +992,21 @@ static struct string_list *checks(void)
 	return &confirmed;
 }
 
-/* the code or spec files of R in T are not the ones it pins (the second half of 1.5a) */
+/*
+ * the code or spec files of R in T are not the ones it pins (the second half
+ * of 1.5a): each "file PATH MODE OID" and "provider PATH OID" line against
+ * T's entry; nothing is parsed, so an old malformed blob is simply not the pin
+ */
 static int off_pins(struct record *r, struct tree *t)
 {
 	struct string_list_item *item;
 
-	if (!files_match(r, t))
-		return 1;
+	for_each_string_list_item(item, &r->f[FILES]) {
+		struct entry *now = file_entry(t, scope_path(item->string));
+
+		if (!now || !starts_with(scope_oid(item->string), xstrfmt("%s %s ", now->mode, now->oid)))
+			return 1;
+	}
 	for_each_string_list_item(item, &r->f[PROVIDER]) {
 		const char *now = blob_at(t, scope_path(item->string));
 
@@ -1020,14 +1035,47 @@ static int same_pins(const char *text, struct record *r)
 	return text && !x.bad && in_state(&x, "current") && !strcmp(record_text(&x, PIN_KEYS), record_text(r, PIN_KEYS));
 }
 
+/* the facts of 9.1 for R over HEAD's history, each commit's verdict remembered */
+struct history {
+	struct string_list confirmed;	/* commits a check of R's pins holds at: a check commit and its descendants */
+	struct string_list changed;	/* commits that change R's record, code or spec files against a parent */
+	struct string_list parent;	/* commit -> its first parent */
+	struct string_list seen, off;	/* commit -> unverified there; commit -> off its pins there */
+};
+
+/*
+ * R's code or spec files at C are off its pins: worked out where they change
+ * (13.4: what is as in the parent is not worked out again), else as in C's
+ * first parent, going down until one changes them
+ */
+static int off_at(struct record *r, const char *c, struct history *h)
+{
+	struct string_list chain = STRING_LIST_INIT_NODUP;
+	struct string_list_item *hit, *up;
+	const char *x = c;
+	int off;
+
+	/* down the first parents to a commit worked out already, or one that changes them */
+	while (!(hit = string_list_lookup(&h->off, x)) && !string_list_has_string(&h->changed, x) &&
+	       (up = string_list_lookup(&h->parent, x)) && up->util) {
+		string_list_append(&chain, x);
+		x = up->util;
+	}
+	off = hit ? hit->util != NULL : off_pins(r, tree_load(x));
+	string_list_append(&chain, x);
+	for_each_string_list_item(hit, &chain)
+		string_list_insert(&h->off, hit->string)->util = off ? (void *)"" : NULL;
+	return off;
+}
+
 /*
  * R is unverified at commit C with the pins it has now (1.5a): C holds R as a
  * current contract with these pins, and no check confirmed them at C or an
- * ancestor of C (CONFIRMED), or C's tree is off them. Remembered in SEEN.
+ * ancestor of C, or C's code or spec files are off them
  */
-static int unverified_at(struct record *r, const char *c, struct string_list *confirmed, struct string_list *seen)
+static int unverified_at(struct record *r, const char *c, struct history *h)
 {
-	struct string_list_item *hit = string_list_lookup(seen, c);
+	struct string_list_item *hit = string_list_lookup(&h->seen, c);
 	const char *record = blob_at(head_tree(), xstrfmt(".ait/%s", r->id));
 	char there[48];
 	int is;
@@ -1036,8 +1084,8 @@ static int unverified_at(struct record *r, const char *c, struct string_list *co
 		return hit->util != NULL;
 	is = object(xstrfmt("%s:.ait/%s", c, r->id), 0, there, NULL) &&
 	     (!strcmp(there, record) || same_pins(blob_text(there), r)) &&
-	     (!string_list_has_string(confirmed, c) || off_pins(r, tree_load(c)));
-	string_list_insert(seen, c)->util = is ? (void *)"" : NULL;
+	     (!string_list_has_string(&h->confirmed, c) || off_at(r, c, h));
+	string_list_insert(&h->seen, c)->util = is ? (void *)"" : NULL;
 	return is;
 }
 
@@ -1049,29 +1097,47 @@ static int unverified_at(struct record *r, const char *c, struct string_list *co
  */
 const char *unverified_since(struct record *r)
 {
-	struct string_list confirmed = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP, commits = STRING_LIST_INIT_DUP;
+	struct history h = { STRING_LIST_INIT_DUP, STRING_LIST_INIT_DUP, STRING_LIST_INIT_DUP, STRING_LIST_INIT_DUP,
+			     STRING_LIST_INIT_DUP };
+	struct string_list commits = STRING_LIST_INIT_DUP;
+	struct strvec paths = STRVEC_INIT;
 	struct string_list_item *item;
 	char *want = xstrfmt("%s %s", r->id, pins(r));
+	size_t i;
 
 	if (!head)
 		return NULL;
 	for_each_string_list_item(item, check_trailers())
 		if (check_of(item->string) && !strcmp(check_of(item->string), want)) {
-			string_list_insert(&confirmed, item->util);
-			string_list_split(&confirmed, git("rev-list --ancestry-path %s", xstrfmt("%s..%s", (char *)item->util, head)),
+			string_list_insert(&h.confirmed, item->util);
+			string_list_split(&h.confirmed, git("rev-list --ancestry-path %s", xstrfmt("%s..%s", (char *)item->util, head)),
 					  "\n", -1);
 		}
-	string_list_sort(&confirmed);
+	string_list_sort(&h.confirmed);
+	/* the commits that change R's code or spec files against any parent, by git's full history */
+	strvec_pushl(&paths, "log", "--full-history", "-m", "--format=%H", head, "--", NULL);
+	for (i = 0; i < NKEYS; i++)
+		if (i == PROVIDER || i == FILES)
+			for_each_string_list_item(item, &r->f[i])
+				strvec_push(&paths, scope_path(item->string));
+	string_list_split(&h.changed, git_args(&paths, NULL, NULL, NULL), "\n", -1);
+	string_list_sort(&h.changed);
 	/* "C P1 P2 ..." newest first */
 	string_list_split(&commits, git("rev-list --topo-order --parents %s", head), "\n", -1);
 	for_each_string_list_item(item, &commits) {
 		struct string_list ids = STRING_LIST_INIT_DUP;
-		size_t i;
 
 		string_list_split(&ids, item->string, " ", -1);
-		if (!*item->string || !unverified_at(r, ids.items[0].string, &confirmed, &seen))
+		if (*item->string)
+			string_list_insert(&h.parent, ids.items[0].string)->util = ids.nr > 1 ? ids.items[1].string : NULL;
+	}
+	for_each_string_list_item(item, &commits) {
+		struct string_list ids = STRING_LIST_INIT_DUP;
+
+		string_list_split(&ids, item->string, " ", -1);
+		if (!*item->string || !unverified_at(r, ids.items[0].string, &h))
 			continue;
-		for (i = 1; i < ids.nr && !unverified_at(r, ids.items[i].string, &confirmed, &seen); i++)
+		for (i = 1; i < ids.nr && !unverified_at(r, ids.items[i].string, &h); i++)
 			;
 		if (i == ids.nr)
 			return ids.items[0].string;
@@ -1419,6 +1485,36 @@ const char *yget(struct string_list *kv, const char *key)
 	return item ? ((struct yval *)item->util)->s : NULL;
 }
 
+/* the output of libyaml's emitter into the strbuf SB */
+int yaml_out(void *sb, unsigned char *buf, size_t n)
+{
+	strbuf_add(sb, buf, n);
+	return 1;
+}
+
+/* S as one "..." scalar into SB, written by libyaml's emitter as the check files are (8.2) */
+static void yaml_quoted(struct strbuf *sb, const char *s)
+{
+	yaml_emitter_t y;
+	yaml_event_t e;
+	int ok;
+
+	yaml_emitter_initialize(&y);
+	yaml_emitter_set_output(&y, yaml_out, sb);
+	yaml_emitter_set_unicode(&y, 1);
+	yaml_emitter_set_width(&y, -1);
+	ok = yaml_stream_start_event_initialize(&e, YAML_UTF8_ENCODING) && yaml_emitter_emit(&y, &e) &&
+	     yaml_document_start_event_initialize(&e, NULL, NULL, NULL, 1) && yaml_emitter_emit(&y, &e) &&
+	     yaml_scalar_event_initialize(&e, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1,
+					  YAML_DOUBLE_QUOTED_SCALAR_STYLE) && yaml_emitter_emit(&y, &e) &&
+	     yaml_document_end_event_initialize(&e, 1) && yaml_emitter_emit(&y, &e) &&
+	     yaml_stream_end_event_initialize(&e) && yaml_emitter_emit(&y, &e);
+	yaml_emitter_delete(&y);
+	if (!ok)
+		BUG("libyaml cannot write a scalar: %s", y.problem);
+	strbuf_rtrim(sb);
+}
+
 /*
  * In TEXT, which KV was parsed from, the first LEN bytes of KEY's value become
  * WITH: in place where the text spells the value as it is, else the scalar is
@@ -1429,7 +1525,6 @@ void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size
 {
 	struct yval *v = unsorted_string_list_lookup(kv, key)->util;
 	struct strbuf sb = STRBUF_INIT;
-	const char *c;
 	size_t end = v->end;
 
 	if (v->literal) {
@@ -1438,15 +1533,7 @@ void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size
 	}
 	while (end > v->start && text->buf[end - 1] == '\n')
 		end--;
-	strbuf_addch(&sb, '"');
-	for (c = xstrfmt("%s%s", with, v->s + len); *c; c++)
-		if (*c == '"' || *c == '\\')
-			strbuf_addf(&sb, "\\%c", *c);
-		else if ((unsigned char)*c < 0x20)
-			strbuf_addf(&sb, "\\x%02x", (unsigned char)*c);
-		else
-			strbuf_addch(&sb, *c);
-	strbuf_addch(&sb, '"');
+	yaml_quoted(&sb, xstrfmt("%s%s", with, v->s + len));
 	strbuf_splice(text, v->start, end - v->start, sb.buf, sb.len);
 }
 

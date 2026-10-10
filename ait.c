@@ -6,6 +6,7 @@
 #include "run-command.h"
 #include "quote.h"
 #include "setup.h"
+#include "precompose.h"
 #include <dirent.h>
 #include <sys/file.h>
 #include <regex.h>
@@ -128,6 +129,14 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 		reject(128, top ? NULL : "run this command inside a git repository", "%s", git_failed());
 	strbuf_release(&err);
 	return strbuf_detach(&out, &git_out_len);
+}
+
+/* the boolean setting KEY as git config reads it: 1 when true */
+int ait_config_bool(const char *key)
+{
+	int rc;
+
+	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool %s", key)), "true");
 }
 
 /* E_GIT (5.8): the git command that failed last, and its stderr's first line */
@@ -993,6 +1002,8 @@ int main(int argc, const char **argv)
 		if (!commands[i].fn)
 			unsupported(argv[1]);
 		setup(!strcmp(argv[1], "hook"));
+		/* as git's commands take their arguments on macOS: NFD spellings precomposed (core.precomposeUnicode) */
+		precompose_argv_prefix(argc, argv, NULL);
 		session_prefix();
 		if (strcmp(argv[1], "init") && strcmp(argv[1], "hook"))
 			check_hooks();
