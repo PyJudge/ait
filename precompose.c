@@ -100,7 +100,7 @@ const char *precompose_string_if_needed(const char *in)
 		iconv_t ic_prec;
 		char *out;
 		if (precomposed_unicode < 0)
-			precomposed_unicode = ait_config_bool("core.precomposeunicode");
+			precomposed_unicode = config_true("core.precomposeunicode");
 		if (precomposed_unicode != 1)
 			return in;
 		ic_prec = iconv_open(repo_encoding, path_encoding);

@@ -4,19 +4,20 @@
 #include "git-compat-util.h"
 #include "strbuf.h"
 #include "string-list.h"
+struct strvec;
 
 /* ait.c: the process, git, messages and the commands that are not requests */
-extern const char *top, *gindex, *headref, *head, *gitdir, *commondir;
-extern char agent[72], sid[16];
+/* the worktree, the hook's index, HEAD's ref and commit, the git and common directories (5.12) */
+extern const char *top, *hook_index, *headref, *head, *gitdir, *commondir;
+extern char agent[72], sid[16];	/* the session's agent and ID (5.1) */
 extern char *git_error;		/* the first stderr line of the last git call, without git's "fatal: " or "error: " */
 extern char *git_cmd;		/* the subcommand of the last git call */
 extern size_t git_out_len;	/* the length of the last git output */
-struct strvec;
 char *git_args(struct strvec *args, const char *in, const char *index, int *rc);
 char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...);
 #define git(...) git_run(NULL, NULL, NULL, __VA_ARGS__)
 char *git_failed(void);
-int ait_config_bool(const char *key);
+int config_true(const char *key);
 char *object(const char *name, int contents, char *oid, size_t *size);
 char *line1(char *s);
 char *quoted(const char *s);
@@ -47,7 +48,6 @@ struct tree *index_load(struct tree *noted);
 struct entry *tree_get(struct tree *t, const char *path);
 struct entry *file_entry(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
-const char *blob_text(const char *oid);
 void index_line(struct strbuf *sb, const char *mode, const char *oid, const char *path);
 char *tree_with(const char *base, const char *index_info, struct string_list *paths);
 void tree_diff(struct tree *a, struct tree *b, struct string_list *paths);
@@ -64,7 +64,8 @@ struct record {
 	const char *alias;
 	char *bad;			/* why it is malformed (5.10), and how to mend it: */
 	char *mend;			/* "remove 'PATH'" or "restore 'PATH' ..." */
-	int seq, recheck;
+	int seq;			/* the order of a new record in the request: N of "+N" */
+	int recheck;			/* a current contract this request checks again */
 	int clause;			/* 1 + the helper clause that made it */
 };
 struct state {
@@ -75,7 +76,6 @@ struct state {
 void state_load(struct state *s, struct tree *t);
 struct record *state_get(struct state *s, const char *id);
 struct record *state_add(struct state *s, const char *id);
-struct record *record_copy(struct record *r);
 char *record_text(struct record *r, unsigned keys_wanted);
 const char *val(struct record *r, enum key k);
 void put(struct record *r, enum key k, const char *v);
@@ -85,8 +85,6 @@ int is_abstract(struct record *r);
 int is_live(struct record *r);
 int is_current(struct record *r);
 int was_current(struct record *r);
-int reopened(struct record *r);
-int as_in_head(struct record *r);
 int undertaken(struct record *l);
 struct record *link_end(struct state *s, struct record *l, int offer);
 struct record *partner(struct state *s, struct record *l, struct record *r);
@@ -101,21 +99,20 @@ struct verdict {
 	struct record *o;
 };
 int check_state(struct state *s, struct tree *t, struct verdict *v);
-void validate(struct state *s, struct tree *t);
 void validate_at(struct tree *t);
 struct record *readable(struct record *r);
+int as_in_head(struct record *r);
 int malformed(struct state *s, struct verdict *v);
 const char *unusable(struct record *r, struct tree *t);
 
-/* record.c: paths and scopes (3) */
+/* record.c: names: paths, scopes, object, session and agent IDs (3, 1.10, 7.2.1) */
 int path_ok(const char *p);
 int oid_ok(const char *s);
+int id_like(const char *s, const char *letters);
 int sid_ok(const char *s);
 int agent_ok(const char *name);
-void no_range(const char *arg);
 void scope_shape(const char *arg);
 char *scope_path(const char *v);
-const char *scope_oid(const char *v);
 const char *case_twin(struct tree *t, const char *path);
 char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs);
 void repin(struct record *r, enum key k, struct tree *t, int new_only);
@@ -148,12 +145,12 @@ int contract_path(struct state *s, const char *path);
 /* record.c: checks in history (1.5a, 5.4, 9.1) */
 char *pins(struct record *r);
 int unverified(struct record *r, struct tree *t);
+int reopened(struct record *r);
 const char *unverified_since(struct record *r);
 
 /* record.c: YAML (2.5.1, 8) */
 int read_text(struct strbuf *sb, const char *path);
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err);
-void yaml(const char *text, struct string_list *kv, const char *what);
 void yaml_check(struct string_list *kv, const char *const *schema, const char *what, const char *hint, int kinds);
 const char *yget(struct string_list *kv, const char *key);
 char *yline(struct string_list *kv, const char *key);

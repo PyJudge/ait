@@ -2,7 +2,7 @@
 #define PRECOMPOSE_H
 
 /* ait reads the setting with git config */
-int ait_config_bool(const char *key);
+int config_true(const char *key);
 #ifdef PRECOMPOSE_UNICODE
 const char *precompose_string_if_needed(const char *in);
 const char *precompose_argv_prefix(int argc, const char **argv, const char *prefix);

@@ -11,7 +11,7 @@
 #include <sys/file.h>
 #include <regex.h>
 
-const char *top, *gindex, *headref, *head, *gitdir, *commondir;
+const char *top, *hook_index, *headref, *head, *gitdir, *commondir;
 char *git_error;
 char *git_cmd;
 size_t git_out_len;
@@ -85,8 +85,16 @@ static void at_repository(struct strvec *args)
 {
 	if (gitdir)
 		strvec_pushf(args, "--git-dir=%s", gitdir);
-	if (top)
-		strvec_pushl(args, xstrfmt("--work-tree=%s", top), "-C", top, NULL);
+	if (top) {
+		strvec_pushf(args, "--work-tree=%s", top);
+		strvec_pushl(args, "-C", top, NULL);
+	}
+}
+
+/* E_GIT (5.8): the git command that failed last, and its stderr's first line */
+char *git_failed(void)
+{
+	return xstrfmt("git failed: 'git %s': %s", git_cmd, git_error);
 }
 
 /*
@@ -111,7 +119,7 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 	strvec_pushv(&cmd.args, args->v);
 	if (index)
 		strvec_pushf(&cmd.env, "GIT_INDEX_FILE=%s", index);
-	/* git's messages untranslated: ait's are English (5.6), and it takes git's "fatal: " off */
+	/* git's messages untranslated: ait's are English (5.6) */
 	strvec_push(&cmd.env, "LANGUAGE=C");
 	code = pipe_command(&cmd, in, in ? strlen(in) : 0, &out, 0, &err, 0);
 	/* git's first stderr line, its "fatal: " or "error: " left to the message ait writes around it */
@@ -150,29 +158,25 @@ char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...)
 }
 
 /* the boolean setting KEY as git config reads it: 1 when true */
-int ait_config_bool(const char *key)
+int config_true(const char *key)
 {
 	int rc;
 
 	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool %s", key)), "true");
 }
 
-/* E_GIT (5.8): the git command that failed last, and its stderr's first line */
-char *git_failed(void)
-{
-	return xstrfmt("git failed: 'git %s': %s", git_cmd, git_error);
-}
-
 /*
  * The object NAME resolves to, through one "git cat-file --batch-command" for
  * the whole command (git-cat-file(1), BATCH OUTPUT): its contents when
- * CONTENTS, else "", with its ID in OID; NULL when NAME names no object.
+ * CONTENTS, else "", with its ID in OID and its size in SIZE; NULL when
+ * NAME names no object.
  */
 char *object(const char *name, int contents, char *oid, size_t *size)
 {
 	static struct child_process cat = CHILD_PROCESS_INIT;
 	static FILE *out;
-	char line[256], id[48], type[16], *cmd = xstrfmt("%s %s\n", contents ? "contents" : "info", name), *buf;
+	char *cmd = xstrfmt("%s %s\n", contents ? "contents" : "info", name);
+	char line[256], id[48], type[16], *buf;
 	size_t n;
 
 	if (!out) {
@@ -194,7 +198,7 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 	if (sscanf(line, "%47s %15s %zu", id, type, &n) != 3)
 		return NULL;
 	if (oid)
-		strcpy(oid, id);
+		snprintf(oid, sizeof(id), "%s", id);
 	if (size)
 		*size = n;
 	if (!contents)
@@ -213,6 +217,15 @@ char *line1(char *s)
 	return s;
 }
 
+/* S as one shell word, for the commands hints give (5.9a) */
+char *quoted(const char *s)
+{
+	struct strbuf sb = STRBUF_INIT;
+
+	sq_quote_buf(&sb, s);
+	return strbuf_detach(&sb, NULL);
+}
+
 /* spec 1.10: six random bytes, from the system's CSPRNG as git takes them */
 void newid(char *out, int prefix)
 {
@@ -223,13 +236,13 @@ void newid(char *out, int prefix)
 		die_errno("unable to get random bytes");
 	out[0] = prefix;
 	for (i = 0; i < 6; i++)
-		sprintf(out + 1 + 2 * i, "%02x", b[i]);
+		snprintf(out + 1 + 2 * i, 3, "%02x", b[i]);
 }
 
-/* spec 5.12: fix the toplevel and the hook's index, then clear what redirects git */
+/* spec 5.12: check git; settle the repository, the worktree and the hook's index as absolute paths; clear what redirects git; read HEAD */
 static void setup(int bare_ok)
 {
-	static const char *clear[] = { "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX",
+	static const char *const clear[] = { "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX",
 				       "GIT_COMMON_DIR", "GIT_DIFF_OPTS", NULL };
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	int i, major = 0, minor = 0, rc;
@@ -247,8 +260,10 @@ static void setup(int bare_ok)
 	 */
 	string_list_split(&lines, git_run(NULL, NULL, &rc, "rev-parse --absolute-git-dir --path-format=absolute "
 					  "--git-common-dir --show-object-format --show-toplevel"), "\n", -1);
-	if (lines.nr < 4 || (rc && !bare_ok))
-		reject(128, lines.nr < 4 ? "run this command inside a git repository" : NULL, "%s", git_failed());
+	if (lines.nr < 4)
+		reject(128, "run this command inside a git repository", "%s", git_failed());
+	if (rc && !bare_ok)
+		reject(128, NULL, "%s", git_failed());
 	/* one value a line, and the state files of spec 4 hold a path a line */
 	if (lines.nr > (rc ? 4u : 5u))
 		unsupported("a repository path with a line feed");
@@ -259,12 +274,13 @@ static void setup(int bare_ok)
 		unsupported(xstrfmt("object format %s", lines.items[2].string));
 	top = rc ? NULL : lines.items[3].string;
 	if (getenv("GIT_INDEX_FILE"))
-		gindex = realpath(getenv("GIT_INDEX_FILE"), NULL);
+		hook_index = realpath(getenv("GIT_INDEX_FILE"), NULL);
 	for (i = 0; clear[i]; i++)
 		unsetenv(clear[i]);
 	setenv("GIT_LITERAL_PATHSPECS", "1", 1);
-	headref = line1(git_run(NULL, NULL, &i, "symbolic-ref -q HEAD"));
-	headref = i ? NULL : headref;
+	headref = line1(git_run(NULL, NULL, &rc, "symbolic-ref -q HEAD"));
+	if (rc)
+		headref = NULL;
 	if (object("HEAD^{commit}", 0, oid, NULL))
 		head = xstrdup(oid);
 }
@@ -285,11 +301,11 @@ static void state_dirs(void)
 /* spec 4.6: the default-session pointer of the worktree WT */
 static char *pointer_path(const char *wt)
 {
-	static struct string_list keys = STRING_LIST_INIT_DUP;
-	struct string_list_item *hit = string_list_lookup(&keys, wt);
+	static struct string_list hashed = STRING_LIST_INIT_DUP;
+	struct string_list_item *hit = string_list_lookup(&hashed, wt);
 
 	if (!hit) {
-		hit = string_list_insert(&keys, wt);
+		hit = string_list_insert(&hashed, wt);
 		hit->util = line1(git_run(wt, NULL, NULL, "hash-object --stdin"));
 	}
 	return state_path(xstrfmt("worktrees/%s", (char *)hit->util));
@@ -325,7 +341,7 @@ int lock_worktree(const char *wt)
 	return fd;
 }
 
-static int held(const char *wt)
+static int hold_lock(const char *wt)
 {
 	int fd = lock_worktree(wt);
 
@@ -372,15 +388,6 @@ static int gone(const char *wt)
 	return access(wt, F_OK) || !string_list_has_string(worktrees(), wt);
 }
 
-/* S as one shell word, for the commands hints give (5.9a) */
-char *quoted(const char *s)
-{
-	struct strbuf sb = STRBUF_INIT;
-
-	sq_quote_buf(&sb, s);
-	return strbuf_detach(&sb, NULL);
-}
-
 /*
  * "agent NAME\nworktree PATH\n" (spec 4.2); returns the worktree or NULL.
  * S names a file, so only a session ID (S and 12 hex digits, 4.1) is looked up.
@@ -405,27 +412,32 @@ static char *session_read(const char *s, char *name)
 /* spec 5.1: AIT_SESSION, else this worktree's default session */
 const char *session(int need)
 {
-	const char *env = getenv("AIT_SESSION"), *ptr = default_of(top);
+	const char *env = getenv("AIT_SESSION"), *dflt = default_of(top);
+	int from_default = !env;
 	char *wt;
 
 	if (env && !strcmp(env, "-"))
 		env = NULL;
 	else if (!env)
-		env = ptr;
+		env = dflt;
 	wt = session_read(env, agent);
-	if (env && !wt && env == ptr) {
-		int fd = held(top);
+	if (env && !wt && from_default) {
+		/* the default pointer names no session: drop it, unless another command changed it meanwhile (5.1) */
+		int fd = hold_lock(top);
 		char *now = default_of(top);
 
-		if (now && !strcmp(now, ptr))
+		if (now && !strcmp(now, dflt))
 			unlink(pointer_path(top));
 		close(fd);
-	} else if (env && !wt)
+	} else if (env && !wt) {
 		reject(128, "ait session list", "no usable ait session: unknown session '%s'", env);
-	else if (wt && strcmp(wt, top))
-		reject(128, gone(wt) ? xstrfmt("its worktree is gone; close it: 'ait session close %s', then open a session with "
-					       "the same name in the worktree of your branch: 'ait session open --agent %s'", env, agent) :
-		       xstrfmt("cd %s", quoted(wt)), "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
+	} else if (wt && strcmp(wt, top)) {
+		char *hint = gone(wt) ? xstrfmt("its worktree is gone; close it: 'ait session close %s', then open a session "
+						"with the same name in the worktree of your branch: 'ait session open --agent %s'",
+						env, agent) : xstrfmt("cd %s", quoted(wt));
+
+		reject(128, hint, "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
+	}
 	if (!wt && need)
 		reject(128, "find your session with 'ait session list', or open one: 'ait session open --agent <name>'",
 		       "no usable ait session: none for this worktree");
@@ -441,10 +453,10 @@ const char *session(int need)
  */
 static void session_prefix(void)
 {
-	const char *env = getenv("AIT_SESSION"), *ptr = top ? default_of(top) : NULL;
+	const char *env = getenv("AIT_SESSION"), *dflt = top ? default_of(top) : NULL;
 	char *wt = env ? session_read(env, NULL) : NULL;
 
-	if (top && wt && !strcmp(wt, top) && (!ptr || strcmp(env, ptr)))
+	if (top && wt && !strcmp(wt, top) && (!dflt || strcmp(env, dflt)))
 		cmd_prefix = xstrfmt("AIT_SESSION=%s ", env);
 }
 
@@ -461,22 +473,22 @@ static void read_sessions(struct string_list *ids)
 	DIR *dir;
 
 	state_dirs();
-	dir = opendir(state_path("sessions"));
-	while (dir && (de = readdir(dir))) {
-		struct session_file *f = xcalloc(1, sizeof(*f));
+	if (!(dir = opendir(state_path("sessions"))))
+		return;
+	while ((de = readdir(dir))) {
+		struct session_file f;
 
-		if ((f->wt = session_read(de->d_name, f->agent)))
-			string_list_insert(ids, de->d_name)->util = f;
+		if ((f.wt = session_read(de->d_name, f.agent)))
+			string_list_insert(ids, de->d_name)->util = xmemdupz(&f, sizeof(f));
 	}
-	if (dir)
-		closedir(dir);
+	closedir(dir);
 }
 
 /* spec 7.2.1: a new session for the agent NAME in this worktree, its default unless another one is */
 static void session_open(struct string_list *ids, const char *name)
 {
 	struct string_list_item *item;
-	char *mine, other[72];
+	char *dflt, other[72];
 	int fd;
 
 	if (!agent_ok(name))
@@ -498,14 +510,14 @@ static void session_open(struct string_list *ids, const char *name)
 				"AIT_SESSION=%s; otherwise close this one and open again with another name",
 				item->string, sid, item->string, f->wt, item->string);
 	}
-	fd = held(top);
-	mine = default_of(top);
-	if (session_read(mine, other) && strcmp(other, name)) {
-		warning("this worktree is used by session '%s' (agent '%s')", mine, other);
+	fd = hold_lock(top);
+	dflt = default_of(top);
+	if (!session_read(dflt, other)) {
+		write_state(pointer_path(top), xstrfmt("%s\n", sid));
+	} else if (strcmp(other, name)) {
+		warning("this worktree is used by session '%s' (agent '%s')", dflt, other);
 		suggest("close this one: 'ait session close %s', then open a session in a worktree of your own: "
 			"'ait session open --agent %s' there", sid, name);
-	} else if (!session_read(mine, NULL)) {
-		write_state(pointer_path(top), xstrfmt("%s\n", sid));
 	}
 	close(fd);
 	printf("%s\n", sid);
@@ -530,15 +542,17 @@ static void session_close(struct string_list *ids, const char *s)
 {
 	struct string_list_item *item = string_list_lookup(ids, s);
 	struct session_file *f;
+	char *dflt;
 	int fd;
 
 	if (!item)
 		reject(128, "ait session list", "no usable ait session: unknown session '%s'", s);
 	f = item->util;
-	fd = held(f->wt);
+	fd = hold_lock(f->wt);
 	if (unlink(state_path(xstrfmt("sessions/%s", s))))
 		write_error(state_path("sessions"));
-	if (default_of(f->wt) && !strcmp(default_of(f->wt), s) && unlink(pointer_path(f->wt)))
+	dflt = default_of(f->wt);
+	if (dflt && !strcmp(dflt, s) && unlink(pointer_path(f->wt)))
 		write_error(state_path("worktrees"));
 	close(fd);
 }
@@ -565,7 +579,7 @@ static int cmd_session(int argc, const char **argv)
  */
 static int has_ait_hook(const char *path, const char *name)
 {
-	const char *sep = "[] \t'\",()[]";
+	const char *between = "[] \t'\",()[]";
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
@@ -574,7 +588,7 @@ static int has_ait_hook(const char *path, const char *name)
 
 	if (access(path, X_OK) || strbuf_read_file(&sb, path, 0) < 0)
 		return 0;
-	regcomp(&re, xstrfmt("(^|%s)ait%s+hook%s+%s(%s|$)", sep, sep, sep, name, sep), REG_EXTENDED | REG_NOSUB);
+	regcomp(&re, xstrfmt("(^|%s)ait%s+hook%s+%s(%s|$)", between, between, between, name, between), REG_EXTENDED | REG_NOSUB);
 	string_list_split(&lines, sb.buf, "\n", -1);
 	for_each_string_list_item(item, &lines) {
 		const char *l = item->string + strspn(item->string, " \t");
@@ -586,7 +600,7 @@ static int has_ait_hook(const char *path, const char *name)
 }
 
 /* spec 7.1.1 */
-static const char *hooks[] = { "pre-commit", "pre-merge-commit", "commit-msg", "pre-push", NULL };
+static const char *const hooks[] = { "pre-commit", "pre-merge-commit", "commit-msg", "pre-push", NULL };
 
 /* PATH is DIR or under it */
 static int inside(const char *path, const char *dir)
@@ -594,7 +608,7 @@ static int inside(const char *path, const char *dir)
 	return starts_with(path, dir) && (!path[strlen(dir)] || path[strlen(dir)] == '/');
 }
 
-/* in the form of TOP and COMMONDIR: absolute, with "..", "." and symlinks resolved by git */
+/* the hooks directory, in the form of TOP and COMMONDIR so that inside() compares like with like: absolute, with "..", "." and symlinks resolved by git */
 static char *hooks_dir(void)
 {
 	return line1(git("rev-parse --path-format=absolute --git-path hooks"));
@@ -659,10 +673,10 @@ static int cmd_init(int argc, const char **argv)
 		return 0;
 	}
 	precondition(1);
-	/* spec 7.1.1-5: if another init won the race, its init file is ours too */
 	index_line(&info, "100644", line1(git_run("version 1\n", NULL, NULL, "hash-object -w --stdin")), ".ait/init");
 	if (!(tree = tree_with(t->oid, info.buf, NULL)))
 		reject(128, NULL, "%s", git_failed());
+	/* spec 7.1.1-5: if another init won the race, its init file is ours too */
 	if (publish(tree, "[CONTRACT] ait init\n", index_load(tree_load(line1(git("write-tree")))))) {
 		const char *now = object("HEAD:.ait/init", 1, NULL, NULL);
 
@@ -697,15 +711,16 @@ static void check_hooks(void)
 }
 
 /*
- * a pre-push record ends at E (its LF) when what is before holds
- * " LOCAL-OID SP REMOTE-REF SP REMOTE-OID": git writes "%s %s %s %s\n" (git
- * v2.53.0 transport.c:1355), LOCAL being what was given, spaces and line
- * feeds included, and REMOTE-REF a ref name, which holds neither; the local
- * object ID of that record, or NULL
+ * The local object ID of the pre-push record that ends at E (its LF), or
+ * NULL. What is before E holds " LOCAL-OID SP REMOTE-REF SP REMOTE-OID": git
+ * writes "%s %s %s %s\n" (git v2.53.0 transport.c:1355), LOCAL being what was
+ * given, spaces and line feeds included, and REMOTE-REF a ref name, which
+ * holds neither.
  */
 static char *push_record(const char *p, const char *e)
 {
 	const char *ref = e - 41;
+	char *oid;
 
 	if (e - p < 85 || !oid_ok(xstrndup(e - 40, 40)) || *ref != ' ')
 		return NULL;
@@ -713,7 +728,8 @@ static char *push_record(const char *p, const char *e)
 		ref--;
 	if (ref - p < 43 || ref[-1] != ' ' || ref[-42] != ' ')
 		return NULL;
-	return oid_ok(xstrndup(ref - 41, 40)) ? xstrndup(ref - 41, 40) : NULL;
+	oid = xstrndup(ref - 41, 40);
+	return oid_ok(oid) ? oid : NULL;
 }
 
 /* spec 7.1.6: every pushed commit holds a valid state */
@@ -724,6 +740,7 @@ static int pre_push(void)
 	char *oid;
 
 	strbuf_read(&in, 0, 0);
+	/* LOCAL may hold line feeds: a line that ends no record joins the next */
 	for (p = e = in.buf; (e = strchr(e, '\n')); e++) {
 		if (!(oid = push_record(p, e)))
 			continue;
@@ -746,17 +763,19 @@ static int pre_push(void)
 int integrating(void)
 {
 	struct strbuf safe = STRBUF_INIT;
-	char oid[48];
 
+	/* a merge in progress is the file MERGE_HEAD; git writes it whether or not its contents resolve */
 	if (!access(xstrfmt("%s/MERGE_HEAD", gitdir), F_OK) || object("CHERRY_PICK_HEAD", 0, NULL, NULL) ||
 	    object("REVERT_HEAD", 0, NULL, NULL))
 		return 1;
 	if (!object("REBASE_HEAD", 0, NULL, NULL))
 		return 0;
+	/* a merge-backend rebase writes MERGE_MSG when it stops at a commit */
 	if (!access(xstrfmt("%s/rebase-merge", gitdir), F_OK))
 		return !access(xstrfmt("%s/MERGE_MSG", gitdir), F_OK);
+	/* an apply-backend one stopped at a commit while abort-safety is still HEAD: git am has not committed */
 	return strbuf_read_file(&safe, xstrfmt("%s/rebase-apply/abort-safety", gitdir), 0) >= 0 &&
-	       object("HEAD", 0, oid, NULL) && !strcmp(line1(safe.buf), oid);
+	       head && !strcmp(line1(safe.buf), head);
 }
 
 /*
@@ -808,16 +827,17 @@ static void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 static int cmd_hook(int argc, const char **argv)
 {
 	struct state hs = { 0 };
-	struct string_list paths = STRING_LIST_INIT_DUP, gone = STRING_LIST_INIT_DUP;
+	struct string_list paths = STRING_LIST_INIT_DUP, left = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct tree *ht, *t;
 	size_t i;
 
 	if (argc > 1 && !strcmp(argv[1], "pre-push"))
 		return pre_push();
+	/* commit-msg, and what ait-mini has no hook for: nothing to do (7.1.5) */
 	if (argc < 2 || (strcmp(argv[1], "pre-commit") && strcmp(argv[1], "pre-merge-commit")))
 		return 0;
-	t = tree_load(line1(git_run(NULL, gindex, NULL, "write-tree")));
+	t = tree_load(line1(git_run(NULL, hook_index, NULL, "write-tree")));
 	if (!strcmp(argv[1], "pre-merge-commit") || integrating()) {
 		validate_at(t);
 		return 0;
@@ -832,12 +852,12 @@ static int cmd_hook(int argc, const char **argv)
 			       "contract files cannot be changed by a plain commit: '%s'", paths.items[i].string);
 	for (i = 0; i < hs.nr; i++)
 		if (is_current(hs.r[i]) && !unusable(hs.r[i], ht) && !unverified(hs.r[i], ht) && unverified(hs.r[i], t))
-			string_list_append(&gone, hs.r[i]->id)->util = hs.r[i];
-	if (!gone.nr)
+			string_list_append(&left, hs.r[i]->id)->util = hs.r[i];
+	if (!left.nr)
 		return 0;
 	/* the block of 7.1.2: its warning and contract lines are normative */
-	warning("this commit leaves %d current contract(s) unverified", (int)gone.nr);
-	for_each_string_list_item(item, &gone) {
+	warning("this commit leaves %d current contract(s) unverified", (int)left.nr);
+	for_each_string_list_item(item, &left) {
 		struct record *r = item->util;
 		struct string_list_item *f;
 
@@ -850,7 +870,7 @@ static int cmd_hook(int argc, const char **argv)
 	warning("their receivers are notified after this commit");
 	suggest("next time, to check and commit in one step, use 'ait commit' instead of 'git commit'");
 	/* the reopen hint, then H7; H8 brings its own reopen hint after it */
-	for_each_string_list_item(item, &gone) {
+	for_each_string_list_item(item, &left) {
 		if (code_found(item->util, t))
 			suggest("%s", reopen_hint(&hs, item->util));
 		recheck_hint(&hs, item->util, t, 1);
@@ -867,7 +887,7 @@ static int overlap(const char *a, const char *b)
 	       (ends_with(a, "/") && starts_with(b, a)) || (ends_with(b, "/") && starts_with(a, b));
 }
 
-/* the todo argument ARG names R: its ID, or a scope over its scopes or spec files (7.8.1) */
+/* the scope ARG of todo overlaps one of R's scopes or spec files (7.8.1) */
 static int named(struct record *r, const char *arg)
 {
 	static const enum key ks[] = { CONSUMER, PROVIDER, FILES };
@@ -878,7 +898,7 @@ static int named(struct record *r, const char *arg)
 		for_each_string_list_item(item, &r->f[ks[k]])
 			if (overlap(arg, item->string))
 				return 1;
-	return !strcmp(arg, r->id);
+	return 0;
 }
 
 /* "file PATH exec|prompt|input" lines of 7.8.2, each definition with its body under it */
@@ -918,14 +938,14 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 /* the shape of a contract's ID (1.10): D, O or X and 12 hex digits; anything else is taken as a scope */
 static int id_shaped(const char *a)
 {
-	return strlen(a) == 13 && strchr("DOX", *a) && strspn(a + 1, "0123456789abcdef") == 12;
+	return id_like(a, "DOX");
 }
 
 /* spec 7.8: my promises and my unverified demands, with what to do next */
 static int cmd_todo(int argc, const char **argv)
 {
 	struct state s = { 0 }, hs = { 0 };
-	struct string_list index = STRING_LIST_INIT_DUP;
+	struct string_list touched = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct tree *t, *ht = head_tree();
 	const char *me;
@@ -956,6 +976,7 @@ static int cmd_todo(int argc, const char **argv)
 			warning("skipping '.ait/%s' at 'index': %s", r->id, unusable(r, t));
 			continue;
 		}
+		/* links and the init file are no contracts */
 		if (*r->id == 'u' || !strcmp(r->id, "init"))
 			continue;
 		mine = me && !strcmp(scope_path(val(r, CREATOR)), me);
@@ -963,8 +984,11 @@ static int cmd_todo(int argc, const char **argv)
 		unver = is_current(r) && unverified(r, t);
 		for (k = 1; k < argc; k++)
 			pick |= id_shaped(argv[k]) ? !strcmp(argv[k], r->id) : (future || unver) && named(r, argv[k]);
-		if (argc == 1)
-			pick = me ? mine && (future || (unver && *r->id == 'D')) : future || unver;
+		/* without arguments: my promises and my unverified demands; without a session every future and unverified current */
+		if (argc == 1 && me)
+			pick = mine && (future || (unver && *r->id == 'D'));
+		else if (argc == 1)
+			pick = future || unver;
 		if (!pick)
 			continue;
 		printf("id %s\nrole %s\nstate %s\ncreator %s\n", r->id, val(r, ROLE), val(r, STATE), scope_path(val(r, CREATOR)));
@@ -972,7 +996,8 @@ static int cmd_todo(int argc, const char **argv)
 			printf("consumer %s\n", show(item->string, t, 0));
 		for_each_string_list_item(item, &r->f[PROVIDER])
 			printf("provider %s\n", show(item->string, t, is_current(r)));
-		printf("%s", unver ? "unverified yes\n" : "");
+		if (unver)
+			puts("unverified yes");
 		file_lines("file", r, t);
 		link_lines(&s, r, t);
 		putchar('\n');
@@ -983,18 +1008,18 @@ static int cmd_todo(int argc, const char **argv)
 		else if (future && mine && (*r->id == 'O' || reopened(r)))
 			fulfill_hint(&s, r, t);
 	}
-	/* 7.7.6: the current contracts of HEAD whose provider the staged change touches */
+	/* 7.8.2: the index block, the touch set of 7.7.6: the current contracts of HEAD whose provider the staged change touches */
 	for (i = 0; i < hs.nr; i++)
 		if (!hs.r[i]->bad && touches(hs.r[i], ht, t))
-			string_list_append(&index, hs.r[i]->id)->util = hs.r[i];
-	if (index.nr)
+			string_list_append(&touched, hs.r[i]->id)->util = hs.r[i];
+	if (touched.nr)
 		puts("index");
-	for_each_string_list_item(item, &index)
+	for_each_string_list_item(item, &touched)
 		if (!code_found(item->util, t))
 			printf("code-required %s\n", item->string);
-	for_each_string_list_item(item, &index)
+	for_each_string_list_item(item, &touched)
 		printf("touch %s\n", item->string);
-	if (index.nr)
+	if (touched.nr)
 		putchar('\n');
 	return 0;
 }
@@ -1036,6 +1061,7 @@ static int check_stdout(void)
 int main(int argc, const char **argv)
 {
 	size_t i;
+	int status;
 
 	/* the standard descriptors are open before anything, as in git's common main (common-init.c:45) */
 	sanitize_stdfds();
@@ -1055,7 +1081,10 @@ int main(int argc, const char **argv)
 		session_prefix();
 		if (strcmp(argv[1], "init") && strcmp(argv[1], "hook"))
 			check_hooks();
-		return commands[i].fn(argc - 1, argv + 1) || check_stdout();
+		status = commands[i].fn(argc - 1, argv + 1);
+		if (status)
+			return status;
+		return check_stdout();
 	}
 	execvp("git", (char *const *)argv);
 	die_errno("cannot run git");

@@ -105,7 +105,7 @@ const char *blob_at(struct tree *t, const char *path)
 }
 
 /* the text of a blob, or NULL when it holds a NUL and so is not text; each blob is read once */
-const char *blob_text(const char *oid)
+static const char *blob_text(const char *oid)
 {
 	static struct string_list blobs = STRING_LIST_INIT_DUP;
 	struct string_list_item *hit = string_list_lookup(&blobs, oid);
@@ -191,7 +191,7 @@ char *scope_path(const char *v)
 	return xstrndup(v, strcspn(v, " "));
 }
 
-const char *scope_oid(const char *v)
+static const char *scope_oid(const char *v)
 {
 	return strchr(v, ' ') ? strchr(v, ' ') + 1 : NULL;
 }
@@ -336,7 +336,7 @@ struct record *state_add(struct state *s, const char *id)
 	return r;
 }
 
-struct record *record_copy(struct record *r)
+static struct record *record_copy(struct record *r)
 {
 	struct record *c = xmalloc(sizeof(*c));
 	struct string_list_item *item;
@@ -453,9 +453,15 @@ void state_load(struct state *s, struct tree *t)
 }
 
 /* spec 4.1: a session ID, S and 12 hex digits */
+/* one of LETTERS and 12 hex digits: the IDs ait makes (1.10, 4.1) */
+int id_like(const char *s, const char *letters)
+{
+	return *s && strchr(letters, *s) && strlen(s) == 13 && strspn(s + 1, "0123456789abcdef") == 12;
+}
+
 int sid_ok(const char *s)
 {
-	return s && *s == 'S' && strlen(s) == 13 && strspn(s + 1, "0123456789abcdef") == 12;
+	return s && id_like(s, "S");
 }
 
 int oid_ok(const char *s)
@@ -656,7 +662,7 @@ int malformed(struct state *s, struct verdict *v)
 	return 0;
 }
 
-void validate(struct state *s, struct tree *t)
+static void validate(struct state *s, struct tree *t)
 {
 	struct verdict v;
 
@@ -702,7 +708,7 @@ char *def_paths(struct record *r)
 }
 
 /* spec 3.2: a well-formed PATH:S-E, the line range ait-mini leaves out; a malformed one is a bad scope */
-void no_range(const char *arg)
+static void no_range(const char *arg)
 {
 	regex_t re;
 	int range;
@@ -738,7 +744,7 @@ const char *case_twin(struct tree *t, const char *path)
 	size_t i;
 
 	if (ignorecase < 0)
-		ignorecase = ait_config_bool("core.ignorecase");
+		ignorecase = config_true("core.ignorecase");
 	for (i = 0; ignorecase && i < t->nr; i++)
 		if (!strcasecmp(t->e[i].path, path) && strcmp(t->e[i].path, path))
 			return t->e[i].path;
@@ -1540,7 +1546,7 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 	return why ? -1 : 0;
 }
 
-void yaml(const char *text, struct string_list *kv, const char *what)
+static void yaml(const char *text, struct string_list *kv, const char *what)
 {
 	char *err;
 

@@ -139,7 +139,7 @@ static int sparse(void)
 	int gone;
 	char *patterns = line1(git_run(NULL, NULL, &gone, "rev-parse --path-format=absolute --git-path info/sparse-checkout"));
 
-	return ait_config_bool("core.sparseCheckout") && !gone && !access(patterns, F_OK);
+	return config_true("core.sparseCheckout") && !gone && !access(patterns, F_OK);
 }
 
 /*
