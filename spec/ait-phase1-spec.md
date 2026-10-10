@@ -1064,7 +1064,7 @@ ait fulfill O…=src/stock.c:1-40,src/inventory.c:1-11 D…=src/inventory.c:1-11
   - 멈춘 rebase 위에서 다른 합치기를 하면 7.1.3은 그것을 rebase의 고르기로 볼 수 있다. git 조작은 하나씩 마친다.
   - 다른 도구가 hook 파일을 다시 쓰면 ait를 부르던 행이 사라질 수 있다. 다음 ait 명령의 H12가 알린다(5.2a).
   - 공개 뒤의 동기화(5.5-4) 중에 다른 쪽이 브랜치를 바꾸면 index와 작업 폴더를 맞추지 못할 수 있다. 그때는 경고만 쓴다(5.5-5).
-- 11.2 ait의 쓰기 명령은 `commit-tree`로 커밋을 만들므로 사용자의 다른 git hook을 거치지 않는다. `contract pull`만 `git merge`를 쓰므로 사용자의 hook을 거친다.
+- 11.2 ait의 쓰기 명령은 `commit-tree`로 커밋을 만들므로 커밋 hook(`pre-commit`, `commit-msg` 등)을 거치지 않는다. ait가 부르는 git 명령이 실행하는 hook은 git대로 돈다(`update-ref`의 `reference-transaction`, `read-tree`·`update-index`의 `post-index-change` 등). 그 hook이 `update-ref`를 거부하면 커밋은 공개되지 않고 `E_GIT`이다. `contract pull`만 `git merge`를 쓰므로 커밋 hook을 거친다.
 - 11.3 rename은 추적하지 않는다. 범위는 경로로 고정하고 diff로 사상할 뿐이다(3.3, 3.7).
 - 11.4 알림은 `ait listen`으로만 받고 at-least-once다. listener가 없는 동안 생겼다가 ref 목록에서 사라진 사건은 받지 못한다.
 - 11.5 prev DAG의 blob은 git이 운반하지 않는다. 이력을 공유하지 않은 판끼리는 충돌로 남을 수 있다.

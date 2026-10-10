@@ -15,7 +15,7 @@ ait-mini는 `ait-phase1-spec.md` v14의 부분집합이다. 쓰는 레코드, �
 | `ait todo [ID…]` | 7.8 |
 | 그 밖의 `ait <git 명령>` | git으로 넘긴다(7.14) |
 
-커밋은 규격 5.5대로 만든다. `git commit-tree`로 판정한 tree의 커밋을 만들고, `git update-ref R C H`로 브랜치를 옮긴다. update-ref가 git의 ref 잠금 안에서 브랜치가 아직 H인지 보는 CAS이므로, 그사이 브랜치가 움직였으면 요청은 `E_HEAD_MOVED`로 끝나고 아무것도 바뀌지 않는다. 사용자의 git hook은 ait의 커밋을 거치지 않는다(11.2). 커밋한 뒤에는 바뀐 경로 중 index가 요청을 시작할 때의 판 그대로인 것만 새 판으로 맞추고, `.ait/`는 작업 폴더도 맞춘다(5.5-4). 그 사이 stage된 다른 변경은 건드리지 않고 경고한다(5.5-5).
+커밋은 규격 5.5대로 만든다. `git commit-tree`로 판정한 tree의 커밋을 만들고, `git update-ref R C H`로 브랜치를 옮긴다. update-ref가 git의 ref 잠금 안에서 브랜치가 아직 H인지 보는 CAS이므로, 그사이 브랜치가 움직였으면 요청은 `E_HEAD_MOVED`로 끝나고 아무것도 바뀌지 않는다. 커밋 hook은 ait의 커밋을 거치지 않고, ait가 부르는 git 명령의 hook은 git대로 돈다(11.2). 커밋한 뒤에는 `git read-tree -i -m O C`로 index를 맞추고 `.ait/`는 작업 폴더도 맞춘다(5.5-4). 그 사이 다른 쪽이 같은 경로를 stage했으면 index를 통째로 두고 경고한다(5.5-5).
 
 git은 2.36 이상이어야 한다. ait는 객체를 `git cat-file --batch-command`(2.36) 하나로 읽는다. 그보다 낮으면 ait는 `fatal:`로 멈춘다.
 
