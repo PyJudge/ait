@@ -1272,7 +1272,7 @@ ait fulfill O…=src/stock.c:1-40,src/inventory.c:1-11 D…=src/inventory.c:1-11
 
 - 13.1 git 2.40 이상(pull이 `git merge-tree --write-tree`를 쓴다), libc(POSIX)와 `flock(2)`만 쓴다(Linux, macOS, BSD).
 - 13.2 git은 fork·execvp로 argv 배열을 넘겨 부른다(5.12).
-- 13.3 행수 예산은 C(주석 포함) 합계 5,500행 이하다. pull은 추정이므로 판 정하기와 들이는 커밋을 C로 쓴 뒤 다시 잰다.
+- 13.3 행수는 C(주석 포함)로 센다. 상한은 저장소의 CLAUDE.md가 정한다: ait-mini의 기능과 pull을 합쳐 6,500행이다(2026-10-10의 ait-mini 5,030행에 pull 추정 1,500행을 더했다). 아래 표는 1단계 전체의 모듈별 추정이다. pull은 판 정하기와 들이는 커밋을 C로 쓴 뒤 다시 잰다.
 
 | 모듈 | 예산 |
 | --- | --- |
