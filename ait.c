@@ -131,20 +131,6 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 	return strbuf_detach(&out, &git_out_len);
 }
 
-/* the boolean setting KEY as git config reads it: 1 when true */
-int ait_config_bool(const char *key)
-{
-	int rc;
-
-	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool %s", key)), "true");
-}
-
-/* E_GIT (5.8): the git command that failed last, and its stderr's first line */
-char *git_failed(void)
-{
-	return xstrfmt("git failed: 'git %s': %s", git_cmd, git_error);
-}
-
 /* git_args() with the words of FMT, each "%s" word taking one argument verbatim */
 char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...)
 {
@@ -161,6 +147,20 @@ char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...)
 	va_end(ap);
 	string_list_clear(&words, 0);
 	return git_args(&args, in, index, rc);
+}
+
+/* the boolean setting KEY as git config reads it: 1 when true */
+int ait_config_bool(const char *key)
+{
+	int rc;
+
+	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool %s", key)), "true");
+}
+
+/* E_GIT (5.8): the git command that failed last, and its stderr's first line */
+char *git_failed(void)
+{
+	return xstrfmt("git failed: 'git %s': %s", git_cmd, git_error);
 }
 
 /*
@@ -205,6 +205,7 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 	return buf;
 }
 
+/* the first line of S, cut in place: a git output of one value */
 char *line1(char *s)
 {
 	if (s)
@@ -273,6 +274,14 @@ static char *state_path(const char *name)
 	return xstrfmt("%s/ait/%s", commondir, name);
 }
 
+/* spec 4.1: the directories of the shared state, made by what writes in them */
+static void state_dirs(void)
+{
+	mkdir(state_path(""), 0777);
+	mkdir(state_path("sessions"), 0777);
+	mkdir(state_path("worktrees"), 0777);
+}
+
 /* spec 4.6: the default-session pointer of the worktree WT */
 static char *pointer_path(const char *wt)
 {
@@ -301,14 +310,13 @@ static NORETURN void write_error(const char *path)
 
 /*
  * spec 4.6: the shared state of the worktree WT changes only under
- * worktrees/<KEY>.lock; the directories are made when missing (4.1). -1 when it cannot be held.
+ * worktrees/<KEY>.lock; -1 when it cannot be held
  */
 int lock_worktree(const char *wt)
 {
 	int fd;
 
-	mkdir(state_path(""), 0777);
-	mkdir(state_path("worktrees"), 0777);
+	state_dirs();
 	fd = open(xstrfmt("%s.lock", pointer_path(wt)), O_RDWR | O_CREAT, 0666);
 	if (fd >= 0 && flock(fd, LOCK_EX)) {
 		close(fd);
@@ -382,7 +390,9 @@ static char *session_read(const char *s, char *name)
 	struct strbuf sb = STRBUF_INIT;
 	char *wt;
 
-	if (!s || *s != 'S' || strlen(s) != 13 || strspn(s + 1, "0123456789abcdef") != 12 || strbuf_read_file(&sb, state_path(xstrfmt("sessions/%s", s)), 0) < 0)
+	if (!s || *s != 'S' || strlen(s) != 13 || strspn(s + 1, "0123456789abcdef") != 12)
+		return NULL;
+	if (strbuf_read_file(&sb, state_path(xstrfmt("sessions/%s", s)), 0) < 0)
 		return NULL;
 	wt = strstr(sb.buf, "\nworktree ");
 	if (!starts_with(sb.buf, "agent ") || !wt)
@@ -438,84 +448,114 @@ static void session_prefix(void)
 		cmd_prefix = xstrfmt("AIT_SESSION=%s ", env);
 }
 
-static int cmd_session(int argc, const char **argv)
+/* a session as its file says (4.2) */
+struct session_file {
+	char agent[72];
+	char *wt;
+};
+
+/* every session, each file read once: ID -> struct session_file */
+static void read_sessions(struct string_list *ids)
 {
-	struct string_list ids = STRING_LIST_INIT_DUP;
-	char *mine, other[72];
 	struct dirent *de;
 	DIR *dir;
-	size_t i;
-	int fd;
 
-	mkdir(state_path(""), 0777);
-	mkdir(state_path("sessions"), 0777);
-	mkdir(state_path("worktrees"), 0777);
-	/* each session read once: ID -> "AGENT\nWORKTREE" */
+	state_dirs();
 	dir = opendir(state_path("sessions"));
 	while (dir && (de = readdir(dir))) {
-		char *wt = session_read(de->d_name, other);
+		struct session_file *f = xcalloc(1, sizeof(*f));
 
-		if (wt)
-			string_list_insert(&ids, de->d_name)->util = xstrfmt("%s\n%s", other, wt);
+		if ((f->wt = session_read(de->d_name, f->agent)))
+			string_list_insert(ids, de->d_name)->util = f;
 	}
 	if (dir)
 		closedir(dir);
-	if (argc == 4 && !strcmp(argv[1], "open") && !strcmp(argv[2], "--agent")) {
-		const char *name = argv[3];
+}
 
-		if (!agent_ok(name))
-			reject(129, NULL, "bad agent name '%s'", name);
-		newid(sid, 'S');
-		write_state(state_path(xstrfmt("sessions/%s", sid)), xstrfmt("agent %s\nworktree %s\n", name, top));
-		for (i = 0; i < ids.nr; i++) {
-			const char *who = ids.items[i].util, *wt = strchr(who, '\n') + 1;
+/* spec 7.2.1: a new session for the agent NAME in this worktree, its default unless another one is */
+static void session_open(struct string_list *ids, const char *name)
+{
+	struct string_list_item *item;
+	char *mine, other[72];
+	int fd;
 
-			if (strncmp(who, name, wt - 1 - who) || strlen(name) != (size_t)(wt - 1 - who))
-				continue;
-			warning("agent name '%s' is also used by session '%s' (worktree '%s')", name, ids.items[i].string, wt);
-			if (gone(wt))
-				suggest("its worktree is gone; close it: 'ait session close %s', and keep this one if this worktree "
-					"is on your branch, otherwise close this one too ('ait session close %s') and open it again "
-					"in the worktree of your branch", ids.items[i].string, sid);
-			else
-				suggest("if '%s' is yours, close this one: 'ait session close %s', and use '%s' in '%s' with "
-					"AIT_SESSION=%s; otherwise close this one and open again with another name",
-					ids.items[i].string, sid, ids.items[i].string, wt, ids.items[i].string);
-		}
-		fd = held(top);
-		mine = default_of(top);
-		if (session_read(mine, other) && strcmp(other, name)) {
-			warning("this worktree is used by session '%s' (agent '%s')", mine, other);
-			suggest("close this one: 'ait session close %s', then open a session in a worktree of your own: "
-			       "'ait session open --agent %s' there", sid, name);
-		} else if (!session_read(mine, NULL)) {
-			write_state(pointer_path(top), xstrfmt("%s\n", sid));
-		}
-		close(fd);
-		printf("%s\n", sid);
-	} else if (argc == 2 && !strcmp(argv[1], "list")) {
-		for (i = 0; i < ids.nr; i++) {
-			const char *who = ids.items[i].util, *wt = strchr(who, '\n') + 1, *d = default_of(wt);
+	if (!agent_ok(name))
+		reject(129, NULL, "bad agent name '%s'", name);
+	newid(sid, 'S');
+	write_state(state_path(xstrfmt("sessions/%s", sid)), xstrfmt("agent %s\nworktree %s\n", name, top));
+	for_each_string_list_item(item, ids) {
+		struct session_file *f = item->util;
 
-			printf("session %s\nagent %.*s\nworktree %s\ndefault %s\nsubs 0\nlistening no\n\n", ids.items[i].string,
-			       (int)(wt - 1 - who), who, wt, d && !strcmp(d, ids.items[i].string) ? "yes" : "no");
-		}
-	} else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "close")) {
-		const char *s = argc == 3 ? argv[2] : session(1);
-
-		const char *wt = session_read(s, NULL);
-
-		if (!string_list_has_string(&ids, s))
-			reject(128, "ait session list", "no usable ait session: unknown session '%s'", s);
-		fd = held(wt);
-		if (unlink(state_path(xstrfmt("sessions/%s", s))))
-			write_error(state_path("sessions"));
-		if (default_of(wt) && !strcmp(default_of(wt), s) && unlink(pointer_path(wt)))
-			write_error(state_path("worktrees"));
-		close(fd);
-	} else {
-		reject(129, NULL, "unknown session command");
+		if (strcmp(f->agent, name))
+			continue;
+		warning("agent name '%s' is also used by session '%s' (worktree '%s')", name, item->string, f->wt);
+		if (gone(f->wt))
+			suggest("its worktree is gone; close it: 'ait session close %s', and keep this one if this worktree "
+				"is on your branch, otherwise close this one too ('ait session close %s') and open it again "
+				"in the worktree of your branch", item->string, sid);
+		else
+			suggest("if '%s' is yours, close this one: 'ait session close %s', and use '%s' in '%s' with "
+				"AIT_SESSION=%s; otherwise close this one and open again with another name",
+				item->string, sid, item->string, f->wt, item->string);
 	}
+	fd = held(top);
+	mine = default_of(top);
+	if (session_read(mine, other) && strcmp(other, name)) {
+		warning("this worktree is used by session '%s' (agent '%s')", mine, other);
+		suggest("close this one: 'ait session close %s', then open a session in a worktree of your own: "
+			"'ait session open --agent %s' there", sid, name);
+	} else if (!session_read(mine, NULL)) {
+		write_state(pointer_path(top), xstrfmt("%s\n", sid));
+	}
+	close(fd);
+	printf("%s\n", sid);
+}
+
+/* spec 7.2.2 */
+static void session_list(struct string_list *ids)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, ids) {
+		struct session_file *f = item->util;
+		const char *d = default_of(f->wt);
+
+		printf("session %s\nagent %s\nworktree %s\ndefault %s\nsubs 0\nlistening no\n\n", item->string, f->agent,
+		       f->wt, d && !strcmp(d, item->string) ? "yes" : "no");
+	}
+}
+
+/* spec 7.2.3: the session S goes, and its worktree's default pointer with it if it points at S */
+static void session_close(struct string_list *ids, const char *s)
+{
+	struct string_list_item *item = string_list_lookup(ids, s);
+	struct session_file *f;
+	int fd;
+
+	if (!item)
+		reject(128, "ait session list", "no usable ait session: unknown session '%s'", s);
+	f = item->util;
+	fd = held(f->wt);
+	if (unlink(state_path(xstrfmt("sessions/%s", s))))
+		write_error(state_path("sessions"));
+	if (default_of(f->wt) && !strcmp(default_of(f->wt), s) && unlink(pointer_path(f->wt)))
+		write_error(state_path("worktrees"));
+	close(fd);
+}
+
+static int cmd_session(int argc, const char **argv)
+{
+	struct string_list ids = STRING_LIST_INIT_DUP;
+
+	read_sessions(&ids);
+	if (argc == 4 && !strcmp(argv[1], "open") && !strcmp(argv[2], "--agent"))
+		session_open(&ids, argv[3]);
+	else if (argc == 2 && !strcmp(argv[1], "list"))
+		session_list(&ids);
+	else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "close"))
+		session_close(&ids, argc == 3 ? argv[2] : session(1));
+	else
+		reject(129, NULL, "unknown session command");
 	return 0;
 }
 
@@ -560,6 +600,16 @@ static char *hooks_dir(void)
 	return line1(git("rev-parse --path-format=absolute --git-path hooks"));
 }
 
+/* the shell lines that make a hook of a user's run "ait hook NAME", stdin passed on for pre-push (7.1.1) */
+static char *hook_lines(const char *name)
+{
+	if (strcmp(name, "pre-push"))
+		return xstrfmt("if command -v ait >/dev/null 2>&1; then ait hook %s \"$@\" || exit $?; fi", name);
+	return xstrdup("t=$(mktemp) && cat > \"$t\" || exit 1\n"
+		       "if command -v ait >/dev/null 2>&1; then ait hook pre-push \"$@\" < \"$t\" || { s=$?; rm -f \"$t\"; exit $s; }; fi\n"
+		       "exec < \"$t\"; rm -f \"$t\"");
+}
+
 static int cmd_init(int argc, const char **argv)
 {
 	char *dir = hooks_dir(), *tree;
@@ -568,16 +618,16 @@ static int cmd_init(int argc, const char **argv)
 	struct tree *t;
 	int i, bad = 0, in_repo = 0;
 
+	if (argc > 1)
+		reject(129, NULL, "init takes no arguments");
 	/* 7.1.1: inside any worktree of this repository and outside the git common directory */
 	for_each_string_list_item(wt, worktrees())
 		in_repo |= inside(dir, wt->string) && !inside(dir, commondir);
-
-	if (argc > 1)
-		reject(129, NULL, "init takes no arguments");
 	mkdir(dir, 0777);
 	for (i = 0; hooks[i]; i++) {
 		char *path = xstrfmt("%s/%s", dir, hooks[i]);
-		int rc = 0;
+		const char *in_tree;
+		int not_ignored = 0;
 
 		if (access(path, F_OK) && !in_repo) {
 			write_state(path, xstrfmt("#!/bin/sh\ncommand -v ait >/dev/null 2>&1 || exit 0\nexec ait hook %s \"$@\"\n",
@@ -589,15 +639,13 @@ static int cmd_init(int argc, const char **argv)
 			continue;
 		error("not allowed: hook '%s' is not set up for ait", path);
 		suggest("make '%s' run 'ait hook %s' with its arguments and its stdin, and stop when that fails; git runs a hook "
-		       "only if it is executable. In a shell hook, these lines after the first line do it ('#!/bin/sh' first "
-		       "if the file is new):\n%s\nthen rerun this command", path, hooks[i], strcmp(hooks[i], "pre-push") ?
-		       xstrfmt("if command -v ait >/dev/null 2>&1; then ait hook %s \"$@\" || exit $?; fi", hooks[i]) :
-		       "t=$(mktemp) && cat > \"$t\" || exit 1\nif command -v ait >/dev/null 2>&1; then ait hook pre-push \"$@\" "
-		       "< \"$t\" || { s=$?; rm -f \"$t\"; exit $s; }; fi\nexec < \"$t\"; rm -f \"$t\"");
-		if (starts_with(path, xstrfmt("%s/", top)))
-			git_run(NULL, NULL, &rc, "--no-literal-pathspecs check-ignore -q -- %s", path + strlen(top) + 1);
-		if (starts_with(path, xstrfmt("%s/", top)) && rc)
-			suggest("then commit it: stage '%s' and run 'ait commit -m <why>'", path + strlen(top) + 1);
+			"only if it is executable. In a shell hook, these lines after the first line do it ('#!/bin/sh' first "
+			"if the file is new):\n%s\nthen rerun this command", path, hooks[i], hook_lines(hooks[i]));
+		/* a hook in the work tree that git does not ignore is committed with ait; check-ignore fails for such a path */
+		if (skip_prefix(path, xstrfmt("%s/", top), &in_tree))
+			git_run(NULL, NULL, &not_ignored, "--no-literal-pathspecs check-ignore -q -- %s", in_tree);
+		if (not_ignored)
+			suggest("then commit it: stage '%s' and run 'ait commit -m <why>'", in_tree);
 		bad = 1;
 	}
 	mkdir(state_path(""), 0777);
@@ -689,8 +737,6 @@ static int pre_push(void)
 	return 0;
 }
 
-static void recheck_hint(struct state *s, struct record *r, struct tree *h, int guard);
-
 /*
  * spec 7.1.3: git stopped while bringing another commit into HEAD and has
  * not committed the result: a merge, cherry-pick, revert, or a rebase that
@@ -710,6 +756,51 @@ int integrating(void)
 		return !access(xstrfmt("%s/MERGE_MSG", gitdir), F_OK);
 	return strbuf_read_file(&safe, xstrfmt("%s/rebase-apply/abort-safety", gitdir), 0) >= 0 &&
 	       object("HEAD", 0, oid, NULL) && !strcmp(line1(safe.buf), oid);
+}
+
+/*
+ * H7 and H8: check an unverified contract again, judged at HEAD's tree H
+ * where the amend will run: at its scope, or where its code went, then reopen it.
+ * The guard of 7.1.2 makes the commit H8 would name, so it names none.
+ */
+static void recheck_hint(struct state *s, struct record *r, struct tree *h, int guard)
+{
+	const char *since;
+
+	if (code_found(r, h)) {
+		suggest("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
+		return;
+	}
+	since = guard ? NULL : unverified_since(r);
+	suggest("'%s' has no code under its scope%s; if it was moved, run 'ait %s -m <why>' to get the tasks",
+		r->id, since ? xstrfmt(" (unverified since '%s')", since) : "", amend_clause(r, moved_arg(r, h), "-"));
+	suggest("%s", reopen_hint(s, r));
+}
+
+/* H10: fulfil my promise P, with a scope for P and each abstract future demand it undertakes, or where its code went */
+static void fulfill_hint(struct state *s, struct record *p, struct tree *t)
+{
+	struct string_list missing = STRING_LIST_INIT_DUP;
+	struct strbuf args = STRBUF_INIT;
+	struct string_list_item *item;
+	size_t j;
+
+	missing_code(p, t, &missing);
+	for_each_string_list_item(item, &missing)
+		if (!starts_with(item->string, "new:")) {
+			suggest("'%s' has no code under its scope; if it was moved, run 'ait fulfill %s=%s -m <why>' to get the tasks",
+				p->id, p->id, moved_arg(p, t));
+			suggest("if it is gone for good, run 'ait future cancel %s -m <why>'", p->id);
+			return;
+		}
+	strbuf_addf(&args, "%s%s", p->id, is_abstract(p) ? "=<scope>" : "");
+	for (j = 0; j < s->nr; j++) {
+		struct record *d = partner(s, s->r[j], p);
+
+		if (d && in_state(d, "future") && is_abstract(d))
+			strbuf_addf(&args, " %s=<scope>", d->id);
+	}
+	suggest("when ready, stage the code and run 'ait fulfill %s -m <why>' to get the tasks", args.buf);
 }
 
 /* spec 7.1.2-7.1.3: guard plain commits, validate integrations */
@@ -764,51 +855,6 @@ static int cmd_hook(int argc, const char **argv)
 		recheck_hint(&hs, item->util, t, 1);
 	}
 	return 0;
-}
-
-/*
- * H7 and H8: check an unverified contract again, judged at HEAD's tree H
- * where the amend will run: at its scope, or where its code went, then reopen it.
- * The guard of 7.1.2 makes the commit H8 would name, so it names none.
- */
-static void recheck_hint(struct state *s, struct record *r, struct tree *h, int guard)
-{
-	const char *since;
-
-	if (code_found(r, h)) {
-		suggest("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
-		return;
-	}
-	since = guard ? NULL : unverified_since(r);
-	suggest("'%s' has no code under its scope%s; if it was moved, run 'ait %s -m <why>' to get the tasks",
-		r->id, since ? xstrfmt(" (unverified since '%s')", since) : "", amend_clause(r, moved_arg(r, h), "-"));
-	suggest("%s", reopen_hint(s, r));
-}
-
-/* H10: fulfil my promise P, with a scope for P and each abstract future demand it undertakes, or where its code went */
-static void fulfill_hint(struct state *s, struct record *p, struct tree *t)
-{
-	struct string_list missing = STRING_LIST_INIT_DUP;
-	struct strbuf args = STRBUF_INIT;
-	struct string_list_item *item;
-	size_t j;
-
-	missing_code(p, t, &missing);
-	for_each_string_list_item(item, &missing)
-		if (!starts_with(item->string, "new:")) {
-			suggest("'%s' has no code under its scope; if it was moved, run 'ait fulfill %s=%s -m <why>' to get the tasks",
-				p->id, p->id, moved_arg(p, t));
-			suggest("if it is gone for good, run 'ait future cancel %s -m <why>'", p->id);
-			return;
-		}
-	strbuf_addf(&args, "%s%s", p->id, is_abstract(p) ? "=<scope>" : "");
-	for (j = 0; j < s->nr; j++) {
-		struct record *d = partner(s, s->r[j], p);
-
-		if (d && in_state(d, "future") && is_abstract(d))
-			strbuf_addf(&args, " %s=<scope>", d->id);
-	}
-	suggest("when ready, stage the code and run 'ait fulfill %s -m <why>' to get the tasks", args.buf);
 }
 
 /* spec 3.9: two scopes overlap; "DIR/" and "/" cover what is under them */
@@ -868,6 +914,12 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 	}
 }
 
+/* the shape of a contract's ID (1.10): D, O or X and 12 hex digits; anything else is taken as a scope */
+static int id_shaped(const char *a)
+{
+	return strlen(a) == 13 && strchr("DOX", *a) && strspn(a + 1, "0123456789abcdef") == 12;
+}
+
 /* spec 7.8: my promises and my unverified demands, with what to do next */
 static int cmd_todo(int argc, const char **argv)
 {
@@ -881,24 +933,18 @@ static int cmd_todo(int argc, const char **argv)
 
 	/* 5.13-1: the shapes of the arguments come before the session */
 	for (k = 1; k < argc; k++)
-		if (strlen(argv[k]) != 13 || !strchr("DOX", *argv[k]))
+		if (!id_shaped(argv[k]))
 			scope_shape(argv[k]);
 	t = tree_load(line1(git("write-tree")));
 	me = session(0) ? agent : NULL;
 	/* spec 7.8.1: the contracts as the index T0 has them; the index block compares HEAD's with T0 */
 	state_load(&s, t);
 	state_load(&hs, ht);
-	for (k = 1; k < argc; k++) {
-		const char *a = argv[k];
-
-		if (state_get(&s, a))
-			continue;
-		if (strlen(a) == 13 && strchr("DOX", *a))
-			reject(128, NULL, "no such contract: '%s'", a);
-		scope_shape(a);
-	}
+	for (k = 1; k < argc; k++)
+		if (id_shaped(argv[k]) && !state_get(&s, argv[k]))
+			reject(128, NULL, "no such contract: '%s'", argv[k]);
 	for (i = 0; i < s.nr; i++) {
-		struct record *r = s.r[i];
+		struct record *r = s.r[i], *in_head = state_get(&hs, r->id);
 		int mine, future, unver, pick = 0;
 
 		if (r->bad) {
@@ -915,7 +961,7 @@ static int cmd_todo(int argc, const char **argv)
 		future = in_state(r, "future");
 		unver = is_current(r) && unverified(r, t);
 		for (k = 1; k < argc; k++)
-			pick |= state_get(&s, argv[k]) ? !strcmp(argv[k], r->id) : (future || unver) && named(r, argv[k]);
+			pick |= id_shaped(argv[k]) ? !strcmp(argv[k], r->id) : (future || unver) && named(r, argv[k]);
 		if (argc == 1)
 			pick = me ? mine && (future || (unver && *r->id == 'D')) : future || unver;
 		if (!pick)
@@ -930,8 +976,8 @@ static int cmd_todo(int argc, const char **argv)
 		link_lines(&s, r, t);
 		putchar('\n');
 		/* H7 and H8 are about K unverified in HEAD, where the amend runs; staged changes are commit's (7.7a) */
-		if (unver && state_get(&hs, r->id) && is_current(state_get(&hs, r->id)) && unverified(state_get(&hs, r->id), ht))
-			recheck_hint(&hs, state_get(&hs, r->id), ht, 0);
+		if (unver && in_head && is_current(in_head) && unverified(in_head, ht))
+			recheck_hint(&hs, in_head, ht, 0);
 		/* H10: my future offer, or my demand that was reopened (mini counts what I made, 1.3) */
 		else if (future && mine && (*r->id == 'O' || reopened(r)))
 			fulfill_hint(&s, r, t);
@@ -963,7 +1009,6 @@ static struct cmd {
 	{ "sub", NULL }, { "unsub", NULL }, { "listen", NULL }, { "peek", NULL }, { "merge-driver", NULL },
 };
 
-/* after git v2.53.0 git.c: run the command from the table, hand the rest to git (spec 7.14) */
 /* git v2.53.0 git.c:512-527 (run_builtin), with the message of 5.8 E_IO: a command's output reached stdout */
 static int check_stdout(void)
 {
@@ -986,6 +1031,7 @@ static int check_stdout(void)
 	return 0;
 }
 
+/* after git v2.53.0 git.c: run the command from the table, hand the rest to git (spec 7.14) */
 int main(int argc, const char **argv)
 {
 	size_t i;

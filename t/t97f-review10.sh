@@ -49,4 +49,10 @@ rm specs/y && mkdir specs/y && echo 'body: y' > specs/y/z.yaml
 bad E_INCOMPLETE "a spec file under a code file" ait future offer src/stock.c specs/y/z.yaml -m o
 check "the hint commits the removal with ait first" err_has "remove 'specs/y' and run 'ait commit -m <why>' first"
 git reset -q --hard "$H"; rm -rf specs/y
+
+# 7.1.1: a user's hook in the work tree that git does not ignore is to be committed with ait
+git config core.hooksPath .githooks && mkdir -p .githooks && printf '#!/bin/sh\nexit 0\n' > .githooks/pre-commit && chmod +x .githooks/pre-commit
+run ait init
+check "init names how to commit the hook" err_has "then commit it: stage '.githooks/pre-commit' and run 'ait commit -m <why>'"
+git config --unset core.hooksPath; rm -rf .githooks
 done_testing
