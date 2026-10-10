@@ -118,6 +118,12 @@ static char *quoted_paths(struct string_list *paths)
 	return strbuf_detach(&sb, NULL);
 }
 
+/* two versions of a path are the same: both absent, or the same mode and blob */
+static int same_entry(struct entry *a, struct entry *b)
+{
+	return !a || !b ? a == b : !strcmp(a->mode, b->mode) && !strcmp(a->oid, b->oid);
+}
+
 /* this worktree is sparse as git takes it: core.sparseCheckout with its own patterns file (git-sparse-checkout(1)) */
 static int sparse(void)
 {
@@ -192,6 +198,8 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
 	/* read-tree and checkout-index leave the entries without the files' stat data */
 	if (!rc && o)
 		git_run(NULL, NULL, &unset, "update-index -q --refresh");
+	if (!rc && o && unset)
+		warning("committed '%s' to '%s', but %s", c, headref, git_failed());
 	if (!rc && ait.nr && sparse()) {
 		git_run(NULL, NULL, &unset, "sparse-checkout reapply");
 		if (unset)
@@ -457,12 +465,13 @@ static void new_contract(struct request *q, struct clause *c)
 }
 
 /* the shapes of a clause's arguments (3.1-3.2), before any tree is read (5.13-1) */
-static void shapes(const char *list, int defs)
+static void shapes(const char *list, int defs, int keep)
 {
 	struct string_list parts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
-	if (!list || !strcmp(list, "-"))
+	/* "-" keeps what a clause's contract has (7.3.2); as scopes of ID=SCOPES it is no PATH (3.1) */
+	if (!list || (keep && !strcmp(list, "-")))
 		return;
 	string_list_split(&parts, list, ",", -1);
 	for_each_string_list_item(item, &parts)
@@ -527,9 +536,9 @@ static void parse_clauses(struct request *q)
 		} else {
 			reject(129, NULL, "unknown clause '%s'", c->verb);
 		}
-		shapes(c->a, 0);
-		shapes(c->b, 0);
-		shapes(c->f, 1);
+		shapes(c->a, 0, 1);
+		shapes(c->b, 0, 1);
+		shapes(c->f, 1, 1);
 	}
 }
 
@@ -579,39 +588,6 @@ static void apply(struct request *q, struct clause *c)
 		if (r)
 			put(r, STATE, *c->verb == 'u' ? "undertaken" : "released");
 	}
-}
-
-/*
- * spec 8.4: a "|" block of the result file goes into the message without its
- * trailing blank lines: a run of blank lines goes when what follows it is less
- * indented than what is before it (the block ended), or nothing follows
- */
-static void block_ends(struct strbuf *sb)
-{
-	struct string_list lines = STRING_LIST_INIT_DUP;
-	struct strbuf out = STRBUF_INIT;
-	size_t i, j;
-	int before = 0;
-
-	string_list_split(&lines, sb->buf, "\n", -1);
-	for (i = 0; i < lines.nr; i = j) {
-		const char *l = lines.items[i].string;
-
-		for (j = i; j < lines.nr && !lines.items[j].string[strspn(lines.items[j].string, " ")]; j++)
-			;
-		if (j == i) {
-			strbuf_addf(&out, "%s\n", l);
-			before = strspn(l, " ");
-			j++;
-			continue;
-		}
-		if (j < lines.nr && (int)strspn(lines.items[j].string, " ") >= before)
-			for (; i < j; i++)
-				strbuf_addf(&out, "%s\n", lines.items[i].string);
-	}
-	strbuf_reset(sb);
-	strbuf_add(sb, out.buf, out.len);
-	strbuf_release(&out);
 }
 
 /*
@@ -930,7 +906,10 @@ static void fix_hints(struct request *q, struct string_list *ids)
 				add_hint(q, q->gate ? code_first(q, "<your code>") : "make the code meet the failed task(s) and stage it, "
 					 "then rerun without -r to get the new tasks");
 			else if (q->gate && unsorted_string_list_has_string(&q->files, path))
-				add_hint(q, xstrfmt("fix '%s', then rerun this command", path));
+				/* 7.3.3: a version staged apart from HEAD's would be partly staged once the file is fixed */
+				add_hint(q, xstrfmt(same_entry(tree_get(q->noted, path), tree_get(q->ht, path)) ?
+						    "fix '%s', then rerun this command" : "fix '%s' and stage it again, then rerun this command",
+						    path));
 			else if (q->gate)
 				add_hint(q, xstrfmt("fix '%s' and carry it in this request: '%s'", path,
 						    again(q, &none, 0, amend_clause(owner, "-", def_paths(owner->old)))));
@@ -1196,22 +1175,31 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	char *hint = xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis", q->result);
 	char *err;
 	const char *t;
-	int n;
+	int n, rc;
 
-	text_or_die(text, q->result);
+	/* 5.8 E_FORMAT of a result file carries its hint on every path */
+	if ((rc = read_text(text, q->result)) < 0)
+		reject(128, "rerun without -r to get the check-result path", "could not read '%s'", q->result);
+	if (rc)
+		reject(128, hint, "bad format: '%s': not a text file", q->result);
 	if (yaml_parse(text->buf, &kv, q->result, &err))
 		reject(128, hint, "%s", err);
 	/* 8.4: the subset of 2.5.1, its unknown keys and kinds too, then the input */
 	yaml_check(&kv, schema, q->result, hint);
 	if (!yget(&kv, "input"))
-		reject(128, hint, "bad format: '%s': no 'input'", q->result);
+		reject(128, hint, "bad format: '%s': no 'input'%s", q->result, yline(&kv, ""));
 	if (strcmp(yget(&kv, "input"), input))
 		return 0;
-	for (n = 0; (t = yget(&kv, xstrfmt("results.%d.task", n))); n++) {
+	/* every item of results, each naming its task */
+	for (n = 0; yget(&kv, xstrfmt("results.%d", n)); n++) {
 		const char *outcome = yget(&kv, xstrfmt("results.%d.outcome", n));
 		const char *basis = yget(&kv, xstrfmt("results.%d.basis", n));
-		struct string_list_item *task = task_of(q, t);
+		struct string_list_item *task;
 
+		if (!(t = yget(&kv, xstrfmt("results.%d.task", n))))
+			reject(128, hint, "bad format: '%s': a result without a task%s", q->result,
+			       yline(&kv, xstrfmt("results.%d", n)));
+		task = task_of(q, t);
 		if (!task || unsorted_string_list_has_string(&seen, task->string) || !outcome || !one_of(outcome, outcomes) ||
 		    (!strcmp(outcome, "pass") && (!basis || !basis[strspn(basis, " \n")])))
 			reject(128, hint, "bad format: '%s': task '%s'%s", q->result, t, yline(&kv, xstrfmt("results.%d.task", n)));
@@ -1224,7 +1212,8 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 		string_list_append(failing, task->string)->util = task->util;
 	}
 	if (seen.nr != q->tasks.nr)
-		reject(128, hint, "bad format: '%s': %d of %d tasks", q->result, (int)seen.nr, (int)q->tasks.nr);
+		reject(128, hint, "bad format: '%s': %d of %d tasks%s", q->result, (int)seen.nr, (int)q->tasks.nr,
+		       yline(&kv, "results"));
 	return 1;
 }
 
@@ -1481,7 +1470,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 		return;
 	}
 	if (results->len) {
-		block_ends(results);
+		yaml_trim_blocks(results);
 		strbuf_complete_line(results);
 		hides(results->buf);
 		strbuf_addf(&q->msg, "\n%s", results->buf);
@@ -1647,7 +1636,7 @@ int cmd_fulfill(int argc, const char **argv)
 			reject(129, islower(*id) ? "aliases are local to one command; use the ID printed on its 'new' line" : NULL,
 			       "bad argument '%s'", a);
 		string_list_append(&ids, id)->util = eq ? xstrdup(eq + 1) : NULL;
-		shapes(eq ? eq + 1 : NULL, 0);
+		shapes(eq ? eq + 1 : NULL, 0, 0);
 	}
 	read_files(&q);
 	message(&q, q.fulfill ? "[FULFILL] " : NULL);
@@ -1708,12 +1697,6 @@ static const char *not_a_file(const char *path)
 	/* a symlink is staged as git stages it, and judged by its mode then */
 	return !lstat(xstrfmt("%s/%s", top, path), &st) && !S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode) ?
 	       "is not a regular file" : NULL;
-}
-
-/* two versions of a path are the same: both absent, or the same mode and blob */
-static int same_entry(struct entry *a, struct entry *b)
-{
-	return !a || !b ? a == b : !strcmp(a->mode, b->mode) && !strcmp(a->oid, b->oid);
 }
 
 /*

@@ -849,11 +849,17 @@ static int cmd_todo(int argc, const char **argv)
 	struct state s = { 0 }, hs = { 0 };
 	struct string_list index = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct tree *t = tree_load(line1(git("write-tree"))), *ht = head_tree();
-	const char *me = session(0) ? agent : NULL;
+	struct tree *t, *ht = head_tree();
+	const char *me;
 	size_t i;
 	int k;
 
+	/* 5.13-1: the shapes of the arguments come before the session */
+	for (k = 1; k < argc; k++)
+		if (strlen(argv[k]) != 13 || !strchr("DOX", *argv[k]))
+			scope_shape(argv[k]);
+	t = tree_load(line1(git("write-tree")));
+	me = session(0) ? agent : NULL;
 	/* spec 7.8.1: the contracts as the index T0 has them; the index block compares HEAD's with T0 */
 	state_load(&s, t);
 	state_load(&hs, ht);

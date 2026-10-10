@@ -1017,20 +1017,37 @@ static int same_pins(const char *text, struct record *r)
 }
 
 /*
- * 9.1 for H8: the commit of HEAD's first-parent history where R became unverified
- * with the pins it has now: going back from HEAD while the commit holds R current
- * with these pins and R is unverified there, the last such commit. Verified at C
- * is what unverified() says at HEAD: a commit with the check is C or an ancestor
- * of C, and C's tree has what the pins name. Each commit's record is looked up
- * by itself, and a tree is read only where a check was confirmed.
+ * R is unverified at commit C with the pins it has now (1.5a): C holds R as a
+ * current contract with these pins, and no check confirmed them at C or an
+ * ancestor of C (CONFIRMED), or C's tree is off them. Remembered in SEEN.
+ */
+static int unverified_at(struct record *r, const char *c, struct string_list *confirmed, struct string_list *seen)
+{
+	struct string_list_item *hit = string_list_lookup(seen, c);
+	const char *record = blob_at(head_tree(), xstrfmt(".ait/%s", r->id));
+	char there[48];
+	int is;
+
+	if (hit)
+		return hit->util != NULL;
+	is = object(xstrfmt("%s:.ait/%s", c, r->id), 0, there, NULL) &&
+	     (!strcmp(there, record) || same_pins(blob_text(there), r)) &&
+	     (!string_list_has_string(confirmed, c) || off_pins(r, tree_load(c)));
+	string_list_insert(seen, c)->util = is ? (void *)"" : NULL;
+	return is;
+}
+
+/*
+ * 9.1 for H8: the latest commit of HEAD's history where R newly became
+ * unverified with the pins it has now: R is unverified there, and no parent
+ * of it had R unverified with the same pins. Verified at C is what
+ * unverified() says at HEAD: a commit with the check is C or an ancestor of C.
  */
 const char *unverified_since(struct record *r)
 {
-	struct string_list confirmed = STRING_LIST_INIT_DUP, walk = STRING_LIST_INIT_DUP;
+	struct string_list confirmed = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP, commits = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	const char *record = blob_at(head_tree(), xstrfmt(".ait/%s", r->id)), *since = NULL;
 	char *want = xstrfmt("%s %s", r->id, pins(r));
-	size_t i;
 
 	if (!head)
 		return NULL;
@@ -1041,19 +1058,21 @@ const char *unverified_since(struct record *r)
 					  "\n", -1);
 		}
 	string_list_sort(&confirmed);
-	string_list_split(&walk, git("log --first-parent --format=%H %s", head), "\n", -1);
-	for (i = 0; i < walk.nr && *walk.items[i].string; i++) {
-		const char *c = walk.items[i].string;
-		char there[48];
+	/* "C P1 P2 ..." newest first */
+	string_list_split(&commits, git("rev-list --topo-order --parents %s", head), "\n", -1);
+	for_each_string_list_item(item, &commits) {
+		struct string_list ids = STRING_LIST_INIT_DUP;
+		size_t i;
 
-		/* 9.1: the same pins (provider and file lines) of a current contract; prev alone is no change */
-		if (!object(xstrfmt("%s:.ait/%s", c, r->id), 0, there, NULL) ||
-		    (strcmp(there, record) && !same_pins(blob_text(there), r)) ||
-		    (string_list_has_string(&confirmed, c) && !off_pins(r, tree_load(c))))
-			return since;
-		since = c;
+		string_list_split(&ids, item->string, " ", -1);
+		if (!*item->string || !unverified_at(r, ids.items[0].string, &confirmed, &seen))
+			continue;
+		for (i = 1; i < ids.nr && !unverified_at(r, ids.items[i].string, &confirmed, &seen); i++)
+			;
+		if (i == ids.nr)
+			return ids.items[0].string;
 	}
-	return since;
+	return NULL;
 }
 
 /* spec 2.5.2: the inputs of the definition DEF at T into OUT, each a PATH of 3.1 */
@@ -1153,7 +1172,7 @@ struct yval {
 	char *s;
 	size_t start, at, end;	/* where the node starts, where the value's text starts, where the node ends */
 	int line, literal;	/* LITERAL: the text from AT spells the value as it is */
-	int plain;
+	int plain, block;	/* a plain scalar; a "|" block */
 	char kind;	/* 'l' a list, 'm' a map, '?' a key with nothing under it, 0 a scalar */
 };
 
@@ -1269,6 +1288,9 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 	path = yaml_place(*depth ? &stack[*depth - 1] : NULL, e, &why);
 	if (why)
 		return why;
+	/* the root map, kept under "" for the line of what it lacks */
+	if (!*depth)
+		path = xstrdup("");
 	if (path && unsorted_string_list_has_string(kv, path))
 		return xstrfmt("duplicate key '%s'", path);
 	if (path) {
@@ -1276,6 +1298,7 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 		v->s = xstrdup(e->type == YAML_SCALAR_EVENT ? (char *)e->data.scalar.value : "");
 		v->kind = yaml_kind(e);
 		v->plain = e->type == YAML_SCALAR_EVENT && e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE;
+		v->block = e->type == YAML_SCALAR_EVENT && e->data.scalar.style == YAML_LITERAL_SCALAR_STYLE;
 		v->line = e->start_mark.line + 1;
 		v->start = yaml_byte(text, e->start_mark);
 		v->end = yaml_byte(text, e->end_mark);
@@ -1289,7 +1312,7 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 		return NULL;
 	if (*depth == 16)
 		return "nested too deeply";
-	stack[*depth].path = path;
+	stack[*depth].path = *path ? path : NULL;
 	stack[*depth].key = NULL;
 	stack[*depth].n = 0;
 	stack[*depth].kind = yaml_kind(e);
@@ -1383,10 +1406,44 @@ void yreplace(struct strbuf *text, struct string_list *kv, const char *key, size
 	strbuf_splice(text, v->start, end - v->start, sb.buf, sb.len);
 }
 
-/* " in line N" of the value of KEY, for E_FORMAT (5.8: the file and the line) */
+/*
+ * " in line N" of the value of KEY, for E_FORMAT (5.8: the file and the line);
+ * "" names the root map, where a missing key belongs. Empty when there is none.
+ */
 char *yline(struct string_list *kv, const char *key)
 {
-	return xstrfmt(" in line %d", ((struct yval *)unsorted_string_list_lookup(kv, key)->util)->line);
+	struct string_list_item *item = unsorted_string_list_lookup(kv, key);
+
+	return item ? xstrfmt(" in line %d", ((struct yval *)item->util)->line) : xstrdup("");
+}
+
+/*
+ * spec 8.4: the "|" blocks of TEXT, a YAML file, without their trailing blank
+ * lines where that leaves the value as it is (not "|+"), as libyaml places
+ * each block; from the last one back, so the places of the others hold
+ */
+void yaml_trim_blocks(struct strbuf *text)
+{
+	struct string_list kv = STRING_LIST_INIT_DUP;
+	char *err;
+	size_t i;
+
+	if (yaml_parse(text->buf, &kv, "", &err))
+		return;
+	for (i = kv.nr; i-- > 0;) {
+		struct yval *v = kv.items[i].util;
+		size_t p = v->end, e;
+
+		if (!v->block || memchr(text->buf + v->start, '+', strcspn(text->buf + v->start, "\n")))
+			continue;
+		while (p > v->start && (text->buf[p - 1] == '\n' || text->buf[p - 1] == ' '))
+			p--;
+		/* up to the line break that ends the block's last line; the next line keeps its indentation */
+		for (e = v->end; e > p && text->buf[e - 1] != '\n'; e--)
+			;
+		if (e > p)
+			strbuf_splice(text, p, e - p, "\n", 1);
+	}
 }
 
 /* 2.5.1: a decimal integer, as YAML 1.2 reads one: a plain scalar of digits, no leading zero */
@@ -1412,6 +1469,9 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 		struct string_list_item *part;
 		char kind = 0;
 
+		/* the root map is no key */
+		if (!*item->string)
+			continue;
 		string_list_split(&parts, item->string, ".", -1);
 		for_each_string_list_item(part, &parts)
 			strbuf_addf(&pattern, "%s%s", pattern.len ? "." : "",
@@ -1455,7 +1515,7 @@ struct string_list *def_get(struct tree *t, const char *path)
 		reject(128, NULL, "bad format: '%s': engine '%s' is not exec or prompt%s", path, engine, yline(kv, "engine"));
 	yaml_check(kv, *engine ? exec : prompt, path, NULL);
 	if (!yget(kv, "body") || !*yget(kv, "body") || (*engine && !yget(kv, "command.0")))
-		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'", path);
+		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'%s", path, yline(kv, ""));
 	string_list_insert(&parsed, oid)->util = kv;
 	return kv;
 }

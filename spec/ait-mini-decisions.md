@@ -23,11 +23,13 @@
 17. **명세 정의는 git이 stage한 blob에서 읽음.** 7.3.3("작업 폴더 내용과 mode"를 U에 넣는다)과 2.1.4에서 도출. U에 든 것은 git이 stage한 blob이므로 정의도 그 blob에서 읽는다. 그래서 clean filter를 거친 내용의 inputs를 따른다.
 18. **YAML 값에 NUL이 들면 E_FORMAT(`a NUL character`).** 선택(spec은 정하지 않는다). NUL이 든 파일을 이미 `not a text file`로 막는 것과 맞췄다. 표준 escape(`\0`)로 NUL을 쓸 수 있게 되어 생긴 경우다.
 19. **작업 폴더의 모양은 ait가, 그 밖의 stage 실패는 git이 말함.** 선택. 7.3.3("작업 폴더에 있는 일반 파일")과 5.8 E_GIT 사이의 경계를 이렇게 그었다. FIFO 같은 특수 파일도 E_INCOMPLETE `is not a regular file`이다. symlink를 지나는 경로와 디렉터리는 ait가 lstat으로 보고 E_INCOMPLETE, 없는 파일은 E_INCOMPLETE `missing`, stage한 mode가 일반 파일이 아니면 E_INCOMPLETE, 그 밖에 git이 stage에 실패하면(필수 clean filter 등) E_GIT이다.
-20. **E_FORMAT의 행은 값이 있는 자리의 행.** 5.8 "(파일과 행)"에서 도출. 모르는 키, 값의 종류, engine, input, 결과 파일의 task는 그 값의 행을 쓴다. 키가 아예 없거나(body, input) 과제 수가 맞지 않는 것은 파일 전체의 일이라 행이 없다.
+20. **E_FORMAT의 행은 값이 있는 자리의 행.** 5.8 "(파일과 행)"에서 도출. 모르는 키, 값의 종류, engine, input, 결과 파일의 task는 그 값의 행을 쓴다. 키가 없으면 결정 29.
 21. **NEL·LS·PS를 거절함.** 선택. 2.5.1은 행바꿈을 LF로만 정하는데 libyaml(YAML 1.1)은 이 셋도 행바꿈으로 읽어 값이 달라지므로, CR과 함께 `a line break other than LF`로 막는다.
 22. **정수는 따옴표 없는 10진수, 앞자리 0 없음.** 2.5.1 "10진 정수"와 YAML 1.2에서 도출. `"0"`은 문자열이고 `010`은 YAML 1.1 독자가 8진수로 읽으므로 E_FORMAT이다.
 23. **결과 파일의 `+n`은 원문이 값을 그대로 쓴 자리에서만 그 자리에서 바꾸고, 아니면(escape, `|` 블록 등) scalar 전체를 `"…"`로 새로 씀.** 선택. 8.4는 "`+n`만 바꾸고 나머지는 그대로"라고만 한다.
-24. **결과 파일 `|` 블록 끝의 빈 행: 빈 행 다음 줄이 그 앞 줄보다 덜 들여쓰였거나 다음 줄이 없으면 뺌.** 8.4에서 도출(블록이 끝났다는 YAML의 기준).
-25. **H8의 since는 first-parent 이력 끝까지 찾음.** H8(판정한 tree의 이력에서 가장 최근 것)에서 도출. 예전의 100커밋 상한은 spec에 없던 것이라 없앴다.
+24. **결과 파일 `|` 블록 끝의 빈 행은 libyaml이 알려 주는 그 블록의 범위 끝에서만 뺌. `|+` 블록은 빈 행이 값이라 그대로 둠.** 8.4에서 도출. 예전의 들여쓰기 추정은 블록 안의 빈 행과 따옴표 문자열의 줄바꿈까지 지워 틀렸다(round 8).
+25. **H8의 since는 9.1대로 모든 부모를 봄.** 9.1("같은 고정으로 이미 미확인이던 부모가 없는 커밋")과 H8("가장 최근 것")에서 도출. HEAD의 이력을 topo 순서로 보며, 미확인이고 어느 부모도 같은 고정으로 미확인이 아닌 첫 커밋이다. 상한은 없다.
 26. **hint 명령 안의 경로는 shell 한 단어로 인용함(`-r` 등).** 5.9a에서 도출(hint 명령은 그대로 실행된다). 산문 속 경로는 git처럼 `'…'`다.
 27. **UTF-8이 아닌 경로는 확인 파일에서 git처럼 인용함(사용자 결정, 8.2에 적음).** 경로는 받고, UTF-8 YAML인 확인 요청·결과 틀에만 git의 quote_c_style 형식으로 쓴다. 결과 파일의 task는 그 형식의 이름으로 맞춘다. 다른 출력은 바이트 그대로다.
+28. **이미 stage된 명세 파일을 고치라는 hint는 ait-mini에서 `fix 'PATH' and stage it again, then rerun this command`.** 5.9a의 `ait contract add PATH`가 ait-mini에 없어서, hint는 목표 상태만 말한다는 규칙(E_CODE_REQUIRED의 `stage 'X'`와 같은 꼴)을 따랐다. 선택.
+29. **키가 없는 E_FORMAT은 그 키가 있어야 할 map의 행을 씀.** 5.8 "(파일과 행)"에서 도출. 그래서 결정 20의 "행이 없다"는 예외를 없앴다.
