@@ -1114,16 +1114,18 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 					      "results.N.outcome s", "results.N.basis s", "results.N.reason s", NULL };
 	struct string_list kv = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP;
 	char *hint = xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis", q->result);
+	char *err;
 	const char *t;
 	int n;
 
 	text_or_die(text, q->result);
-	yaml(text->buf, &kv, q->result);
+	if (yaml_parse(text->buf, &kv, q->result, &err))
+		reject(128, hint, "%s", err);
 	if (!yget(&kv, "input"))
 		reject(128, hint, "bad format: '%s': no 'input'", q->result);
 	if (strcmp(yget(&kv, "input"), input))
 		return 0;
-	yaml_check(&kv, schema, q->result);
+	yaml_check(&kv, schema, q->result, hint);
 	for (n = 0; (t = yget(&kv, xstrfmt("results.%d.task", n))); n++) {
 		const char *outcome = yget(&kv, xstrfmt("results.%d.outcome", n));
 		const char *basis = yget(&kv, xstrfmt("results.%d.basis", n));
@@ -1131,7 +1133,7 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 		if (!string_list_has_string(&q->tasks, t) || unsorted_string_list_has_string(&seen, t) || !outcome ||
 		    !one_of(outcome, outcomes) ||
 		    (!strcmp(outcome, "pass") && (!basis || !basis[strspn(basis, " \n")])))
-			reject(128, hint, "bad format: '%s': task '%s'", q->result, t);
+			reject(128, hint, "bad format: '%s': task '%s'%s", q->result, t, yline(&kv, xstrfmt("results.%d.task", n)));
 		string_list_append(&seen, t);
 		if (!strcmp(outcome, "pass"))
 			continue;
@@ -1552,6 +1554,8 @@ int cmd_fulfill(int argc, const char **argv)
 
 	q.fulfill = !strcmp(argv[0], "fulfill");
 	parse_options(&q, argc - 1, argv + 1);
+	if (q.fulfill && !q.args.nr)
+		reject(129, NULL, "nothing to fulfill: give the IDs of future contracts");
 	/* spec 7.7.1: IDs once each; aliases live only inside one helper request */
 	for (k = 0; k < q.args.nr; k++) {
 		const char *a = q.args.v[k], *eq = strchr(a, '=');
@@ -1608,8 +1612,30 @@ int cmd_fulfill(int argc, const char **argv)
 }
 
 /*
+ * why PATH, there in the work tree, is not a file of it (7.3.3), or NULL: it is
+ * reached through a symlink, or is a directory; what the file is, git says
+ */
+static const char *not_a_file(const char *path)
+{
+	const char *slash;
+	struct stat st;
+
+	for (slash = strchr(path, '/'); slash; slash = strchr(slash + 1, '/'))
+		if (!lstat(xstrfmt("%s/%.*s", top, (int)(slash - path), path), &st) && S_ISLNK(st.st_mode))
+			return "is beyond a symbolic link";
+	return !lstat(xstrfmt("%s/%s", top, path), &st) && S_ISDIR(st.st_mode) ? "is not a regular file" : NULL;
+}
+
+/* two versions of a path are the same: both absent, or the same mode and blob */
+static int same_entry(struct entry *a, struct entry *b)
+{
+	return !a || !b ? a == b : !strcmp(a->mode, b->mode) && !strcmp(a->oid, b->oid);
+}
+
+/*
  * spec 7.3.3: the files of the request from the work tree on HEAD, staged by
- * git as git stages them; each a regular file, staged whole or not at all
+ * git as git stages them; each a regular file, and the index holding HEAD's
+ * version or the work tree's (no partial staging); git failing is E_GIT
  */
 static struct tree *stage_files(struct request *q)
 {
@@ -1617,21 +1643,26 @@ static struct tree *stage_files(struct request *q)
 	struct tree *u;
 	char *tree;
 
-	for_each_string_list_item(item, &q->files)
-		if (access(xstrfmt("%s/%s", top, item->string), F_OK))
+	for_each_string_list_item(item, &q->files) {
+		const char *why = not_a_file(item->string);
+		struct stat st;
+
+		if (why)
+			reject(1, NULL, "spec files do not match the contract: '%s' %s", item->string, why);
+		if (lstat(xstrfmt("%s/%s", top, item->string), &st))
 			reject(1, xstrfmt("create '%s' or stop declaring it", item->string),
 			       "spec files do not match the contract: missing '%s'", item->string);
+	}
 	if (!(tree = tree_with(q->ht->oid, NULL, &q->files)))
-		reject(1, NULL, "spec files do not match the contract: %s", git_error);
+		reject(128, NULL, "%s", git_failed());
 	u = tree_load(tree);
 	for_each_string_list_item(item, &q->files) {
 		struct entry *e = tree_get(u, item->string), *staged = tree_get(q->index, item->string);
-		const char *was = blob_at(q->ht, item->string);
 
-		/* 2.1.4: a spec file is a regular file; and it is staged as a whole, or not at all (7.3.3) */
+		/* 2.1.4: a spec file is a regular file */
 		if (!e || (strcmp(e->mode, "100644") && strcmp(e->mode, "100755")))
 			reject(1, NULL, "spec files do not match the contract: '%s' is not a regular file", item->string);
-		if (staged && strcmp(staged->oid, e->oid) && (!was || strcmp(staged->oid, was)))
+		if (!same_entry(staged, e) && !same_entry(staged, tree_get(q->ht, item->string)))
 			reject(1, xstrfmt("stage all of '%s' or none of it", item->string),
 			       "spec files do not match the contract: '%s' is partly staged", item->string);
 	}
@@ -1652,7 +1683,7 @@ static struct tree *candidate(struct request *q)
 			continue;
 		for_each_string_list_item(in, def_get(u, def))
 			if (starts_with(in->string, "inputs.") &&
-			    !unsorted_string_list_has_string(&q->files, input_path(def, yget(def_get(u, def), in->string))))
+			    !unsorted_string_list_has_string(&q->files, input_path(def, def_get(u, def), in->string)))
 				string_list_append(&q->files, yget(def_get(u, def), in->string));
 	}
 	return q->files.nr > n ? stage_files(q) : u;

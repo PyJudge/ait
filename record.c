@@ -1032,12 +1032,12 @@ const char *unverified_since(struct record *r)
 	return walk.nr > 100 ? NULL : since;
 }
 
-/* spec 2.5.2: an input of the definition DEF is a PATH of 3.1 */
-const char *input_path(const char *def, const char *p)
+/* spec 2.5.2: the input KEY of the definition DEF, parsed in KV, is a PATH of 3.1 */
+const char *input_path(const char *def, struct string_list *kv, const char *key)
 {
-	if (!path_ok(p))
-		reject(128, NULL, "bad format: '%s': bad input '%s'", def, p);
-	return p;
+	if (!path_ok(yget(kv, key)))
+		reject(128, NULL, "bad format: '%s': bad input '%s'%s", def, yget(kv, key), yline(kv, key));
+	return yget(kv, key);
 }
 
 /* spec 2.4: the file lines are the defs and what the defs declare, pinned at T */
@@ -1056,9 +1056,10 @@ int expand_files(struct record *r, struct tree *t)
 			return -1;
 		string_list_insert(&out, xstrfmt("%s %s %s def", e->path, e->mode, e->oid));
 		for_each_string_list_item(in, def_get(t, e->path)) {
-			const char *p = yget(def_get(t, e->path), in->string);
+			const char *p;
 
-			if (!starts_with(in->string, "inputs.") || string_list_has_string(&defs, input_path(item->string, p)))
+			if (!starts_with(in->string, "inputs.") ||
+			    string_list_has_string(&defs, (p = input_path(item->string, def_get(t, e->path), in->string))))
 				continue;
 			if (!blob_at(t, p))
 				return -1;
@@ -1120,6 +1121,7 @@ int read_text(struct strbuf *sb, const char *path)
 struct yval {
 	char *s;
 	size_t at;
+	int line;
 	char kind;	/* 'l' a list, 'm' a map, '?' a key with nothing under it, 0 a scalar */
 };
 
@@ -1242,6 +1244,7 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 		v = xcalloc(1, sizeof(*v));
 		v->s = xstrdup(e->type == YAML_SCALAR_EVENT ? (char *)e->data.scalar.value : "");
 		v->kind = yaml_kind(e);
+		v->line = e->start_mark.line + 1;
 		/* a quoted scalar's text starts after its quote */
 		v->at = yaml_byte(text, e->start_mark) + (e->type == YAML_SCALAR_EVENT &&
 			(e->data.scalar.style == YAML_SINGLE_QUOTED_SCALAR_STYLE ||
@@ -1270,8 +1273,9 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 	size_t line = 0;
 
 	*err = NULL;
-	if (!is_utf8(text) || strpbrk(text, "\t\r")) {
-		*err = xstrfmt("bad format: '%s': %s", what, is_utf8(text) ? "a tab or CR" : "not UTF-8");
+	/* 2.5.1: UTF-8 and LF; where a tab may stand is YAML's, for libyaml to judge */
+	if (!is_utf8(text) || strchr(text, '\r')) {
+		*err = xstrfmt("bad format: '%s': %s", what, is_utf8(text) ? "a CR" : "not UTF-8");
 		return -1;
 	}
 	yaml_parser_initialize(&parser);
@@ -1316,12 +1320,18 @@ size_t yat(struct string_list *kv, const char *key)
 	return ((struct yval *)unsorted_string_list_lookup(kv, key)->util)->at;
 }
 
+/* " in line N" of the value of KEY, for E_FORMAT (5.8: the file and the line) */
+char *yline(struct string_list *kv, const char *key)
+{
+	return xstrfmt(" in line %d", ((struct yval *)unsorted_string_list_lookup(kv, key)->util)->line);
+}
+
 /*
  * Every key of KV against SCHEMA, entries "PATTERN KIND" where N in a pattern
  * stands for a list index and KIND is s (scalar), i (integer), l (list) or
  * m (map); a list or map may be written empty. The first mismatch is fatal.
  */
-void yaml_check(struct string_list *kv, const char *const *schema, const char *what)
+void yaml_check(struct string_list *kv, const char *const *schema, const char *what, const char *hint)
 {
 	struct string_list_item *item;
 	const char *const *e;
@@ -1341,11 +1351,11 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 			if (starts_with(*e, pattern.buf) && (*e)[pattern.len] == ' ')
 				kind = (*e)[pattern.len + 1];
 		if (!kind)
-			reject(128, NULL, "bad format: '%s': unknown key '%s'", what, item->string);
+			reject(128, hint, "bad format: '%s': unknown key '%s' in line %d", what, item->string, v->line);
 		/* a key with nothing under it is an empty list, map or scalar; "" is a scalar only */
 		if (strchr("lm", kind) ? v->kind != kind && v->kind != '?' :
 		    (v->kind && v->kind != '?') || (kind == 'i' && (!*v->s || v->s[strspn(v->s, "0123456789")])))
-			reject(128, NULL, "bad format: '%s': bad value of '%s'", what, item->string);
+			reject(128, hint, "bad format: '%s': bad value of '%s' in line %d", what, item->string, v->line);
 	}
 }
 
@@ -1373,8 +1383,8 @@ struct string_list *def_get(struct tree *t, const char *path)
 		unsupported("environment");
 	engine = yget(kv, "engine") ? yget(kv, "engine") : "";
 	if (*engine && strcmp(engine, "exec"))
-		reject(128, NULL, "bad format: '%s': engine '%s' is not exec or prompt", path, engine);
-	yaml_check(kv, *engine ? exec : prompt, path);
+		reject(128, NULL, "bad format: '%s': engine '%s' is not exec or prompt%s", path, engine, yline(kv, "engine"));
+	yaml_check(kv, *engine ? exec : prompt, path, NULL);
 	if (!yget(kv, "body") || !*yget(kv, "body") || (*engine && !yget(kv, "command.0")))
 		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'", path);
 	string_list_insert(&parsed, oid)->util = kv;
