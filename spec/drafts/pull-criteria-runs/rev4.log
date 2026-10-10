@@ -1,0 +1,390 @@
+
+======== U1  a1: D c-A ; main: D c-E
+  [D]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['2ace12d', '376595c']
+     after 3-way: ['2ace12d', '376595c']  remaining: ['2ace12d', '376595c']
+     => DIVERGED: choose among ['2ace12d', '376595c']
+     introducing commits of 2ace12d: [('a1', 1)]
+  [D after pull D=a1]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     f3b2ffc at main,HEAD  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['2ace12d', '376595c']
+     latest: ['f3b2ffc']
+     after 3-way: ['f3b2ffc']  remaining: ['f3b2ffc']
+     => nothing to take
+  bundle: ok
+
+======== T1  after U1's 'pull D=a1', a goes on: D c-A2 (a2)
+  [D]
+     7590017 at a  rule1=True  demand/future cond=c-A2 stock.c@8e9b0  prev=['2ace12d']
+     f3b2ffc at main,HEAD  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['2ace12d', '376595c']
+     latest: ['7590017', 'f3b2ffc']  3-way: ['7590017 moved forward from f3b2ffc']
+     after 3-way: ['7590017']  remaining: ['7590017']
+     => new version: body of 7590017, prev = latest ['7590017', 'f3b2ffc']
+     introducing commits of 7590017: [('a2', 1)]
+
+======== T1b  U1 but 'pull D=HEAD' (kept mine), then a goes on: D c-A2
+  [D right after kept]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     05bdcb7 at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['2ace12d', '376595c']
+     latest: ['05bdcb7']
+     after 3-way: ['05bdcb7']  remaining: ['05bdcb7']
+     => nothing to take
+  [D after a goes on]
+     7590017 at a  rule1=True  demand/future cond=c-A2 stock.c@8e9b0  prev=['2ace12d']
+     05bdcb7 at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['2ace12d', '376595c']
+     latest: ['7590017', '05bdcb7']
+     after 3-way: ['7590017', '05bdcb7']  remaining: ['7590017', '05bdcb7']
+     => DIVERGED: choose among ['7590017', '05bdcb7']
+     introducing commits of 7590017: [('a2', 2)]
+
+======== U3  a fulfils D (current) ; main: D c-E
+  [D]
+     70d5fa2 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['70d5fa2', '376595c']
+     after 3-way: ['70d5fa2', '376595c']  remaining: ['70d5fa2', '376595c']
+     => DIVERGED: choose among ['70d5fa2', '376595c']
+     introducing commits of 70d5fa2: [('a1', 1)]
+
+======== U4  a cancels D ; main: D c-E  (terminal wins)
+  [D]
+     cee379a at a  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['cee379a', '376595c']
+     after 3-way: ['cee379a', '376595c']  -> terminal wins  remaining: ['cee379a']
+     => new version: body of cee379a, prev = latest ['cee379a', '376595c']
+     introducing commits of cee379a: [('a1', 1)]
+
+======== U6  D current ; a and b re-check with different code ; main: D0
+  [D]
+     d1314a9 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['5b1b0e3']
+     cfce40b at b  rule1=True  demand/current cond=c0 stock.c@e3dea check=reported  prev=['5b1b0e3']
+     5b1b0e3 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=[]
+     latest: ['d1314a9', 'cfce40b']
+     after 3-way: ['d1314a9', 'cfce40b']  remaining: ['d1314a9', 'cfce40b']
+     => DIVERGED: choose among ['d1314a9', 'cfce40b']
+     introducing commits of d1314a9: [('a1', 1)]
+     introducing commits of cfce40b: [('b1', 1)]
+
+======== U7  D current ; a: drop X, fulfil X (D withdrawn) ; main reopens D  (terminal wins)
+  [D]
+     3295a54 at a  rule1=True  demand/withdrawn cond=c0 stock.c@8e9b0  prev=['5b1b0e3']
+     2e1dae6 at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['5b1b0e3']
+     latest: ['3295a54', '2e1dae6']
+     after 3-way: ['3295a54', '2e1dae6']  -> terminal wins  remaining: ['3295a54']
+     => new version: body of 3295a54, prev = latest ['3295a54', '2e1dae6']
+     introducing commits of 3295a54: [('a2', 2)]
+  merge ['a2'] one by one: steps=[('a2', 1, ['.ait/D'])]
+     paths that differ from HEAD: ['.ait/D', '.ait/X']
+
+======== U8  a1: D c-A ; main takes a1 ; a amends a1 to c-A2
+  [D]
+     15f0f60 at a  rule1=True  demand/future cond=c-A2 stock.c@8e9b0  prev=['b614d4d']
+     2ace12d at main,HEAD  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     latest: ['15f0f60', '2ace12d']
+     after 3-way: ['15f0f60', '2ace12d']  remaining: ['15f0f60', '2ace12d']
+     => DIVERGED: choose among ['15f0f60', '2ace12d']
+     introducing commits of 15f0f60: [("a1'", 1)]
+
+======== G1  main has D@B ; a: D@A ; b merged a and kept B (bM)
+  [D]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     a5956e6 at b  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['2ace12d', '6619123']
+     6619123 at main,HEAD  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     latest: ['a5956e6']
+     after 3-way: ['a5956e6']  remaining: ['a5956e6']
+     => take a5956e6 as is
+     introducing commits of a5956e6: [('bM', 2)]
+  git merge a1: exit=1 unmerged=['.ait/D', 'specs/d.yaml']
+  merge ['bM'] one by one: steps=[('bM', 0, [])]
+     paths that differ from HEAD: ['.ait/D']
+
+======== G2  b and f each merged a and kept A ; main: D0
+  [D]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     9b36e15 at b  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['2ace12d', '6619123']
+     e7598ef at f  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['2ace12d', 'fc41e6f']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['9b36e15', 'e7598ef']
+     after 3-way: ['9b36e15', 'e7598ef']  remaining: ['9b36e15', 'e7598ef']
+     => new version: body of 9b36e15, prev = latest ['9b36e15', 'e7598ef']
+     introducing commits of 9b36e15: [('bM', 4)]
+     introducing commits of e7598ef: [('fM', 3)]
+
+======== G4b  a: c-x then c-A ; main: c-A directly
+  [D]
+     d487fca at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['ca82d7e']
+     2ace12d at main,HEAD  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     latest: ['d487fca', '2ace12d']
+     after 3-way: ['d487fca', '2ace12d']  remaining: ['d487fca', '2ace12d']
+     => new version: body of d487fca, prev = latest ['d487fca', '2ace12d']
+     introducing commits of d487fca: [('a2', 2)]
+
+======== TIE  a: x then same ; b: y then same ; equal new-commit counts
+  [D]
+     061959e at a  rule1=True  demand/future cond=same stock.c@8e9b0  prev=['c2bca00']
+     772957f at b  rule1=True  demand/future cond=same stock.c@8e9b0  prev=['c893869']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['061959e', '772957f']
+     after 3-way: ['061959e', '772957f']  remaining: ['061959e', '772957f']
+     => new version: body of 061959e, prev = latest ['061959e', '772957f']
+     introducing commits of 061959e: [('a2', 2)]
+     introducing commits of 772957f: [('b2', 2)]
+
+======== X1  crossing: c changes Y,Z ; a1 (from c): Y,D ; b1 (from c): Z,O ; main changed Y,Z itself
+  [D]
+     601b16f at a,taken commit  rule1=True  demand/future cond=d-a stock.c@8e9b0  prev=['b614d4d']
+     b614d4d at b,c,main,HEAD,taken commit  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['601b16f']
+     after 3-way: ['601b16f']  remaining: ['601b16f']
+     => take 601b16f as is
+     introducing commits of 601b16f: [('a1', 2)]
+  [O]
+     8368ac6 at a,c,main,HEAD,taken commit  rule1=True  offer/future cond=o0 o.c@13e75  prev=[]
+     81a257f at b,taken commit  rule1=True  offer/future cond=o-b o.c@13e75  prev=['8368ac6']
+     latest: ['81a257f']
+     after 3-way: ['81a257f']  remaining: ['81a257f']
+     => take 81a257f as is
+     introducing commits of 81a257f: [('b1', 2)]
+  [Y]
+     0b7c940 at a,taken commit  rule1=True  demand/future cond=y-a stock.c@8e9b0  prev=['2a43bf2']
+     2a43bf2 at b,c,taken commit  rule1=True  demand/future cond=y-c stock.c@8e9b0  prev=['9410779']
+     dd3dfde at main,HEAD  rule1=True  demand/future cond=y-E stock.c@8e9b0  prev=['9410779']
+     latest: ['0b7c940', 'dd3dfde']
+     after 3-way: ['0b7c940', 'dd3dfde']  remaining: ['0b7c940', 'dd3dfde']
+     => DIVERGED: choose among ['0b7c940', 'dd3dfde']
+     introducing commits of 0b7c940: [('a1', 2)]
+  [Z]
+     e4276af at a,c,taken commit  rule1=True  demand/future cond=z-c stock.c@8e9b0  prev=['f4a99ad']
+     9cd48b7 at b,taken commit  rule1=True  demand/future cond=z-b stock.c@8e9b0  prev=['e4276af']
+     d5ada52 at main,HEAD  rule1=True  demand/future cond=z-E stock.c@8e9b0  prev=['f4a99ad']
+     latest: ['9cd48b7', 'd5ada52']
+     after 3-way: ['9cd48b7', 'd5ada52']  remaining: ['9cd48b7', 'd5ada52']
+     => DIVERGED: choose among ['9cd48b7', 'd5ada52']
+     introducing commits of 9cd48b7: [('b1', 2)]
+  merge ['a1', 'b1'] one by one: steps=[('a1', 1, ['.ait/Y', '.ait/Z', 'specs/y.yaml', 'specs/z.yaml']), ('b1', 1, ['.ait/Z', 'specs/z.yaml'])]
+     paths that differ from HEAD: ['.ait/D', '.ait/O', '.ait/Y', '.ait/Z', 'specs/d.yaml', 'specs/o.yaml', 'specs/y.yaml', 'specs/z.yaml']
+
+======== CY1  c: undertake D with O ; a1 (from c): D ; b1 (from c): O
+  [.ait/D]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     b614d4d at b,c,main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['2ace12d']
+     after 3-way: ['2ace12d']  remaining: ['2ace12d']
+     => take 2ace12d as is
+     introducing commits of 2ace12d: [('a1', 2)]
+  [.ait/O]
+     8368ac6 at a,c,main,HEAD  rule1=True  offer/future cond=o0 o.c@13e75  prev=[]
+     dd7ece8 at b  rule1=True  offer/future cond=o-B o.c@13e75  prev=['8368ac6']
+     latest: ['dd7ece8']
+     after 3-way: ['dd7ece8']  remaining: ['dd7ece8']
+     => take dd7ece8 as is
+     introducing commits of dd7ece8: [('b1', 2)]
+  [.ait/undertake/D-O]
+     9a3afc1 at a,b,c  rule1=True  link/undertaken  prev=[]
+     latest: ['9a3afc1']
+     after 3-way: ['9a3afc1']  remaining: ['9a3afc1']
+     => take 9a3afc1 as is
+     introducing commits of 9a3afc1: [('c1', 1)]
+  'pull D' alone:
+  merge ['a1'] one by one: steps=[('a1', 0, [])]
+     paths that differ from HEAD: ['.ait/D', '.ait/undertake/D-O', 'specs/d.yaml', 'src/stock.c']
+  'pull D O':
+  merge ['a1', 'b1'] one by one: steps=[('a1', 0, []), ('b1', 0, [])]
+     paths that differ from HEAD: ['.ait/D', '.ait/O', '.ait/undertake/D-O', 'specs/d.yaml', 'specs/o.yaml', 'src/stock.c']
+
+======== K7  main has D and O ; a1 only undertakes D with O ; 'pull D'
+  [D]
+     b614d4d at a,main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['b614d4d']
+     after 3-way: ['b614d4d']  remaining: ['b614d4d']
+     => nothing to take
+  [link D-O (D is one end)]
+     9a3afc1 at a  rule1=True  link/undertaken  prev=[]
+     latest: ['9a3afc1']
+     after 3-way: ['9a3afc1']  remaining: ['9a3afc1']
+     => take 9a3afc1 as is
+     introducing commits of 9a3afc1: [('a1', 1)]
+
+======== E1b  b1: D c-B ; b2: Q ; b3: git revert b1 ; main: D c-E ; 'pull Q'
+  [Q]
+     59218fe at b  rule1=True  demand/future cond=q-B stock.c@8e9b0  prev=['c0baf82']
+     c0baf82 at main,HEAD  rule1=True  demand/future cond=q0 stock.c@8e9b0  prev=[]
+     latest: ['59218fe']
+     after 3-way: ['59218fe']  remaining: ['59218fe']
+     => take 59218fe as is
+     introducing commits of 59218fe: [('b2', 2)]
+  [D (pass 1: tips and HEAD)]
+     b614d4d at b  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['376595c']
+     after 3-way: ['376595c']  remaining: ['376595c']
+     => nothing to take
+  [D (with b2's D added)]
+     b614d4d at b  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     6619123 at taken commit  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     latest: ['376595c', '6619123']
+     after 3-way: ['376595c', '6619123']  remaining: ['376595c', '6619123']
+     => DIVERGED: choose among ['376595c', '6619123']
+     introducing commits of 6619123: [('b1', 1)]
+
+======== RV2  main took b1 (D@B) ; b reverted b1 (b2) and changed Q (b3) ; 'pull Q'
+  HEAD is an ancestor of b3 (git would fast-forward): True
+  [Q]
+     59218fe at b  rule1=True  demand/future cond=q-B stock.c@8e9b0  prev=['c0baf82']
+     c0baf82 at main,HEAD  rule1=True  demand/future cond=q0 stock.c@8e9b0  prev=[]
+     latest: ['59218fe']
+     after 3-way: ['59218fe']  remaining: ['59218fe']
+     => take 59218fe as is
+     introducing commits of 59218fe: [('b3', 2)]
+  [D (with b3's D added)]
+     b614d4d at b,taken commit  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     6619123 at main,HEAD  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     latest: ['6619123']
+     after 3-way: ['6619123']  remaining: ['6619123']
+     => nothing to take
+  b3's D is contained in mine (old): True
+  merge ['b3'] one by one: steps=[('b3', 0, [])]
+     paths that differ from HEAD: ['.ait/D', '.ait/Q', 'specs/d.yaml', 'specs/q.yaml']
+
+======== DEL1  a1: git rm .ait/Q ; a2: D ; 'pull D'
+  merge ['a2'] one by one: steps=[('a2', 0, [])]
+     paths that differ from HEAD: ['.ait/D', '.ait/Q', 'specs/d.yaml']
+  a2 has .ait/Q? False
+
+======== RV3  main took a1 (D@A) then git-reverted it ; 'pull D'
+  [D]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['2ace12d']
+     after 3-way: ['2ace12d']  remaining: ['2ace12d']
+     => take 2ace12d as is
+     introducing commits of 2ace12d: [('a1', 0)]
+  a1 is an ancestor of HEAD: True
+
+======== KS1  main chose Q=HEAD over a1's spec change (input added) ; a2 then changes D ; 'pull D'
+  [Q]
+     9f8b018 at a  rule1=True  demand/future cond=q0 stock.c@8e9b0  prev=['c0baf82']
+     8065234 at main,HEAD  rule1=True  demand/future cond=q-E stock.c@8e9b0  prev=['5d96012', '9f8b018']
+     latest: ['8065234']
+     after 3-way: ['8065234']  remaining: ['8065234']
+     => nothing to take
+  merge ['a2'] one by one: steps=[('a2', 1, ['specs/q.yaml'])]
+     paths that differ from HEAD: ['.ait/D', 'specs/d.yaml', 'specs/q.yaml', 'tests/qa.sh']
+  merged specs/q.yaml == Q's pin? False
+
+======== TF2  D and main's future K5 share shared.yaml ; a1 cancels D ; main changes D (s-E, K5 re-pinned) ; 'pull D'
+  [D]
+     3e15124 at a  rule1=True  demand/cancelled cond=s0 stock.c@8e9b0  prev=['9bb89d7']
+     da48a43 at main,HEAD  rule1=True  demand/future cond=s-E stock.c@8e9b0  prev=['9bb89d7']
+     latest: ['3e15124', 'da48a43']
+     after 3-way: ['3e15124', 'da48a43']  -> terminal wins  remaining: ['3e15124']
+     => new version: body of 3e15124, prev = latest ['3e15124', 'da48a43']
+     introducing commits of 3e15124: [('a1', 1)]
+  merge ['a'] one by one: steps=[('a', 1, ['.ait/D'])]
+     paths that differ from HEAD: ['.ait/D']
+
+======== CK1  a1: D made current by hand, no check line
+  [D]
+     339f6e5 at a  rule1=False  demand/current cond=c0 stock.c@77339  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     skipped (accident): ['339f6e5']
+     latest: ['b614d4d']
+     after 3-way: ['b614d4d']  remaining: ['b614d4d']
+     => nothing to take
+
+======== CK2  a1: fulfil D with -r (check line), then the message is rewritten (trailer gone)
+  trailer left in a: ''
+  [D]
+     70d5fa2 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['70d5fa2']
+     after 3-way: ['70d5fa2']  remaining: ['70d5fa2']
+     => take 70d5fa2 as is
+     introducing commits of 70d5fa2: [("a1'", 1)]
+
+======== CK3  D current ; a1: spec and pins changed by hand, old check line kept
+  [D]
+     119cc5d at a  rule1=False  demand/current cond=c-hand stock.c@8e9b0 check=reported(PINS MISMATCH)  prev=['5b1b0e3']
+     5b1b0e3 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=[]
+     skipped (accident): ['119cc5d']
+     latest: ['5b1b0e3']
+     after 3-way: ['5b1b0e3']  remaining: ['5b1b0e3']
+     => nothing to take
+
+======== NU1  D current (a1 fulfils) ; a2 plain commit changes D's code ; a3 changes it again
+  a~2: .ait/D=70d5fa2 stock.c=77339e7
+  a~1: .ait/D=70d5fa2 stock.c=23e51a0
+  a: .ait/D=70d5fa2 stock.c=46aebc2
+
+======== MH2  'pull D Q' : D from a1, Q from b1 ; a1 and b1 change src/x.c differently
+  merge ['a1', 'b1'] one by one: steps=[('a1', 0, []), ('b1', 1, ['src/x.c'])]
+     paths that differ from HEAD: ['.ait/D', '.ait/Q', 'specs/d.yaml', 'specs/q.yaml', 'src/x.c']
+
+======== WT1  a1 changes D's provider only ; main changed D's condition ; main has an uncommitted draft in specs/d.yaml
+  git merge exit: 1  status: UU .ait/D |  M specs/d.yaml | M  src/stock.c
+
+======== NEW2  a1 makes Q (specs/q.yaml) ; main has an untracked specs/q.yaml
+  git merge exit: 1 error: The following untracked working tree files would be overwritten by merge:
+
+======== NT2  a1: D c-A, b1: D c-B ; A and B both 'pull D=HEAD' at the same time
+  [D seen from main]
+     9b36e15 at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['2ace12d', '6619123']
+     a5956e6 at b  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['2ace12d', '6619123']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['9b36e15', 'a5956e6']
+     after 3-way: ['9b36e15', 'a5956e6']  remaining: ['9b36e15', 'a5956e6']
+     => DIVERGED: choose among ['9b36e15', 'a5956e6']
+     introducing commits of 9b36e15: [('a2', 2)]
+     introducing commits of a5956e6: [('b2', 2)]
+
+======== NT3  NT2, then A keeps its own again (a3) and B pulls D
+  [D seen from b]
+     1b4ccf7 at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['9b36e15', 'a5956e6']
+     a5956e6 at b,HEAD  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['2ace12d', '6619123']
+     b614d4d at main  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['1b4ccf7']
+     after 3-way: ['1b4ccf7']  remaining: ['1b4ccf7']
+     => take 1b4ccf7 as is
+     introducing commits of 1b4ccf7: [('a3', 3)]
+
+======== KB2  after the hint 'D=a1 or D=b1', b merges a and keeps B (bM) ; main then runs 'pull D=a1'
+  [D]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     a5956e6 at b  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['2ace12d', '6619123']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['a5956e6']
+     after 3-way: ['a5956e6']  remaining: ['a5956e6']
+     => take a5956e6 as is
+     introducing commits of a5956e6: [('bM', 3)]
+
+======== KB3  KB2, main takes bM, then 'pull D=HEAD'
+  [D]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     a5956e6 at b,main,HEAD  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['2ace12d', '6619123']
+     latest: ['a5956e6']
+     after 3-way: ['a5956e6']  remaining: ['a5956e6']
+     => nothing to take
+
+======== IND1  D current, undertaken by main's current O ; a1 re-checks D with line1 ; main re-checked with line9
+  [D]
+     d1314a9 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['5b1b0e3']
+     865c957 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@c7efa check=reported  prev=['5b1b0e3']
+     latest: ['d1314a9', '865c957']
+     after 3-way: ['d1314a9', '865c957']  remaining: ['d1314a9', '865c957']
+     => DIVERGED: choose among ['d1314a9', '865c957']
+     introducing commits of d1314a9: [('a1', 1)]
+  merge ['a1'] one by one: steps=[('a1', 1, ['.ait/D'])]
+     paths that differ from HEAD: ['.ait/D', 'src/stock.c']
+  merged stock.c == a1's pin? False
+
+======== IDX1  main has its own commit and a staged new file src/util.c ; 'pull D' (not a fast-forward)
+  git merge exit: 2 error: Your local changes to the following files would be overwritten by merge:
+
+======== SH1  a: D c-A then a code-only commit ; main is a depth=1 clone of a
+  shallow: commits of origin/a visible: 1  (a really has 3)
+  introducing commits of a's D as computed here: [('7759b90', 1)]
+  merge-tree exit: 128 fatal: refusing to merge unrelated histories

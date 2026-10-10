@@ -1,34 +1,36 @@
 
 ======== flow K6: pull D O -> 5.9 d ; hint adds 'future amend O'
-  [pull D O] merge ['eb6c0546e8e37369369840c1df837bf411b462fa']: exit=0
+  [pull D O] merge ['614ef4e0fb3885c15aca29797b8f23c064380060']: exit=0
      as merged: validate=['d: current O undertakes future D']  unverified=none
      with 'future amend O': validate=pass  unverified=none
 
 ======== flow N5: pull D -> 5.9 d ; hint adds 'future amend OE'
-  [pull D] merge ['71dc82806475116b0e29f67bcc540af1561d0c5c']: exit=0
+  [pull D] merge ['d64b8c21c209f59a2ff4015dd4e226cbc24b7217']: exit=0
      as merged: validate=['d: current OE undertakes future D']  unverified=none
      with 'future amend OE': validate=pass  unverified=none
 
 ======== flow U7: pull D=a2 X
-  [pull D=a2 X] merge ['56529da8f44afb31e0620d9deb1ad56e183228c7']: exit=1
+  [pull D=a2 X] merge ['b5dec1eee771b6b425eb29ad0a8ab7c9d1195607']: exit=1
      D = a2's body, prev both: validate=pass  unverified=none
 
-======== flow SF1: D=a1 Q=b1 versus D=a1 Q=a1
-  [D=a1 Q=b1 (a1 merged, then Q set to b1's version)] merge ['e2cc414f076e1cc6632a2402ea6c13e7d2953e6b']: exit=0
-     D=a1 Q=b1: validate=['e: Q pins specs/shared.yaml']  unverified=none
+======== flow SF1: the mixed choice D=a1 Q=b1 (decision 29: a code conflict on shared.yaml), and D=a1 Q=a1
+  [D=a1 Q=b1 (both ends ; contract files decided by pull)] merge ['689ffd7b0d62b070feac6d44966339992ad7987b', '0ec5288b7f6ff1d712efd85216c4b4622be49d8d']: exit=1
+     unmerged: ['.ait/D', '.ait/Q', 'specs/shared.yaml']
+     D=a1 Q=b1, resolved, D and Q re-pinned on top (record 108): validate=pass  unverified=none
+  [D=a1 Q=a1] merge ['689ffd7b0d62b070feac6d44966339992ad7987b']: exit=0
      D=a1 Q=a1: validate=pass  unverified=none
 
 ======== flow S1/S2: K5 shares the spec ; future K5 is re-pinned (6.2)
-  [pull D] merge ['b4fb0c12fa834147e50e2311933ecf158c0c049f']: exit=0
+  [pull D] merge ['7838240135ec1f78048fd99bc160de4557d51943']: exit=0
      as merged: validate=['e: K5 pins specs/shared.yaml']  unverified=none
      K5 re-pinned: validate=pass  unverified=none
 
 ======== flow C2: D current, my line9 merged in
-  [pull D] merge ['9a64cf0d233a29e51af5496a20c555955bbbbc27']: exit=0
+  [pull D] merge ['b1393bc7479ab2cf34d1b03dfba38321c1538a11']: exit=0
      as merged: validate=pass  unverified=['D:src/stock.c']
      with 'future amend D': validate=pass  unverified=none
 
 ======== flow S3: my current K6 provides stock.c
-  [pull D] merge ['f96b107455a5e35f9b3deda98831efd0bda35c20']: exit=0
+  [pull D] merge ['6b21aff3245bf7e7d2f915d170711a3f20c27363']: exit=0
      as merged: validate=pass  unverified=['K6:src/stock.c']
      with 'future amend K6': validate=pass  unverified=none

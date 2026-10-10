@@ -1,0 +1,34 @@
+   *   fe64e04 a2: saw c1, kept P
+   |\  
+   | | *   1db697b b2: saw a1, kept Q
+   | | |\  
+   | |_|/  
+   |/| |   
+   * | | 5569779 a 1: f=P
+   | | | * 22b31d5 c2: saw b1, kept R
+   | | |/| 
+   | |/|/  
+   | | * bc92e2a b 1: f=Q
+   | |/  
+   |/|   
+   | * 9896957 c 1: f=R
+   |/  
+   * a7f133b init
+-- merge bases
+   a/b: a 1: f=P
+   b/c: b 1: f=Q
+   c/a: c 1: f=R
+-- pairwise: one side merges another
+   on a, git merge b: exit 0, f=Q 
+   on b, git merge c: exit 0, f=R 
+   on c, git merge a: exit 0, f=P 
+-- main takes all three one by one, in each order
+   order a b c -> a:exit0(f=P) b:exit0(f=Q) c:exit1(f=<<<<<<< HEAD)
+   order b c a -> b:exit0(f=Q) c:exit0(f=R) a:exit1(f=<<<<<<< HEAD)
+   order c a b -> c:exit0(f=R) a:exit0(f=P) b:exit1(f=<<<<<<< HEAD)
+   order a c b -> a:exit0(f=P) c:exit0(f=P) b:exit1(f=<<<<<<< HEAD)
+-- octopus from main
+   ERROR: content conflict in f
+   fatal: merge program failed
+   Automatic merge failed; fix conflicts and then commit the result.
+   f=Q 

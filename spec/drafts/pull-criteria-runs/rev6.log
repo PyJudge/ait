@@ -1,0 +1,148 @@
+
+======== REV2  REV1, then b2 writes c-F on top of the accident (prev N)
+  N rule1=False ; N2 rule1=False (prev=['9c586c1']) ; N2 contains T? True
+  [D on main]
+     cee379a at a,main,HEAD  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     a1cd64b at b  rule1=False  demand/future cond=c-F stock.c@8e9b0  prev=['9c586c1']
+     skipped (accident): ['a1cd64b']
+     latest: ['cee379a']
+     after 3-way: ['cee379a']  remaining: ['cee379a']
+     => nothing to take
+
+======== REV3  main holds only the cancelled D (C) ; b: P (future from C by hand), W (future, prev P)
+  P rule1=False ; W rule1=False ; W contains C? True
+  [D on main]
+     ed6f9dd at b  rule1=False  demand/future cond=c-W stock.c@8e9b0  prev=['eef51e8']
+     cee379a at main,HEAD  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     skipped (accident): ['ed6f9dd']
+     latest: ['cee379a']
+     after 3-way: ['cee379a']  remaining: ['cee379a']
+     => nothing to take
+
+======== ID1  a2 writes a new contract W as current without a check line ; main has no W ; 'pull W'
+  [W]
+     d45b039 at a  rule1=False  demand/current cond=w-A stock.c@8e9b0  prev=[]
+     skipped (accident): ['d45b039']
+     latest: []
+     after 3-way: []  remaining: []
+     => no candidate left (all were skipped)
+
+======== SP1  a1: a plain commit edits Q's pinned spec (no re-pin) ; a2: D c-A ; 'pull D'
+  at a2: Q pins specs/q.yaml at 0a30b4e ; the file there is 6318079 (declared on the incoming side, differs from its pin)
+  merge-tree HEAD a2: exit=0 ; merged specs/q.yaml = 6318079 ; HEAD's = 0a30b4e
+  [Q]
+     c0baf82 at a,main,HEAD  rule1=True  demand/future cond=q0 stock.c@8e9b0  prev=[]
+     latest: ['c0baf82']
+     after 3-way: ['c0baf82']  remaining: ['c0baf82']
+     => nothing to take
+
+======== CP4  tests/d.sh is code ; a0: tA ; a1: Q ; main: tE and D pins tests/d.sh as an input ; 'pull Q'
+  merge-tree HEAD a1: exit=1 ['tests/d.sh'] ; contracts on the incoming side that declare tests/d.sh: none
+
+======== PV1b  PV1: the cancelled result pins no spec ; git merges specs/d.yaml as code
+  result: new version: body of 40e6ac1, prev = latest ['40e6ac1', '376595c'] (state cancelled)
+  merge-tree HEAD a2: exit=1 conflicts=['.ait/D', 'specs/d.yaml'] ; specs/d.yaml is pinned by no contract of the result
+
+======== MF2  a0: Z in CRLF ; a1: Y made current by hand ; a2: new W (current, no check) and .ait/notes.txt ; a3: Q ; 'pull Q'
+  paths the merge would change: ['.ait/Q', '.ait/W', '.ait/Y', '.ait/Z', '.ait/notes.txt', 'specs/q.yaml', 'specs/w.yaml', 'specs/z.yaml', 'src/stock.c']
+  .ait/Q: malformed=[] accident=[] => take 39ef08f as is
+  .ait/Z: malformed=['4cb70c8'] accident=[] => nothing to take
+  .ait/Y: malformed=[] accident=['6e6a290'] => nothing to take
+  .ait/W: malformed=[] accident=['f36e614'] => no candidate left (all were skipped)
+
+======== WT3  WT1: specs/d.yaml, which has the uncommitted draft, is pinned by HEAD's D
+  HEAD's D pins: ['specs/d.yaml']
+
+======== S5  main's current K6 pins src/stock.c ; a1 changes D and moves src/stock.c to src/inv.c ; 'pull D'
+  merge-tree exit=0 ; in the result: stock.c? False inv.c? True ; in HEAD: inv.c? False
+
+======== CK7  H: D current reported ; a1: consumer only, check line written forced by hand (same PINS), prev H
+  [D]
+     3ed5191 at a  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=forced  prev=['5b1b0e3']
+     5b1b0e3 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=[]
+     latest: ['3ed5191']
+     after 3-way: ['3ed5191']  remaining: ['3ed5191']
+     => new version: body of 3ed5191, prev = latest ['3ed5191']
+     introducing commits of 3ed5191: [('a1', 1)]
+  a1's check: ['forced 76b5529801bd0e71c3ab38eeb60f2723f9efb558'] ; decision 22 over latest and mine: check reported 76b5529801bd0e71c3ab38eeb60f2723f9efb558
+
+======== IND3  a1 fulfils D ; main: c-E ; agA: 'pull D=a1 future amend D' (prev = V1 and V1's prev) ; agB: 'pull D=a1' (= V1) ; each pulls the other
+  B's result is A's intermediate V1? True
+  [D on agA]
+     70d5fa2 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     7d35e6e at agA,HEAD  rule1=True  demand/future cond=c0 stock.c@77339  prev=['376595c', '70d5fa2', '932ac90']
+     932ac90 at agB  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['376595c', '70d5fa2']
+     376595c at main  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['7d35e6e']
+     after 3-way: ['7d35e6e']  remaining: ['7d35e6e']
+     => nothing to take
+  [D on agB]
+     70d5fa2 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     7d35e6e at agA  rule1=True  demand/future cond=c0 stock.c@77339  prev=['376595c', '70d5fa2', '932ac90']
+     932ac90 at agB,HEAD  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['376595c', '70d5fa2']
+     376595c at main  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['7d35e6e']
+     after 3-way: ['7d35e6e']  remaining: ['7d35e6e']
+     => take 7d35e6e as is
+     introducing commits of 7d35e6e: [('A1', 1)]
+  a clone without B: V1 present? False
+  [D in a clone without B]
+     376595c at x,origin/main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     70d5fa2 at origin/a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     7d35e6e at origin/agA  rule1=True  demand/future cond=c0 stock.c@77339  prev=['376595c', '70d5fa2', '932ac90']
+     latest: ['7d35e6e']
+     after 3-way: ['7d35e6e']  remaining: ['7d35e6e']
+     => take 7d35e6e as is
+     introducing commits of 7d35e6e: [('b5f270f', 2)]
+
+======== U1c  a1 fulfils D (current) ; main: c-E ; main 'pull D=HEAD' ; and T1r: a reopens D, main takes it
+  kept version: state=future ; the kept commit reopens (decision 27): ['70d5fa2'] (a's = 70d5fa2)
+  [D (a reopened D ; main did not change it)]
+     a214b77 at a  rule1=True  demand/future cond=c0 stock.c@77339  prev=['d1314a9']
+     5b1b0e3 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=[]
+     latest: ['a214b77']
+     after 3-way: ['a214b77']  remaining: ['a214b77']
+     => take a214b77 as is
+     introducing commits of a214b77: [('a2', 2)]
+  a's reopen commit a2 reopens (decision 27 / v14 1.5d): ['d1314a9'] (a's own = d1314a9) ; main writes no commit of its own for D
+
+======== MS3  C's prev is a blob that is missing ; V (body of C) and W (changed) both have prev C
+  missing blob present? False ; body(V) == body(C)? True
+  [D]
+     12ee73f at a  rule1=True  demand/future cond=c-W stock.c@8e9b0  prev=['c065ac1']
+     edda62f at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['c065ac1']
+     latest: ['12ee73f', 'edda62f']  3-way: ['12ee73f moved forward from edda62f']
+     after 3-way: ['12ee73f']  remaining: ['12ee73f']
+     => new version: body of 12ee73f, prev = latest ['12ee73f', 'edda62f']
+     introducing commits of 12ee73f: [('a1', 1)]
+
+======== RV3b  a1 fulfils D ; main takes a1, then git revert a1 ; 'pull D'
+  [D]
+     70d5fa2 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['70d5fa2']
+     after 3-way: ['70d5fa2']  remaining: ['70d5fa2']
+     => take 70d5fa2 as is
+     introducing commits of 70d5fa2: [('a1', 0)]
+  a1 is an ancestor of HEAD? True ; D@A pins stock.c 77339e7 ; HEAD's stock.c 8e9b083
+
+======== K8  c1 undertakes D with O1 ; d1 undertakes D2 with O1 ; 'pull D'
+  link records not in HEAD: {'.ait/undertake/D-O1': 'c', '.ait/undertake/D2-O1': 'd'}
+  names closed under 'a link with a named end': ['D', 'D2', 'O1']
+
+======== MH7  c1 undertakes D with O ; a1 (on c): D, x.c ; b1 (on c): O, y.c ; main: x.c and y.c ; 'pull D O'
+  decision 26: order [('a1', "conflicts in ['src/x.c']"), ('b1', "conflicts in ['src/y.c']")] ; files in conflict: ['src/x.c', 'src/y.c']
+  one merge state: ['M  .ait/D', 'M  .ait/O', 'A  .ait/undertake/D-O', 'M  specs/d.yaml', 'M  specs/o.yaml', 'UU src/x.c', 'UU src/y.c']
+  HK1 data: index .ait/D rule1=True contains every start version? True
+  HK1 data: index .ait/O rule1=True contains every start version? True
+  HK1 data: index .ait/undertake/D-O rule1=True contains every start version? True
+  finishing commit parents: ['e1', 'a1', 'b1']
+  then .ait/D: nothing to take
+  then .ait/O: nothing to take
+  then .ait/undertake/D-O: nothing to take
+
+======== MH8  as MH7, but b1 also changes x.c (O and x.c, y.c)
+  decision 26: STOP: in every order some file would conflict twice (['a1', 'b1'])
+
+======== MH6'  'pull D Q' : a1 (D) changes x.c, b1 (Q) changes y.c ; main changed both
+  decision 26: order [('b1', "conflicts in ['src/y.c']"), ('a1', "conflicts in ['src/x.c']")] ; files in conflict: ['src/y.c', 'src/x.c']

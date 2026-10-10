@@ -1,0 +1,35 @@
+== V1 three-way cycle (Claude B B1, Codex B 1)
+   b2 moved forward from a2
+   c2 moved forward from b2
+   a2 moved forward from c2
+   all pairs on the same set -> remaining []
+   lib.decide (the current rules): remaining ['a2', 'b2', 'c2'] => DIVERGED: choose among ['d64f519', '9743ef6', '985472e']
+== V2 future version whose prev holds a cancelled version (Claude B B2)
+   N rule1=False  N contains T? True  state(N)=future
+   main (HEAD's D = cancelled): latest=['f5653db'] terminal_won=False => nothing to take
+== V3 newest common version whose blob is missing (Claude B B3, Codex A F4)
+   same repo: M present? True  remaining=['49e9b37', '43159a4'] => DIVERGED: choose among ['49e9b37', '43159a4']
+   fresh clone: M present? False  K present? True
+   fresh clone: latest=['49e9b37', '43159a4'] remaining=['49e9b37', '43159a4'] => DIVERGED: choose among ['49e9b37', '43159a4']
+   (v=49e9b37 body c-K, w=43159a4 body c-M)
+== V4 a blob that is in no tree does not travel (Claude A H1)
+   src: cat-file -e e49ff16 -> exit 0
+   bare.git: cat-file -e e49ff16 -> exit 1
+   rcv: cat-file -e e49ff16 -> exit 1
+== V5 several ends: git's octopus precedent, and one merge state with two MERGE_HEADs
+   git merge a b: exit 2; HEAD moved? False; MERGE_HEAD lines=0; status=[]
+      Trying simple merge with a | Simple merge did not work, trying automatic merge. | Auto-merging src/x.c | Automated merge did not work. | Should not be doing an octopus. | ERROR: content conflict in src/x.c | fatal: merge program failed | Merge with strategy octopus failed.
+   git merge b a: exit 1; HEAD moved? False; MERGE_HEAD lines=2; status=['UU src/x.c', 'M  src/y.c']
+      Trying simple merge with b | Trying simple merge with a | Simple merge did not work, trying automatic merge. | Auto-merging src/x.c | Automatic merge failed; fix conflicts and then commit the result. | ERROR: content conflict in src/x.c | fatal: merge program failed
+   -- plumbing: merge b cleanly, then a with a conflict, one state, MERGE_HEAD = b1 a1
+      second step merge-tree exit 1: ['src/x.c', 'Auto-merging', 'src/x.c', 'CONFLICT', '(content):', 'Merge', 'conflict', 'in', 'src/x.c']
+      status: ['UU src/x.c', 'M  src/y.c']  HEAD still H? True
+      after merge --abort: HEAD=H status=[] MERGE_HEAD? False
+== V6 which hooks run on abort and on the finishing commit
+   git merge a: exit 1 hooks=[]
+   git merge --abort: hooks=[]
+   finishing git commit: hooks=['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit']
+== V8 git keeps the other side's change to a file my contract pinned later (Claude B B5)
+   merge-tree exit 0; tests/d.sh in the merged tree: tA
+== V9 a user merge driver runs during merge-tree and can write to the work tree (Codex A F1)
+   merge-tree exit 1; driver wrote into the work tree? True
