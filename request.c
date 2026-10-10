@@ -1522,31 +1522,31 @@ static struct tree *candidate(struct request *q)
 	for (k = 0; k < q->files.nr; k++) {
 		const char *p = q->files.items[k].string;
 		struct strbuf text = STRBUF_INIT;
-		struct string_list kv = STRING_LIST_INIT_DUP;
+		struct string_list *kv;
 
 		if (access(xstrfmt("%s/%s", top, p), F_OK))
 			reject(1, xstrfmt("create '%s' or stop declaring it", p), "spec files do not match the contract: missing '%s'", p);
 		if (!q->files.items[k].util)
 			continue;
 		text_or_die(&text, xstrfmt("%s/%s", top, p));
-		yaml(text.buf, &kv, p);
-		for_each_string_list_item(item, &kv)
+		kv = def_parse(text.buf, p);
+		for_each_string_list_item(item, kv)
 			if (starts_with(item->string, "inputs.") &&
-			    !unsorted_string_list_has_string(&q->files, input_path(p, yget(&kv, item->string))))
-				string_list_append(&q->files, yget(&kv, item->string));
+			    !unsorted_string_list_has_string(&q->files, input_path(p, yget(kv, item->string))))
+				string_list_append(&q->files, yget(kv, item->string));
 	}
 	tree = tree_with(q->ht->oid, NULL, &q->files);
 	if (!tree)
 		reject(1, NULL, "spec files do not match the contract: %s", git_error);
 	u = tree_load(tree);
 	for_each_string_list_item(item, &q->files) {
-		struct entry *e = tree_get(u, item->string);
-		char *index = git("ls-files -s -- %s", item->string);
+		struct entry *e = tree_get(u, item->string), *staged = tree_get(q->noted, item->string);
+		const char *was = blob_at(q->ht, item->string);
 
 		/* 2.1.4: a spec file is a regular file; and it is staged as a whole, or not at all (7.3.3) */
 		if (!e || (strcmp(e->mode, "100644") && strcmp(e->mode, "100755")))
 			reject(1, NULL, "spec files do not match the contract: '%s' is not a regular file", item->string);
-		if (*index && !strstr(index, e->oid) && (!blob_at(q->ht, item->string) || !strstr(index, blob_at(q->ht, item->string))))
+		if (staged && strcmp(staged->oid, e->oid) && (!was || strcmp(staged->oid, was)))
 			reject(1, xstrfmt("stage all of '%s' or none of it", item->string),
 			       "spec files do not match the contract: '%s' is partly staged", item->string);
 	}

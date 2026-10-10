@@ -110,7 +110,7 @@ write('wrapper.c', '#include "git-compat-util.h"\n#include "strbuf.h"\n', [
     fn('wrapper.c', 21), fn('wrapper.c', 41), fn('wrapper.c', 49), fn('wrapper.c', 74), fn('wrapper.c', 79),
     fn('wrapper.c', 95), fn('wrapper.c', 111), fn('wrapper.c', 116), fn('wrapper.c', 130), fn('wrapper.c', 146),
     fn('wrapper.c', 171), fn('wrapper.c', 205), fn('wrapper.c', 228), fn('wrapper.c', 250), fn('wrapper.c', 286),
-    fn('wrapper.c', 305), fn('wrapper.c', 346), fn('wrapper.c', 375), fn('wrapper.c', 682), fn('wrapper.c', 691), fn('compat/nonblock.c', 6), fn('compat/qsort_s.c', 9), fn('compat/qsort_s.c', 48)])
+    fn('wrapper.c', 305), fn('wrapper.c', 346), fn('wrapper.c', 375), fn('wrapper.c', 682), fn('wrapper.c', 691), fn('wrapper.c', 785), fn('compat/nonblock.c', 6), fn('compat/qsort_s.c', 9), fn('compat/qsort_s.c', 48)])
 # setup: the standard descriptors open, as git's common main makes them before anything (common-init.c:45)
 write('setup.c', '#include "git-compat-util.h"\n#include "setup.h"\n', [fn('setup.c', 2074)])
 write('setup.h', '#ifndef SETUP_H\n#define SETUP_H\n', ['void sanitize_stdfds(void);\n#endif'])
@@ -178,6 +178,7 @@ ssize_t read_in_full(int fd, void *buf, size_t count);
 ssize_t write_in_full(int fd, const void *buf, size_t count);
 FILE *xfdopen(int fd, const char *mode);
 int xdup(int fd);
+int csprng_bytes(void *buf, size_t len, unsigned flags);
 int enable_pipe_nonblock(int fd);
 void write_file_buf(const char *path, const char *buf, size_t len);
 __attribute__((format (printf, 2, 3)))
@@ -231,7 +232,7 @@ write('git-compat-util.h', '''#ifndef GIT_COMPAT_UTIL_H
 #include <unistd.h>
 ''', [
     rng('git-compat-util.h', 378, 379), rng('git-compat-util.h', 395, 395), rng('git-compat-util.h', 414, 414),
-    rng('compat/posix.h', 42, 43), rng('git-compat-util.h', 464, 464), rng('git-compat-util.h', 994, 994),
+    rng('compat/posix.h', 42, 43), rng('compat/posix.h', 155, 160), rng('wrapper.h', 133, 140), rng('git-compat-util.h', 464, 464), rng('git-compat-util.h', 994, 994),
     rng('git-compat-util.h', 1014, 1014), DECLS,
     rng('git-compat-util.h', 56, 57), rng('git-compat-util.h', 64, 66), rng('git-compat-util.h', 90, 90),
     rng('git-compat-util.h', 95, 96), rng('git-compat-util.h', 107, 108), rng('git-compat-util.h', 115, 116),

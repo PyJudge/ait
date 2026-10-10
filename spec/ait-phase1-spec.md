@@ -129,7 +129,7 @@ ait는 여러 에이전트가 코드 범위에 **계약을 요구하고(demand),
 | session | `S` + 12 hex |
 | alias | `[a-z][a-z0-9_]{0,31}`. 예약어 `demand offer future undertake release as drop amend cancel contract ct fulfill`은 쓸 수 없다. 한 요청 안에서만 쓰이고, 그 안에서 중복될 수 없다 |
 
-- 1.10 ID는 `/dev/urandom` 6바이트로 만든다. 같은 요청에서 이미 쓴 값이나 HEAD에 있는 값이면 다시 만든다. 직접 작성할 때는 `ait contract new`가 ID를 발급한다.
+- 1.10 ID는 시스템 CSPRNG의 6바이트로 만든다(git의 `csprng_bytes`가 고르는 대로). 같은 요청에서 이미 쓴 값이나 HEAD에 있는 값이면 다시 만든다. 직접 작성할 때는 `ait contract new`가 ID를 발급한다.
 
 ## 2. 저장소 파일
 

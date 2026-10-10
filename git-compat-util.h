@@ -34,6 +34,24 @@
 #define UNUSED __attribute__((unused)) \
 	__attribute__((deprecated))
 
+/* git v2.53.0 compat/posix.h:155-160 */
+#ifdef HAVE_ARC4RANDOM_LIBBSD
+#include <bsd/stdlib.h>
+#endif
+#ifdef HAVE_GETRANDOM
+#include <sys/random.h>
+#endif
+
+/* git v2.53.0 wrapper.h:133-140 */
+
+enum {
+	/*
+	 * Accept insecure bytes, which some CSPRNG implementations may return
+	 * in case the entropy pool has been exhausted.
+	 */
+	CSPRNG_BYTES_INSECURE = (1 << 0),
+};
+
 /* git v2.53.0 git-compat-util.h:464-464 */
 typedef void (*report_fn)(const char *, va_list params);
 
@@ -73,6 +91,7 @@ ssize_t read_in_full(int fd, void *buf, size_t count);
 ssize_t write_in_full(int fd, const void *buf, size_t count);
 FILE *xfdopen(int fd, const char *mode);
 int xdup(int fd);
+int csprng_bytes(void *buf, size_t len, unsigned flags);
 int enable_pipe_nonblock(int fd);
 void write_file_buf(const char *path, const char *buf, size_t len);
 __attribute__((format (printf, 2, 3)))

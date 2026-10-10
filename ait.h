@@ -114,6 +114,7 @@ void yaml(const char *text, struct string_list *kv, const char *what);
 void yaml_check(struct string_list *kv, const char *const *schema, const char *what);
 size_t yat(struct string_list *kv, const char *key);
 const char *yget(struct string_list *kv, const char *key);
+struct string_list *def_parse(const char *text, const char *path);
 struct string_list *def_get(struct tree *t, const char *path);
 
 /* request.c: the helpers, fulfill and commit share one pipeline */

@@ -169,15 +169,14 @@ char *line1(char *s)
 	return s;
 }
 
-/* spec 1.10: six bytes of /dev/urandom */
+/* spec 1.10: six random bytes, from the system's CSPRNG as git takes them */
 void newid(char *out, int prefix)
 {
 	unsigned char b[6];
-	int fd = xopen("/dev/urandom", O_RDONLY), i;
+	int i;
 
-	if (read_in_full(fd, b, sizeof(b)) != sizeof(b))
-		die_errno("could not read '/dev/urandom'");
-	close(fd);
+	if (csprng_bytes(b, sizeof(b), 0) < 0)
+		die_errno("unable to get random bytes");
 	out[0] = prefix;
 	for (i = 0; i < 6; i++)
 		sprintf(out + 1 + 2 * i, "%02x", b[i]);
@@ -302,15 +301,13 @@ void write_state(const char *path, const char *text)
 static struct string_list *worktrees(void)
 {
 	static struct string_list list = STRING_LIST_INIT_DUP;
-	struct string_list lines = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	const char *path;
+	const char *p, *end, *path;
 
 	if (list.nr)
 		return &list;
-	string_list_split(&lines, git("worktree list --porcelain"), "\n", -1);
-	for_each_string_list_item(item, &lines)
-		if (skip_prefix(item->string, "worktree ", &path))
+	/* -z ends each line with NUL: a path may hold a line feed */
+	for (p = git("worktree list --porcelain -z"), end = p + git_out_len; p < end; p += strlen(p) + 1)
+		if (skip_prefix(p, "worktree ", &path))
 			string_list_insert(&list, path);
 	return &list;
 }
