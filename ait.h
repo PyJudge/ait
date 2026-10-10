@@ -96,6 +96,7 @@ int oid_ok(const char *s);
 int agent_ok(const char *name);
 void no_range(const char *arg);
 void scope_shape(const char *arg);
+const char *case_twin(struct tree *t, const char *path);
 char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs);
 char *show(const char *scope, struct tree *t, int current);
 char *shows(struct record *r, enum key k, struct tree *t, int current);

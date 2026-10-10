@@ -8,6 +8,7 @@
 #include <yaml.h>
 #include "strvec.h"
 #include "quote.h"
+#include "utf8.h"
 #include <sys/stat.h>
 
 struct request {
@@ -1008,10 +1009,36 @@ static void emit(yaml_emitter_t *y, yaml_event_t *e)
 		BUG("libyaml cannot write the check files: %s", y->problem);
 }
 
+/*
+ * S as a YAML string, which is UTF-8: as it is, or, holding other bytes (a
+ * path git keeps as bytes), quoted as git shows such a path (core.quotePath)
+ */
+static const char *yaml_text(const char *s)
+{
+	struct strbuf sb = STRBUF_INIT;
+
+	if (is_utf8(s))
+		return s;
+	quote_c_style(s, &sb, NULL, 0);
+	return strbuf_detach(&sb, NULL);
+}
+
+/* the task named T in a result file, its name written as the check files write it */
+static struct string_list_item *task_of(struct request *q, const char *t)
+{
+	struct string_list_item *task;
+
+	for_each_string_list_item(task, &q->tasks)
+		if (!strcmp(yaml_text(task->string), t))
+			return task;
+	return NULL;
+}
+
 static void yscalar(yaml_emitter_t *y, const char *s, yaml_scalar_style_t style)
 {
 	yaml_event_t e;
 
+	s = yaml_text(s);
 	yaml_scalar_event_initialize(&e, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1, style);
 	emit(y, &e);
 }
@@ -1183,18 +1210,18 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	for (n = 0; (t = yget(&kv, xstrfmt("results.%d.task", n))); n++) {
 		const char *outcome = yget(&kv, xstrfmt("results.%d.outcome", n));
 		const char *basis = yget(&kv, xstrfmt("results.%d.basis", n));
+		struct string_list_item *task = task_of(q, t);
 
-		if (!string_list_has_string(&q->tasks, t) || unsorted_string_list_has_string(&seen, t) || !outcome ||
-		    !one_of(outcome, outcomes) ||
+		if (!task || unsorted_string_list_has_string(&seen, task->string) || !outcome || !one_of(outcome, outcomes) ||
 		    (!strcmp(outcome, "pass") && (!basis || !basis[strspn(basis, " \n")])))
 			reject(128, hint, "bad format: '%s': task '%s'%s", q->result, t, yline(&kv, xstrfmt("results.%d.task", n)));
-		string_list_append(&seen, t);
+		string_list_append(&seen, task->string);
 		if (!strcmp(outcome, "pass"))
 			continue;
 		if (!strcmp(outcome, "fail"))
-			string_list_append(fails, t)->util = string_list_lookup(&q->tasks, t)->util;
+			string_list_append(fails, task->string)->util = task->util;
 		strbuf_addf(failed, "%s'%s'", failed->len ? ", " : "", t);
-		string_list_append(failing, t)->util = string_list_lookup(&q->tasks, t)->util;
+		string_list_append(failing, task->string)->util = task->util;
 	}
 	if (seen.nr != q->tasks.nr)
 		reject(128, hint, "bad format: '%s': %d of %d tasks", q->result, (int)seen.nr, (int)q->tasks.nr);
@@ -1701,9 +1728,14 @@ static struct tree *stage_files(struct request *q)
 	char *tree;
 
 	for_each_string_list_item(item, &q->files) {
-		const char *why = not_a_file(item->string);
+		const char *why = not_a_file(item->string), *twin = case_twin(q->ht, item->string);
 		struct stat st;
 
+		if (!twin)
+			twin = case_twin(q->index, item->string);
+		if (twin)
+			reject(1, xstrfmt("give it as git has it: '%s'", twin),
+			       "spec files do not match the contract: '%s' is '%s' in git", item->string, twin);
 		if (why)
 			reject(1, NULL, "spec files do not match the contract: '%s' %s", item->string, why);
 		if (lstat(xstrfmt("%s/%s", top, item->string), &st))

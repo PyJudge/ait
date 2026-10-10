@@ -101,6 +101,24 @@ mkfifo tests/ff && printf 'body: x\ninputs: [tests/ff]\n' > specs/ff.yaml
 bad E_INCOMPLETE "a FIFO as an input" ait future offer src/stock.c specs/ff.yaml -m o
 rm -f tests/ff specs/ff.yaml
 
+# 8.2: a path that is not UTF-8 is written in the check files as git shows it (core.quotePath)
+f=$(printf 'src/\377x.c'); B=$(echo x | git hash-object -w --stdin)
+git update-index --add --cacheinfo 100644,$B,"$f" && tick && git commit -q --no-verify -m nonutf
+tick; run ait offer "$f" specs/pass.yaml -m o
+check "the check request quotes it" grep -qF 'provider: "\"src/\\377x.c\""' "$(git rev-parse --git-path ait/check-request.yaml)"
+fill "$(out_value check-result)" pass
+tick; run ait offer "$f" specs/pass.yaml -m o -r "$(git rev-parse --git-path ait/check-result.yaml)"
+check "and the filled result is taken" sh -c "[ $rc = 0 ] && grep -q '^check ' '$T/out'"
+git reset -q --hard "$H"
+
+# 7.3.3 and 3.3: a path that differs only in case from one git has is refused, as git add stages nothing for it
+if [ "$(git config --bool core.ignorecase)" = true ]; then
+	bad E_INCOMPLETE "a spec file in another case" ait future offer src/stock.c SPECS/P.yaml -m o
+	check "names git's path" err_has "give it as git has it: 'specs/p.yaml'"
+	bad E_SCOPE "a scope in another case" ait future offer SRC/stock.c specs/p.yaml -m o
+	bad E_SCOPE "a new scope in another case" ait future offer new:SRC/stock.c specs/p.yaml -m o
+fi
+
 # H8: the commit where it became unverified, however far back
 tick; ait offer src/stock.c specs/pass.yaml --force -m o >"$T/out"; O=$(new_id)
 git rm -q src/stock.c && tick && git commit -q -m gone && G=$(git rev-parse HEAD)

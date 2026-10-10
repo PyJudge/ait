@@ -8,7 +8,7 @@
 2. **sparse로 다루는 조건은 `core.sparseCheckout`이 true이고 `info/sparse-checkout`이 있을 때.** "git이 하는 대로"에서 도출. 패턴 파일이 없으면 git도 sparse로 다루지 않으므로 reapply하지 않는다.
 3. **pre-push 입력은 오른쪽부터 읽음.** git 출력 형식(transport.c:1355)에서 도출. 로컬 필드에 공백과 LF가 있어도 된다. 형식에 맞지 않는 남은 입력은 `fatal: bad pre-push input '…'`(128)이다. 문구와 종료 코드는 선택.
 4. **symlink이거나 일반 파일이 아닌 명세 파일은 E_INCOMPLETE `'…' is not a regular file`.** 2.1.4와 spec 표에서 도출. 문구는 선택.
-5. **대소문자를 가리지 않는 파일시스템에서 대소문자만 다른 경로 둘은 index 항목 둘이 됨.** "git이 하는 대로"에서 도출(`git update-index`의 동작). 막지 않는다.
+5. **대소문자만 다른 경로는 받지 않음(사용자 결정, 7.3.3에 적음).** core.ignorecase에서 HEAD나 index에 대소문자만 다른 경로가 있으면 명세 파일은 E_INCOMPLETE, 계약 범위는 E_SCOPE이고, hint는 git의 경로를 알려 준다. `git add`가 그 경로를 stage하지 않는 것을 따랐다.
 6. **noop일 때 index를 맞추지 않음.** 5.5-4 "noop일 때도 같다"에서 도출. 부분 stage 검사가 먼저 막으므로, noop까지 오면 명세 파일의 index 판은 HEAD와 같고 맞출 것이 없다. 문구는 그대로 둔다.
 7. **5.5-5의 경고와 hint 문구.** 선택. `committed '…' to '…', but the index and work tree were not updated`, `but … were not updated`, `bring … to '…' in the index`/`in the work tree`, reapply가 실패하면 `but git failed: 'git sparse-checkout': …`.
 8. **ID를 만들 수 없을 때의 문구 `unable to get random bytes`.** 선택. git의 tempfile 문구를 따랐다.
@@ -30,3 +30,4 @@
 24. **결과 파일 `|` 블록 끝의 빈 행: 빈 행 다음 줄이 그 앞 줄보다 덜 들여쓰였거나 다음 줄이 없으면 뺌.** 8.4에서 도출(블록이 끝났다는 YAML의 기준).
 25. **H8의 since는 first-parent 이력 끝까지 찾음.** H8(판정한 tree의 이력에서 가장 최근 것)에서 도출. 예전의 100커밋 상한은 spec에 없던 것이라 없앴다.
 26. **hint 명령 안의 경로는 shell 한 단어로 인용함(`-r` 등).** 5.9a에서 도출(hint 명령은 그대로 실행된다). 산문 속 경로는 git처럼 `'…'`다.
+27. **UTF-8이 아닌 경로는 확인 파일에서 git처럼 인용함(사용자 결정, 8.2에 적음).** 경로는 받고, UTF-8 YAML인 확인 요청·결과 틀에만 git의 quote_c_style 형식으로 쓴다. 결과 파일의 task는 그 형식의 이름으로 맞춘다. 다른 출력은 바이트 그대로다.

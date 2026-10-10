@@ -710,15 +710,34 @@ void scope_shape(const char *arg)
 		reject(128, NULL, "bad scope: '%s'", arg);
 }
 
+/*
+ * the path of T that PATH names on a case-insensitive filesystem
+ * (core.ignorecase) without being it, or NULL: git add stages nothing for
+ * such a path, and git's history would get both
+ */
+const char *case_twin(struct tree *t, const char *path)
+{
+	static int ignorecase = -1;
+	size_t i;
+	int rc;
+
+	if (ignorecase < 0)
+		ignorecase = !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool core.ignorecase")), "true");
+	for (i = 0; ignorecase && i < t->nr; i++)
+		if (!strcasecmp(t->e[i].path, path) && strcmp(t->e[i].path, path))
+			return t->e[i].path;
+	return NULL;
+}
+
 /* spec 3.3-3.4: fix a scope argument at tree T */
 char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 {
 	char *dir = ends_with(arg, "/") ? xstrndup(arg, strlen(arg) - 1) : xstrdup(arg);
-	const char *rest;
+	const char *rest, *path = skip_prefix(arg, "new:", &rest) ? rest : dir;
 	struct entry *e;
 
 	/* the shape of ARG was checked before (scope_shape, 5.13-1); here is what T has */
-	if (skip_prefix(arg, "new:", &rest) && allow_new && !tree_get(t, rest))
+	if (path == rest && allow_new && !tree_get(t, rest) && !case_twin(t, rest))
 		return xstrdup(arg);
 	if (!strcmp(arg, "/") && allow_abs)
 		return xstrfmt("/ %s", t->oid);
@@ -727,6 +746,8 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 		return xstrfmt("%s %s", arg, e->oid);
 	if (e && !ends_with(arg, "/") && blob_at(t, arg))
 		return xstrfmt("%s %s", arg, e->oid);
+	if (case_twin(t, path))
+		reject(128, xstrfmt("give it as git has it: '%s'", case_twin(t, path)), "bad scope: '%s'", arg);
 	reject(128, e || starts_with(arg, "new:") || !allow_new ? NULL :
 	       xstrfmt("if it does not exist yet, use 'new:%s'", arg), "bad scope: '%s'", arg);
 }
