@@ -97,6 +97,7 @@ struct tree *head_tree(void)
 	return tree_load(head ? head : "4b825dc642cb6eb9a060e54bf8d69288fbee4904");	/* the empty tree */
 }
 
+/* the blob of PATH in T: no tree, no submodule's commit */
 const char *blob_at(struct tree *t, const char *path)
 {
 	struct entry *e = file_entry(t, path);
@@ -141,7 +142,8 @@ void index_line(struct strbuf *sb, const char *mode, const char *oid, const char
  */
 char *tree_with(const char *base, const char *index_info, struct string_list *paths)
 {
-	char *dir = xstrfmt("%s/ait-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+	const char *tmp = getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
+	char *dir = xstrfmt("%s/ait-XXXXXX", tmp);
 	struct strvec add = STRVEC_INIT;
 	struct string_list_item *item;
 	char *index, *tree = NULL;
@@ -151,8 +153,8 @@ char *tree_with(const char *base, const char *index_info, struct string_list *pa
 		return xstrdup(base);
 	/* 5.8 E_IO: the directory 4.8 names cannot be written */
 	if (!mkdtemp(dir))
-		reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command",
-				    xstrndup(dir, strrchr(dir, '/') - dir)), "write error: '%s': %s", dir, strerror(errno));
+		reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command", tmp),
+		       "write error: '%s': %s", dir, strerror(errno));
 	index = xstrfmt("%s/index", dir);
 	git_run(NULL, index, &rc, "read-tree %s", base);
 	if (!rc && *index_info)
@@ -183,7 +185,8 @@ void tree_diff(struct tree *a, struct tree *b, struct string_list *paths)
 
 /*
  * A scope value is "new:PATH", "PATH OID", "DIR/ OID" or "/ OID" (spec 2.2.2);
- * a file value is "PATH MODE OID def|input". Both start with their path.
+ * a file value is "PATH MODE OID def|input". Both start with their path;
+ * scope_oid() gives what follows it, "MODE OID def|input" for a file value.
  */
 char *scope_path(const char *v)
 {
@@ -290,7 +293,7 @@ static void record_sort(struct record *r)
 		QSORT(r->f[k].items, r->f[k].nr, cmp_value);
 }
 
-/* the canonical lines of R (2.2.1) for the keys in KEYS_WANTED, a bit per enum key */
+/* the canonical lines of R (2.2.1) for the keys in KEYS_WANTED, a bit per enum key; R's values are sorted first */
 char *record_text(struct record *r, unsigned keys_wanted)
 {
 	struct strbuf sb = STRBUF_INIT;
@@ -298,10 +301,12 @@ char *record_text(struct record *r, unsigned keys_wanted)
 	int k;
 
 	record_sort(r);
-	for (k = 0; k < NKEYS; k++)
+	for (k = 0; k < NKEYS; k++) {
+		if (!(keys_wanted & (1u << k)))
+			continue;
 		for_each_string_list_item(item, &r->f[k])
-			if (keys_wanted & (1u << k))
-				strbuf_addf(&sb, "%s %s\n", keys[k], item->string);
+			strbuf_addf(&sb, "%s %s\n", keys[k], item->string);
+	}
 	return strbuf_detach(&sb, NULL);
 }
 
@@ -352,10 +357,15 @@ static struct record *record_copy(struct record *r)
 	return c;
 }
 
-/* a link "undertake/D…-O…" names its demand and its offer */
+/* the ID of L's demand or offer: a link "undertake/D…-O…" names them */
+static const char *link_end_id(struct record *l, int offer)
+{
+	return offer ? l->id + 24 : xstrndup(l->id + 10, 13);
+}
+
 struct record *link_end(struct state *s, struct record *l, int offer)
 {
-	return state_get(s, offer ? l->id + 24 : xstrndup(l->id + 10, 13));
+	return state_get(s, link_end_id(l, offer));
 }
 
 /* the other end of L when L is a readable undertaken link with R at one end, else NULL */
@@ -422,18 +432,19 @@ void state_load(struct state *s, struct tree *t)
 		text = strcmp(e->mode, "100644") ? NULL : blob_text(e->oid);
 		r = state_add(s, id);
 		/* 2.1.2a: the init file is no record; only its one line is checked, and it stays as T has it */
-		if (!strcmp(id, "init"))
+		if (!strcmp(id, "init")) {
 			r->bad = text && !strcmp(text, "version 1\n") ? NULL : xstrdup("must be the single line 'version 1'");
-		else if (strcmp(e->mode, "100644") || !id_ok(id)) {
+		} else if (strcmp(e->mode, "100644") || !id_ok(id)) {
 			/* 2.1.3: no record was ever there to restore */
 			r->bad = xstrdup("not a record path");
 			r->mend = xstrfmt("remove '.ait/%s'", id);
-		} else if (!text)
+		} else if (!text) {
 			r->bad = xstrdup("not a text file");
-		else
+		} else {
 			record_parse(r, text);
-		if (!r->bad && strcmp(id, "init"))
-			r->bad = record_check(r);
+			if (!r->bad)
+				r->bad = record_check(r);
+		}
 		r->old = record_copy(r);
 	}
 	for (i = 0; i < s->nr; i++) {
@@ -447,18 +458,18 @@ void state_load(struct state *s, struct tree *t)
 			/* the link is as it was; what went is its end */
 			r->bad = r->old->bad = xstrdup("its demand or offer does not exist");
 			r->mend = r->old->mend = xstrfmt("restore '.ait/%s' as in the last commit where it was there",
-							 d && *d->id == 'D' ? r->id + 24 : xstrndup(r->id + 10, 13));
+							 link_end_id(r, d && *d->id == 'D'));
 		}
 	}
 }
 
-/* spec 4.1: a session ID, S and 12 hex digits */
-/* one of LETTERS and 12 hex digits: the IDs ait makes (1.10, 4.1) */
+/* one of LETTERS and 12 hex digits: the shape of the IDs ait makes (1.9) */
 int id_like(const char *s, const char *letters)
 {
 	return *s && strchr(letters, *s) && strlen(s) == 13 && strspn(s + 1, "0123456789abcdef") == 12;
 }
 
+/* spec 1.9: a session ID, S and 12 hex digits */
 int sid_ok(const char *s)
 {
 	return s && id_like(s, "S");
@@ -555,9 +566,14 @@ int as_in_head(struct record *r)
 /* spec 5.9 a-c for one record: how many values each key has, each value, role and state; NULL when it holds */
 static char *record_check(struct record *r)
 {
-	/* how many values each key takes, per kind: '1' one, '+' one or more, '0' none */
-	static const char *counts[] = { "11++0+1+", "110+0+1+", "01000001" };
-	const char *c = counts[*r->id == 'D' ? 0 : *r->id == 'O' ? 1 : 2];
+	/* per kind: how many values each key takes ('1' one, '+' one or more, '0' none), its role and its states */
+	static const struct kind { const char *counts, *role; const char *const *states; } kinds[] = {
+		{ "11++0+1+", "demand", contract_states },
+		{ "110+0+1+", "offer", contract_states },
+		{ "01000001", "", link_states },
+	};
+	const struct kind *kind = &kinds[*r->id == 'D' ? 0 : *r->id == 'O' ? 1 : 2];
+	const char *c = kind->counts;
 	struct string_list_item *item;
 	int k;
 
@@ -568,8 +584,7 @@ static char *record_check(struct record *r)
 			if (!value_ok(r, k, item->string))
 				return xstrfmt("bad '%s' line '%s'", keys[k], item->string);
 	}
-	if (strcmp(val(r, ROLE), *r->id == 'D' ? "demand" : *r->id == 'O' ? "offer" : "") ||
-	    !one_of(val(r, STATE), *r->id == 'u' ? link_states : contract_states))
+	if (strcmp(val(r, ROLE), kind->role) || !one_of(val(r, STATE), kind->states))
 		return xstrdup("role or state does not fit the record");
 	if (*r->id != 'u' && !strstr(record_text(r, 1u << FILES), " def\n"))
 		return xstrdup("no spec definition");
@@ -583,37 +598,38 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 
 	for (i = 0; i < s->nr; i++) {
 		struct record *r = s->r[i], *d, *o;
-		char *why = r->bad ? r->bad : strcmp(r->id, "init") ? record_check(r) : NULL;
+		char *why;
 
-		if (why)
-			return bad_record(v, r, why);
+		if (r->bad)
+			return bad_record(v, r, r->bad);
 		if (!strcmp(r->id, "init"))
 			continue;
+		if ((why = record_check(r)))
+			return bad_record(v, r, why);
 		if (in_state(r, "withdrawn"))
 			return fail_with(v, 1, "state", NULL, xstrfmt("not allowed: '%s' is withdrawn without a drop", r->id));
 		if (*r->id != 'u')
 			continue;
 		d = link_end(s, r, 0);
 		o = link_end(s, r, 1);
+		if (!in_state(r, "undertaken") || !is_current(o) || !in_state(d, "future"))
+			continue;
 		/* 5.9a transition hint 1: an error HEAD already had is not this request's, so it is mended as 5.10 says */
-		if (in_state(r, "undertaken") && is_current(o) && in_state(d, "future") && as_in_head(r) && as_in_head(d) &&
-		    as_in_head(o))
+		if (as_in_head(r) && as_in_head(d) && as_in_head(o))
 			return fail_with(v, 1, "state", xstrfmt("records are written only by ait; restore '.ait/%s' '.ait/%s' "
 								 "'.ait/%s' as in the last commit where they were valid, then "
 								 "commit that alone as spec/ait-mini.md says, then rerun this "
 								 "command", d->id, o->id, r->id),
 					 xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
-		if (in_state(r, "undertaken") && is_current(o) && in_state(d, "future")) {
-			fail_with(v, 1, "state", was_current(d) ?
-				  xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: "
-					  "'ait future amend %s future amend %s -m <why>'", d->id, o->id, d->id, o->id) :
-				  xstrfmt("undertake it with a future offer: 'ait future offer %s %s as o undertake %s o -m <why>'",
-					  scope_args(d, PROVIDER), def_paths(d), d->id),
-				  xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
-			v->k = d;
-			v->o = o;
-			return 1;
-		}
+		fail_with(v, 1, "state", was_current(d) ?
+			  xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: "
+				  "'ait future amend %s future amend %s -m <why>'", d->id, o->id, d->id, o->id) :
+			  xstrfmt("undertake it with a future offer: 'ait future offer %s %s as o undertake %s o -m <why>'",
+				  scope_args(d, PROVIDER), def_paths(d), d->id),
+			  xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
+		v->k = d;
+		v->o = o;
+		return 1;
 	}
 	for (i = 0; i < s->nr; i++)
 		if (is_live(s->r[i]) && !files_match(s->r[i], t)) {
@@ -634,10 +650,14 @@ const char *unusable(struct record *r, struct tree *t)
 
 	if (r->bad)
 		return r->bad;
-	for_each_string_list_item(item, &r->f[FILES])
-		if (is_live(r) && is_def(item->string) && (!blob_at(t, scope_path(item->string)) ||
-							   !blob_text(blob_at(t, scope_path(item->string)))))
+	if (!is_live(r))
+		return NULL;
+	for_each_string_list_item(item, &r->f[FILES]) {
+		const char *oid = blob_at(t, scope_path(item->string));
+
+		if (is_def(item->string) && (!oid || !blob_text(oid)))
 			return xstrfmt("its definition '%s' is not there", scope_path(item->string));
+	}
 	return NULL;
 }
 
@@ -646,8 +666,10 @@ struct record *readable(struct record *r)
 {
 	struct verdict v;
 
-	if (r->bad && bad_record(&v, r, r->bad))
+	if (r->bad) {
+		bad_record(&v, r, r->bad);
 		reject(v.code, v.hint, "%s", v.msg);
+	}
 	return r;
 }
 
@@ -755,11 +777,12 @@ const char *case_twin(struct tree *t, const char *path)
 char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 {
 	char *dir = ends_with(arg, "/") ? xstrndup(arg, strlen(arg) - 1) : xstrdup(arg);
-	const char *rest, *path = skip_prefix(arg, "new:", &rest) ? rest : dir;
+	const char *path = dir;
+	int is_new = skip_prefix(arg, "new:", &path);
 	struct entry *e;
 
 	/* the shape of ARG was checked before (scope_shape, 5.13-1); here is what T has */
-	if (path == rest && allow_new && !tree_get(t, rest) && !case_twin(t, rest))
+	if (is_new && allow_new && !tree_get(t, path) && !case_twin(t, path))
 		return xstrdup(arg);
 	if (!strcmp(arg, "/") && allow_abs)
 		return xstrfmt("/ %s", t->oid);
@@ -770,7 +793,7 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 		return xstrfmt("%s %s", arg, e->oid);
 	if (case_twin(t, path))
 		reject(128, xstrfmt("give it as git has it: '%s'", case_twin(t, path)), "bad scope: '%s'", arg);
-	reject(128, e || starts_with(arg, "new:") || !allow_new ? NULL :
+	reject(128, e || is_new || !allow_new ? NULL :
 	       xstrfmt("if it does not exist yet, use 'new:%s'", arg), "bad scope: '%s'", arg);
 }
 
@@ -825,10 +848,12 @@ void reopen_set(struct state *s, struct record *k, struct string_list *out)
 	size_t i;
 
 	string_list_append(out, k->id)->util = k;
+	if (*k->id != 'D' || !was_current(k))
+		return;
 	for (i = 0; i < s->nr; i++) {
 		struct record *o = partner(s, s->r[i]->old, k);
 
-		if (*k->id == 'D' && k->old && is_current(k->old) && o && o->old && is_current(o->old))
+		if (o && was_current(o))
 			string_list_append(out, o->id)->util = o;
 	}
 }
@@ -1001,19 +1026,21 @@ static struct string_list *checks(void)
 {
 	static struct string_list confirmed = STRING_LIST_INIT_DUP;
 	static int loaded;
-	struct string_list_item *item, *pin;
+	struct string_list_item *item, *hit;
 
 	if (loaded++)
 		return &confirmed;
 	for_each_string_list_item(item, check_trailers()) {
-		if (!check_of(item->string))
+		char *check = check_of(item->string);
+
+		if (!check)
 			continue;
-		if (!(pin = string_list_lookup(&confirmed, check_of(item->string)))) {
-			pin = string_list_insert(&confirmed, check_of(item->string));
-			pin->util = xcalloc(1, sizeof(struct string_list));
-			string_list_init_dup(pin->util);
+		if (!(hit = string_list_lookup(&confirmed, check))) {
+			hit = string_list_insert(&confirmed, check);
+			hit->util = xcalloc(1, sizeof(struct string_list));
+			string_list_init_dup(hit->util);
 		}
-		string_list_append(pin->util, item->util);
+		string_list_append(hit->util, item->util);
 	}
 	return &confirmed;
 }
@@ -1048,7 +1075,7 @@ int unverified(struct record *r, struct tree *t)
 	return !string_list_has_string(checks(), xstrfmt("%s %s", r->id, pins(r))) || off_pins(r, t);
 }
 
-/* the record TEXT of a past version, as record_parse() reads it; NULL when there is none or it is malformed */
+/* the record TEXT of a past version, as record_parse() reads it; NULL when there is none or it does not parse */
 static struct record *record_read(const char *text)
 {
 	struct record *x = record_new("");
@@ -1083,7 +1110,7 @@ struct history {
 	struct string_list confirmed;	/* commits a check of R's pins holds at: a check commit and its descendants */
 	struct string_list changed;	/* commits that change R's code or spec files against their first parent */
 	struct string_list parent;	/* commit -> its first parent */
-	struct string_list seen, off;	/* commit -> unverified there; commit -> off its pins there */
+	struct string_list unverified, off;	/* commit -> R unverified there; commit -> off its pins there */
 };
 
 /*
@@ -1118,18 +1145,19 @@ static int off_at(struct record *r, const char *c, struct history *h)
  */
 static int unverified_at(struct record *r, const char *c, struct history *h)
 {
-	struct string_list_item *hit = string_list_lookup(&h->seen, c);
-	const char *record = blob_at(head_tree(), xstrfmt(".ait/%s", r->id));
+	struct string_list_item *hit = string_list_lookup(&h->unverified, c);
+	const char *in_head;
 	char there[48];
-	int is;
+	int unverified;
 
 	if (hit)
 		return hit->util != NULL;
-	is = object(xstrfmt("%s:.ait/%s", c, r->id), 0, there, NULL) &&
-	     (!strcmp(there, record) || same_pins(blob_text(there), r)) &&
-	     (!string_list_has_string(&h->confirmed, c) || off_at(r, c, h));
-	string_list_insert(&h->seen, c)->util = is ? (void *)"" : NULL;
-	return is;
+	in_head = blob_at(head_tree(), xstrfmt(".ait/%s", r->id));
+	unverified = object(xstrfmt("%s:.ait/%s", c, r->id), 0, there, NULL) &&
+		     (!strcmp(there, in_head) || same_pins(blob_text(there), r)) &&
+		     (!string_list_has_string(&h->confirmed, c) || off_at(r, c, h));
+	string_list_insert(&h->unverified, c)->util = unverified ? (void *)"" : NULL;
+	return unverified;
 }
 
 /*
@@ -1142,17 +1170,17 @@ const char *unverified_since(struct record *r)
 {
 	static const enum key pinned[] = { PROVIDER, FILES };
 	struct history h = { .confirmed = STRING_LIST_INIT_DUP, .changed = STRING_LIST_INIT_DUP,
-			     .parent = STRING_LIST_INIT_DUP, .seen = STRING_LIST_INIT_DUP, .off = STRING_LIST_INIT_DUP };
+			     .parent = STRING_LIST_INIT_DUP, .unverified = STRING_LIST_INIT_DUP, .off = STRING_LIST_INIT_DUP };
 	struct string_list commits = STRING_LIST_INIT_DUP;
 	struct strvec paths = STRVEC_INIT;
-	struct string_list_item *item, *pin = string_list_lookup(checks(), xstrfmt("%s %s", r->id, pins(r)));
+	struct string_list_item *item, *check = string_list_lookup(checks(), xstrfmt("%s %s", r->id, pins(r)));
 	size_t i;
 
 	if (!head)
 		return NULL;
 	/* where a check of these pins holds: its commit and the commits between it and HEAD */
-	if (pin)
-		for_each_string_list_item(item, (struct string_list *)pin->util) {
+	if (check)
+		for_each_string_list_item(item, (struct string_list *)check->util) {
 			string_list_insert(&h.confirmed, item->string);
 			string_list_split(&h.confirmed, git("rev-list --ancestry-path %s", xstrfmt("%s..%s", item->string, head)),
 					  "\n", -1);
@@ -1214,29 +1242,33 @@ void def_inputs(struct tree *t, struct string_list *defs, struct string_list *ou
 	}
 }
 
+/* the file line "PATH MODE OID WHAT" of PATH at T into OUT; -1 when T has no such file */
+static int file_line(struct string_list *out, struct tree *t, const char *path, const char *what)
+{
+	struct entry *e = tree_get(t, path);
+
+	if (!blob_at(t, path))
+		return -1;
+	string_list_insert(out, xstrfmt("%s %s %s %s", path, e->mode, e->oid, what));
+	return 0;
+}
+
 /* spec 2.4: the file lines are the defs and what the defs declare, pinned at T */
 int expand_files(struct record *r, struct tree *t)
 {
 	struct string_list defs = STRING_LIST_INIT_DUP, out = STRING_LIST_INIT_DUP, inputs = STRING_LIST_INIT_DUP;
-	struct string_list_item *item, *in;
+	struct string_list_item *item;
 
 	for_each_string_list_item(item, &r->f[FILES])
 		if (is_def(item->string))
 			string_list_insert(&defs, scope_path(item->string));
-	for_each_string_list_item(item, &defs) {
-		struct entry *e = tree_get(t, item->string);
-
-		if (!blob_at(t, item->string))
+	for_each_string_list_item(item, &defs)
+		if (file_line(&out, t, item->string, "def"))
 			return -1;
-		string_list_insert(&out, xstrfmt("%s %s %s def", e->path, e->mode, e->oid));
-	}
 	def_inputs(t, &defs, &inputs);
-	for_each_string_list_item(in, &inputs) {
-		if (!blob_at(t, in->string))
+	for_each_string_list_item(item, &inputs)
+		if (file_line(&out, t, item->string, "input"))
 			return -1;
-		string_list_insert(&out, xstrfmt("%s %s %s input", in->string, tree_get(t, in->string)->mode,
-						 blob_at(t, in->string)));
-	}
 	r->f[FILES] = out;
 	return 0;
 }
@@ -1254,8 +1286,10 @@ int declares(struct record *r, const char *path)
 {
 	struct string_list_item *item;
 
+	if (!is_live(r))
+		return 0;
 	for_each_string_list_item(item, &r->f[FILES])
-		if (is_live(r) && !strcmp(scope_path(item->string), path))
+		if (!strcmp(scope_path(item->string), path))
 			return 1;
 	return 0;
 }
@@ -1274,7 +1308,9 @@ int contract_path(struct state *s, const char *path)
 /* a file ait reads as text: 0, or -1 when it cannot be read, 1 when it holds a NUL */
 int read_text(struct strbuf *sb, const char *path)
 {
-	if (!strcmp(path, "-") ? strbuf_read(sb, 0, 0) < 0 : strbuf_read_file(sb, path, 0) < 0)
+	ssize_t n = strcmp(path, "-") ? strbuf_read_file(sb, path, 0) : strbuf_read(sb, 0, 0);
+
+	if (n < 0)
 		return -1;
 	return strlen(sb->buf) != sb->len;
 }
@@ -1293,6 +1329,9 @@ int read_text(struct strbuf *sb, const char *path)
 
 /* the path the root map is kept under: no key gives it, as yaml_path() escapes a '\\' of a key */
 #define ROOT "\\"
+
+/* how deep collections may nest */
+#define YAML_DEPTH 16
 
 struct yval {
 	char *s;		/* the value; "" for a map or a list */
@@ -1331,6 +1370,12 @@ static size_t yaml_byte(const char *text, yaml_mark_t mark)
 	return p - text;
 }
 
+/* an anchor or a tag, which the subset leaves out, or NULL */
+static const char *decorated(const yaml_char_t *anchor, const yaml_char_t *tag)
+{
+	return anchor ? "an anchor" : tag ? "a tag" : NULL;
+}
+
 /* an event the subset leaves out, or NULL */
 static const char *yaml_outside(yaml_event_t *e, int docs)
 {
@@ -1344,12 +1389,13 @@ static const char *yaml_outside(yaml_event_t *e, int docs)
 		       e->data.document_start.tag_directives.start != e->data.document_start.tag_directives.end ?
 		       "a directive" : NULL;
 	case YAML_SCALAR_EVENT:
-		return e->data.scalar.anchor ? "an anchor" : e->data.scalar.tag ? "a tag" :
-		       e->data.scalar.style == YAML_FOLDED_SCALAR_STYLE ? "a folded block" : NULL;
+		if (e->data.scalar.style == YAML_FOLDED_SCALAR_STYLE && !decorated(e->data.scalar.anchor, e->data.scalar.tag))
+			return "a folded block";
+		return decorated(e->data.scalar.anchor, e->data.scalar.tag);
 	case YAML_SEQUENCE_START_EVENT:
-		return e->data.sequence_start.anchor ? "an anchor" : e->data.sequence_start.tag ? "a tag" : NULL;
+		return decorated(e->data.sequence_start.anchor, e->data.sequence_start.tag);
 	case YAML_MAPPING_START_EVENT:
-		return e->data.mapping_start.anchor ? "an anchor" : e->data.mapping_start.tag ? "a tag" : NULL;
+		return decorated(e->data.mapping_start.anchor, e->data.mapping_start.tag);
 	default:
 		return NULL;
 	}
@@ -1456,7 +1502,7 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 	}
 	if (e->type == YAML_SCALAR_EVENT)
 		return NULL;
-	if (*depth == 16)
+	if (*depth == YAML_DEPTH)
 		return "nested too deeply";
 	stack[*depth].path = strcmp(path, ROOT) ? path : NULL;
 	stack[*depth].pattern = pattern;
@@ -1512,7 +1558,7 @@ static const char *not_text(const char *text, size_t *line)
 
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err)
 {
-	struct yframe stack[16];
+	struct yframe stack[YAML_DEPTH];
 	yaml_parser_t parser;
 	yaml_event_t e;
 	const char *why = NULL;
@@ -1611,10 +1657,10 @@ static void yreplace(struct strbuf *text, struct yval *v, const char *with)
 	strbuf_splice(text, v->start, end - v->start, sb.buf, sb.len);
 }
 
-/* where the last '.' of the path P stands, its length when it has none; keys escape theirs as "\\." */
+/* where the last '.' of the path P stands, 0 when it has none; keys escape theirs as "\\." */
 static size_t last_dot(const char *p)
 {
-	size_t i, dot = strlen(p);
+	size_t i, dot = 0;
 
 	for (i = 0; p[i]; i++)
 		if (p[i] == '\\' && p[i + 1])
@@ -1636,7 +1682,7 @@ char *yline(struct string_list *kv, const char *key)
 
 	/* the path without its last key, until a node is there or nothing is left */
 	while (!(item = unsorted_string_list_lookup(kv, up)) && *up)
-		up[last_dot(up) == strlen(up) ? 0 : last_dot(up)] = '\0';
+		up[last_dot(up)] = '\0';
 	if (!item)
 		item = unsorted_string_list_lookup(kv, ROOT);
 	return xstrfmt(" in line %d", item ? ((struct yval *)item->util)->line : 1);
@@ -1651,16 +1697,16 @@ static void trim_block(struct strbuf *text, const char *key, struct yval *v)
 {
 	struct string_list after = STRING_LIST_INIT_DUP;
 	struct strbuf trimmed = STRBUF_INIT;
-	size_t head = v->start + strcspn(text->buf + v->start, "\n") + 1, e = v->end, p, start;
+	size_t first = v->start + strcspn(text->buf + v->start, "\n") + 1, end = v->end, p, start;
 	char *err;
 
 	/* the end of the block's last line; the next line keeps its indentation */
-	while (e > head && text->buf[e - 1] != '\n')
-		e--;
+	while (end > first && text->buf[end - 1] != '\n')
+		end--;
 	/* back one line of spaces at a time, while the value reads the same without it */
-	for (p = e; p > head; p = start) {
+	for (p = end; p > first; p = start) {
 		start = p - 1;
-		while (start > head && text->buf[start - 1] != '\n')
+		while (start > first && text->buf[start - 1] != '\n')
 			start--;
 		if (text->buf[start + strspn(text->buf + start, " ")] != '\n')
 			break;
@@ -1700,6 +1746,16 @@ static int decimal(struct yval *v)
 	return v->plain && *v->s && !v->s[strspn(v->s, "0123456789")] && (*v->s != '0' || !v->s[1]);
 }
 
+/* V is of KIND: a key with nothing under it is an empty list, map or scalar; "" is a scalar only */
+static int fits(struct yval *v, char kind)
+{
+	if (kind == 'l' || kind == 'm')
+		return v->kind == kind || v->kind == '?';
+	if (v->kind && v->kind != '?')
+		return 0;
+	return kind != 'i' || decimal(v);
+}
+
 /* the kind SCHEMA gives PATTERN, or 0 */
 static char schema_kind(const char *const *schema, const char *pattern)
 {
@@ -1735,9 +1791,7 @@ void yaml_check(struct string_list *kv, const char *const *schema, const char *w
 				reject(128, hint, "bad format: '%s': unknown key '%s' in line %d", what, item->string, v->line);
 			continue;
 		}
-		/* a key with nothing under it is an empty list, map or scalar; "" is a scalar only */
-		if (kinds && (strchr("lm", kind) ? v->kind != kind && v->kind != '?' :
-			      (v->kind && v->kind != '?') || (kind == 'i' && !decimal(v))))
+		if (kinds && !fits(v, kind))
 			reject(128, hint, "bad format: '%s': bad value of '%s' in line %d", what, item->string, v->line);
 	}
 }
@@ -1749,7 +1803,7 @@ struct string_list *def_get(struct tree *t, const char *path)
 					    "success.N i", "inputs l", "inputs.N s", NULL };
 	static const char *const prompt[] = { "body s", "engine s", "inputs l", "inputs.N s", NULL };
 	static struct string_list parsed = STRING_LIST_INIT_DUP;
-	const char *oid = blob_at(t, path), *engine;
+	const char *oid = blob_at(t, path), *engine, *body, *missing = NULL;
 	struct string_list_item *hit = oid ? string_list_lookup(&parsed, oid) : NULL;
 	struct string_list *kv;
 
@@ -1769,9 +1823,14 @@ struct string_list *def_get(struct tree *t, const char *path)
 		reject(128, NULL, "bad format: '%s': engine '%s': give exec, or leave it out for prompt%s", path, engine,
 		       yline(kv, "engine"));
 	yaml_check(kv, *engine ? exec : prompt, path, NULL, 1);
-	if (!yget(kv, "body") || !*yget(kv, "body") || (*engine && !yget(kv, "command.0")))
+	body = yget(kv, "body");
+	if (!body || !*body)
+		missing = "body";
+	else if (*engine && !yget(kv, "command.0"))
+		missing = "command.0";
+	if (missing)
 		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'%s", path,
-		       yline(kv, !yget(kv, "body") || !*yget(kv, "body") ? "body" : "command.0"));
+		       yline(kv, missing));
 	string_list_insert(&parsed, oid)->util = kv;
 	return kv;
 }
