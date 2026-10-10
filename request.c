@@ -5,6 +5,7 @@
  * set (1.5b), validate (5.9), the code to check, results (8) and the commit (5.5).
  */
 #include "ait.h"
+#include <yaml.h>
 #include "strvec.h"
 #include "quote.h"
 #include <sys/stat.h>
@@ -938,19 +939,87 @@ static char *judged_tree(struct request *q, struct string_list *changed)
 	return tree_with(q->v->oid, info.buf, NULL);
 }
 
-/* the double-quoted YAML scalar of spec 8.2 */
-static char *dq(const char *s)
+/*
+ * spec 8.2: the check files are written by libyaml's emitter, so each value
+ * reads back as it was: strings "...", a body as a "|" block where libyaml
+ * can keep it so, escapes as YAML has them
+ */
+static int yaml_out(void *sb, unsigned char *buf, size_t n)
 {
-	struct strbuf sb = STRBUF_INIT;
+	strbuf_add(sb, buf, n);
+	return 1;
+}
 
-	strbuf_addch(&sb, '"');
-	for (; *s; s++) {
-		if (*s == '"' || *s == '\\')
-			strbuf_addch(&sb, '\\');
-		strbuf_addch(&sb, *s);
-	}
-	strbuf_addch(&sb, '"');
-	return strbuf_detach(&sb, NULL);
+static void emit(yaml_emitter_t *y, yaml_event_t *e)
+{
+	if (!yaml_emitter_emit(y, e))
+		BUG("libyaml cannot write the check files: %s", y->problem);
+}
+
+static void yscalar(yaml_emitter_t *y, const char *s, yaml_scalar_style_t style)
+{
+	yaml_event_t e;
+
+	yaml_scalar_event_initialize(&e, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1, style);
+	emit(y, &e);
+}
+
+/* "KEY: VALUE", the value a "..." string */
+static void ykey(yaml_emitter_t *y, const char *key, const char *value)
+{
+	yscalar(y, key, YAML_PLAIN_SCALAR_STYLE);
+	yscalar(y, value, YAML_DOUBLE_QUOTED_SCALAR_STYLE);
+}
+
+/* a block map, or a list (block, or [FLOW]) */
+static void yopen(yaml_emitter_t *y, int list, int flow)
+{
+	yaml_event_t e;
+
+	if (list)
+		yaml_sequence_start_event_initialize(&e, NULL, NULL, 1, flow ? YAML_FLOW_SEQUENCE_STYLE : YAML_BLOCK_SEQUENCE_STYLE);
+	else
+		yaml_mapping_start_event_initialize(&e, NULL, NULL, 1, YAML_BLOCK_MAPPING_STYLE);
+	emit(y, &e);
+}
+
+static void yclose(yaml_emitter_t *y, int list)
+{
+	yaml_event_t e;
+
+	if (list)
+		yaml_sequence_end_event_initialize(&e);
+	else
+		yaml_mapping_end_event_initialize(&e);
+	emit(y, &e);
+}
+
+/* a document of one map into SB; yend() closes it */
+static void ybegin(yaml_emitter_t *y, struct strbuf *sb)
+{
+	yaml_event_t e;
+
+	yaml_emitter_initialize(y);
+	yaml_emitter_set_output(y, yaml_out, sb);
+	yaml_emitter_set_unicode(y, 1);
+	yaml_emitter_set_width(y, -1);
+	yaml_stream_start_event_initialize(&e, YAML_UTF8_ENCODING);
+	emit(y, &e);
+	yaml_document_start_event_initialize(&e, NULL, NULL, NULL, 1);
+	emit(y, &e);
+	yopen(y, 0, 0);
+}
+
+static void yend(yaml_emitter_t *y)
+{
+	yaml_event_t e;
+
+	yclose(y, 0);
+	yaml_document_end_event_initialize(&e, 1);
+	emit(y, &e);
+	yaml_stream_end_event_initialize(&e);
+	emit(y, &e);
+	yaml_emitter_delete(y);
 }
 
 static char *task_def(struct string_list_item *task)
@@ -964,41 +1033,72 @@ static void write_check_files(struct request *q, const char *in, const char *req
 	struct strbuf sb = STRBUF_INIT, old = STRBUF_INIT;
 	struct string_list kv = STRING_LIST_INIT_DUP;
 	struct string_list_item *task;
+	yaml_emitter_t y;
 	char *err;
 
 	/* 8.2: the tree to check, T0 for fulfill and commit, the normalized candidate T for the gate */
-	strbuf_addf(&sb, "input: %s\ntree: %s\ntasks:\n", dq(in), dq(q->gate ? judged_tree(q, NULL) : q->v->oid));
+	ybegin(&y, &sb);
+	ykey(&y, "input", in);
+	ykey(&y, "tree", q->gate ? judged_tree(q, NULL) : q->v->oid);
+	yscalar(&y, "tasks", YAML_PLAIN_SCALAR_STYLE);
+	yopen(&y, 1, 0);
 	for_each_string_list_item(task, &q->tasks) {
 		struct record *r = task->util;
 		struct string_list *kv = def_get(q->v, task_def(task));
 		const char *engine = engine_of(q->v, task_def(task)), *a;
 		int k;
 
-		strbuf_addf(&sb, "  - task: %s\n    contract: %s\n    role: %s\n", dq(task->string),
-			    dq(xstrndup(task->string, strchr(task->string, ':') - task->string)), dq(val(r, ROLE)));
+		yopen(&y, 0, 0);
+		ykey(&y, "task", task->string);
+		ykey(&y, "contract", xstrndup(task->string, strchr(task->string, ':') - task->string));
+		ykey(&y, "role", val(r, ROLE));
 		if (*r->id == 'D')
-			strbuf_addf(&sb, "    consumer: %s\n", dq(shows(r, CONSUMER, q->v, 0)));
-		strbuf_addf(&sb, "    provider: %s\n    engine: %s\n    body: |\n",
-			    dq(shows(r, PROVIDER, q->v, was_current(r))), dq(engine));
-		body_lines(&sb, kv, "      ");
-		if (strcmp(engine, "exec"))
-			continue;
-		for (k = 0; (a = yget(kv, xstrfmt("command.%d", k))); k++)
-			strbuf_addf(&sb, "%s%s", k ? ", " : "    command: [", dq(a));
-		for (k = 0; (a = yget(kv, xstrfmt("success.%d", k))) || !k; k++)
-			strbuf_addf(&sb, "%s%s", k ? ", " : "]\n    success: [", a ? a : "0");
-		strbuf_addstr(&sb, "]\n");
+			ykey(&y, "consumer", shows(r, CONSUMER, q->v, 0));
+		ykey(&y, "provider", shows(r, PROVIDER, q->v, was_current(r)));
+		ykey(&y, "engine", engine);
+		yscalar(&y, "body", YAML_PLAIN_SCALAR_STYLE);
+		yscalar(&y, yget(kv, "body"), YAML_LITERAL_SCALAR_STYLE);
+		if (!strcmp(engine, "exec")) {
+			yscalar(&y, "command", YAML_PLAIN_SCALAR_STYLE);
+			yopen(&y, 1, 1);
+			for (k = 0; (a = yget(kv, xstrfmt("command.%d", k))); k++)
+				yscalar(&y, a, YAML_DOUBLE_QUOTED_SCALAR_STYLE);
+			yclose(&y, 1);
+			yscalar(&y, "success", YAML_PLAIN_SCALAR_STYLE);
+			yopen(&y, 1, 1);
+			for (k = 0; (a = yget(kv, xstrfmt("success.%d", k))) || !k; k++)
+				yscalar(&y, a ? a : "0", YAML_PLAIN_SCALAR_STYLE);
+			yclose(&y, 1);
+		}
+		yclose(&y, 0);
 	}
+	yclose(&y, 1);
+	yend(&y);
 	mkdir(xstrfmt("%s/ait", gitdir), 0777);
 	write_state(req, sb.buf);
 	if (!read_text(&old, res) && !yaml_parse(old.buf, &kv, res, &err) && yget(&kv, "input") &&
 	    !strcmp(yget(&kv, "input"), in))
 		return;
 	strbuf_reset(&sb);
-	strbuf_addf(&sb, "input: %s\n# for each task: outcome is pass, fail or unknown; a pass needs a basis\n"
-		    "# (what you ran or read, and what it showed); reason says why, when fail or unknown\nresults:\n", in);
-	for_each_string_list_item(task, &q->tasks)
-		strbuf_addf(&sb, "  - task: %s\n    outcome:\n    basis:\n    reason:\n", task->string);
+	strbuf_addstr(&sb, "# for each task: outcome is pass, fail or unknown; a pass needs a basis\n"
+		      "# (what you ran or read, and what it showed); reason says why, when fail or unknown\n");
+	ybegin(&y, &sb);
+	ykey(&y, "input", in);
+	yscalar(&y, "results", YAML_PLAIN_SCALAR_STYLE);
+	yopen(&y, 1, 0);
+	for_each_string_list_item(task, &q->tasks) {
+		yopen(&y, 0, 0);
+		ykey(&y, "task", task->string);
+		yscalar(&y, "outcome", YAML_PLAIN_SCALAR_STYLE);
+		yscalar(&y, "", YAML_PLAIN_SCALAR_STYLE);
+		yscalar(&y, "basis", YAML_PLAIN_SCALAR_STYLE);
+		yscalar(&y, "", YAML_PLAIN_SCALAR_STYLE);
+		yscalar(&y, "reason", YAML_PLAIN_SCALAR_STYLE);
+		yscalar(&y, "", YAML_PLAIN_SCALAR_STYLE);
+		yclose(&y, 0);
+	}
+	yclose(&y, 1);
+	yend(&y);
 	write_state(res, sb.buf);
 }
 

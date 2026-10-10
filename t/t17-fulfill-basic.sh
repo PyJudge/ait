@@ -25,8 +25,8 @@ expect_unchanged expect_err "$desc" E_NEEDS_RESULTS ait fulfill "$O" -m m
 GD=$(gitdir_abs); Q=$GD/ait/check-request.yaml; W=$GD/ait/check-result.yaml
 check "1: report is exactly the 7.7.6 form" out_is "id $O" "provider $O src/stock.c" "" "task $O:specs/guard.yaml exec" "check-request $Q" "check-result $W" "ready yes"
 check "1: Q tree is git write-tree" test "$(qval "$Q" tree)" = "$(git write-tree)"
-check "1: Q task has command [./tests/guard.sh]" grep -qxF '    command: ["./tests/guard.sh"]' "$Q"
-check "1: Q task has body: guard" sh -c "grep -qxF '    body: \"guard\"' '$Q' || grep -A1 -xF '    body: |' '$Q' | grep -qxF '      guard'"
+check "1: Q task has command [./tests/guard.sh]" grep -qxF '  command: ["./tests/guard.sh"]' "$Q"
+check "1: Q task has body: guard" sh -c "grep -A1 -xF '  body: |-' '$Q' | grep -qxF '    guard'"
 with_r fail ait fulfill "$O" -m m
 check "1: -r fail is E_CHECK_FAILED" sh -c "[ $rc = 1 ] && head -1 '$T/err' | grep -qF 'error: check failed:'"
 

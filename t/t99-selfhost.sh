@@ -4,7 +4,8 @@
 T=$(mktemp -d); export T HOME=$T/home GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=:; mkdir -p "$HOME"
 git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master
 N=0
-mkdir "$T/r" && cp "$AIT_DIR"/*.c "$AIT_DIR"/*.h "$AIT_DIR"/Makefile "$T/r/" && cd "$T/r"
+mkdir -p "$T/r/libyaml" && cp "$AIT_DIR"/*.c "$AIT_DIR"/*.h "$AIT_DIR"/Makefile "$T/r/" && cd "$T/r"
+cp "$AIT_DIR"/libyaml/*.[ch] "$AIT_DIR"/libyaml/License libyaml/
 git init -q && tick && git add -A && git commit -qm "ait sources"
 tick; expect_ok "init" ait init
 A=$(ait session open --agent maintainer)

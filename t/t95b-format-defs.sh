@@ -47,7 +47,7 @@ def '{body: x}\nmore: y\n' "text after a flow map document"
 def 'body: x\nengine: exec\ncommand: []\n"command.0": sh\n' "a key holding '.' that would read as a path"
 def 'body: x\n inputs: []\n' "entries of one map at two indentations"
 def 'body: a: b\n' "': ' inside a plain scalar"
-def 'body: "x"#c\n' "a comment with no blank before it"
+# libyaml reads 'body: "x"#c' as "x" and a comment, though YAML asks for a blank before '#'; ait reads YAML as libyaml does
 def 'body: x\nengine: exec\ncommand: [sh,,x]\n' "an empty item in a flow list"
 def '"body: x\n' "an unterminated quoted key"
 for ok in 'body: |\n  a\n  b\n' "body: 'it''s'\n" 'body: "a\\"b\\\\c"\n' 'body: x # note\n' 'body: x\ninputs: []\n' \

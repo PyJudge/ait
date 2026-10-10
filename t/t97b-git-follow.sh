@@ -58,6 +58,23 @@ B=$(git rev-parse HEAD); Z=0000000000000000000000000000000000000000
 run sh -c "printf 'HEAD^{/bad\nline} %s refs/heads/nl %s\n' $B $Z | ait hook pre-push"
 check "the commit is validated" sh -c "[ $rc != 0 ]"
 git reset -q --hard "$H"
+# 8.2: the check request is written by libyaml; values read back as they were
+printf 'body: "  lead\\n"\nengine: exec\ncommand:\n  - sh\n  - -c\n  - |\n    true\n    true\n' > specs/nl.yaml
+git add specs/nl.yaml && tick && git commit -q --no-verify -m nl
+tick; run ait offer src/stock.c specs/nl.yaml -m o
+Q=$(git rev-parse --git-path ait/check-request.yaml)
+check "a line break in an argument is kept" grep -qF 'command: ["sh", "-c", "true\ntrue\n"]' "$Q"
+check "a body starting with blanks keeps them" sh -c "sed -n '/body:/,/command:/p' '$Q' | grep -qx '      lead'"
+git reset -q --hard "$H"
+
+# 8.4: a new contract's +SEQ in the results is spliced at its place, counted in bytes past UTF-8 text
+tick; run ait offer src/stock.c specs/pass.yaml -m o
+W=$(out_value check-result); fill "$W" pass
+{ echo '# 한글 주석'; cat "$W"; } > "$W.k" && mv "$W.k" "$W"
+tick; run ait offer src/stock.c specs/pass.yaml -m o -r "$W"; O=$(new_id)
+check "the message names the new ID" sh -c "git log -1 --format=%B | grep -q 'task: $O:specs/pass.yaml'"
+git reset -q --hard "$H"
+
 # 4: the state files hold a path a line; a worktree path with a line feed is not supported
 git worktree add -q "$T/a
 b" -b nl

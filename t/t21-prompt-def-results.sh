@@ -33,9 +33,9 @@ Q=$(out_value check-request); W=$(out_value check-result)
 in2=$(yval "$W" input)
 check "2: Q has input" test -n "$(yval "$Q" input)"
 check "2: Q has tree" test "$(yval "$Q" tree)" = "$(git write-tree)"
-check "2: Q has task D:specs/low.yaml" test "$(sed -n "s/^  - task: \"\(.*\)\"$/\1/p" "$Q")" = "$D:specs/low.yaml"
+check "2: Q has task D:specs/low.yaml" test "$(sed -n "s/^- task: \"\(.*\)\"$/\1/p" "$Q")" = "$D:specs/low.yaml"
 check "2: Q has engine prompt" test "$(yval "$Q" engine)" = prompt
-check "2: Q has the body" sh -c "grep -qxF '    body: \"최저가가 보장될 것.\"' '$Q' || grep -A1 -xF '    body: |' '$Q' | grep -qxF '      최저가가 보장될 것.'"
+check "2: Q has the body" sh -c "grep -A1 -xF '  body: |-' '$Q' | grep -qxF '    최저가가 보장될 것.'"
 check "2: Q has no command" sh -c "! grep -q 'command:' '$Q'"
 
 # 3

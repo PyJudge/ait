@@ -126,7 +126,7 @@ fill() {
 	{
 		grep '^input: ' "$w"
 		echo 'results:'
-		grep '^  - task: ' "$w" | sed 's/^  - task: //' | while read -r task; do
+		sed -n 's/^ *- task: "\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$w" | while read -r task; do
 			o=$out
 			for spec in "$@"; do [ "${spec%=*}" = "$task" ] && o=${spec##*=}; done
 			printf '  - task: %s\n    outcome: %s\n    basis: t\n    reason: t\n' "$task" "$o"

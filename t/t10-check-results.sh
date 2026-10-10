@@ -8,7 +8,7 @@ checks_of() { git log -1 --format='%(trailers:key=Ait-Check,valueonly)' "$1"; }
 # a YAML file has KEY with VALUE, compared as values (quotes removed, 0.2)
 y_has() { tr -d '"' < "$1" | grep -qE "^ *(- )?$2: $3\$"; }
 # the block string under 'body: |' in FILE is VALUE (first task with that body key)
-y_body() { awk '/^ *body: \|$/ {getline; sub(/^ +/, ""); print; exit}' "$1"; }
+y_body() { awk '/^ *body: \|[-+0-9]*$/ {getline; sub(/^ +/, ""); print; exit}' "$1"; }
 # the input value of a check-result file
 w_input() { sed -n 's/^input: //p' "$1" | tr -d '"'; }
 
@@ -29,7 +29,7 @@ check "1: Q body pass" [ "$(y_body "$Q")" = pass ]
 check "1: Q command [./tests/pass.sh]" y_has "$Q" command '\[\./tests/pass\.sh\]'
 check "1: Q success [0]" y_has "$Q" success '\[0\]'
 check "1: W has the same input" [ "$(w_input "$W")" = "$(sed -n 's/^input: //p' "$Q" | tr -d '"')" ]
-check "1: W has one task" [ "$(grep -c '^  - task: ' "$W")" = 1 ]
+check "1: W has one task" [ "$(grep -c '^- task: ' "$W")" = 1 ]
 check "1: W task +1:specs/pass.yaml" y_has "$W" task '\+1:specs/pass.yaml'
 check "1: W outcome is empty" grep -qE '^ +outcome: *$' "$W"
 

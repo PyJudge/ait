@@ -101,7 +101,6 @@ void reopen_set(struct state *s, struct record *k, struct string_list *out);
 char *reopen_ids(struct state *s, struct record *k);
 int touches(struct record *r, struct tree *a, struct tree *b);
 void repin(struct record *r, enum key k, struct tree *t, int new_only);
-void body_lines(struct strbuf *sb, struct string_list *kv, const char *indent);
 char *def_text(struct tree *t, const char *path, const char *indent);
 const char *engine_of(struct tree *t, const char *def);
 const char *input_path(const char *def, const char *p);

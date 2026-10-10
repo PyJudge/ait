@@ -12,4 +12,8 @@
 6. **noop일 때 index를 맞추지 않음.** 5.5-4 "noop일 때도 같다"에서 도출. 부분 stage 검사가 먼저 막으므로, noop까지 오면 명세 파일의 index 판은 HEAD와 같고 맞출 것이 없다. 문구는 그대로 둔다.
 7. **5.5-5의 경고와 hint 문구.** 선택. `committed '…' to '…', but the index and work tree were not updated`, `but … were not updated`, `bring … to '…' in the index`/`in the work tree`, `'git sparse-checkout reapply' failed: …`.
 8. **ID를 만들 수 없을 때의 문구 `unable to get random bytes`.** 선택. git의 tempfile 문구를 따랐다.
-9. **`git worktree list`를 `-z`로 읽음.** "git이 하는 대로"에서 도출. 경로에 LF가 있는 worktree 자체는 아직 동작하지 않는다(사용자에게 물을 항목).
+9. **`git worktree list`를 `-z`로 읽음.** "git이 하는 대로"에서 도출. 경로에 LF가 든 저장소·worktree는 미지원으로 거절한다(사용자 결정).
+10. **libyaml이 받는 대로 받음.** "libyaml 동봉"(사용자 결정)에서 도출. 그래서 YAML 1.2가 막는 일부 형식도 받는다(따옴표 바로 뒤의 `#` 주석). 여러 행 plain·따옴표 scalar, `? k` 키처럼 YAML이 허용하는 형식도 받는다. 예전 파서는 막았다.
+11. **libyaml의 오류 문구를 그대로 씀.** 선택. `bad format: 'FILE': <libyaml의 problem> in line N`. 부분집합 밖의 것(alias, anchor, tag, 문서 표시·지시, `>` 블록, scalar가 아닌 키, map이 아닌 문서, 16단 넘는 중첩, 중복 키)은 ait 문구다.
+12. **확인 요청·결과 틀의 모양이 libyaml emitter의 모양이 됨.** "표준 escape"와 "libyaml 동봉"(사용자 결정)에서 도출. `tasks`/`results` list는 들여쓰지 않고, body는 값에 맞는 `|`·`|-`·`|2` 표시를 붙이며, 결과 틀의 `input`도 `"…"`다. spec 8.2의 규칙과 예를 이렇게 고쳤다.
+13. **결과 틀의 안내 주석을 문서 앞에 둠.** 선택. emitter는 주석을 쓰지 못하므로, 예전처럼 `input`과 `results` 사이가 아니라 맨 앞에 둔다.

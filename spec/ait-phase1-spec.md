@@ -210,7 +210,7 @@ prev -
 
 ### 2.5 명세 정의와 환경 정의 (YAML)
 
-- 2.5.1 **YAML 부분집합**: UTF-8, LF. `#` 주석, 블록 map, 블록 list, flow list(`[a, b]`)와 flow map(`{K: v}`)(서로 중첩 가능), scalar(plain·`'…'`·`"…"`. `"…"` 안에서는 `\"`와 `\\`만 이스케이프), 10진 정수, `|` 블록 문자열만 쓴다. 놓이는 자리는 YAML 1.2와 같다: map의 키도 scalar(plain·`'…'`·`"…"`)이고, 문서 전체가 flow map일 수 있으며, flow collection은 여러 행에 걸치고 그 안에 주석을 둘 수 있다. anchor·alias·tag·여러 문서·중복 키·알 수 없는 키는 `E_FORMAT`이다.
+- 2.5.1 **YAML 부분집합**: UTF-8, LF. `#` 주석, 블록 map, 블록 list, flow list(`[a, b]`)와 flow map(`{K: v}`)(서로 중첩 가능), scalar(plain·`'…'`·`"…"`. `"…"`의 이스케이프는 YAML과 같다), 10진 정수, `|` 블록 문자열(들여쓰기·끝 행 처리 표시 `|2`·`|-`·`|+`를 붙일 수 있다)만 쓴다. 놓이는 자리는 YAML 1.2와 같다: map의 키도 scalar(plain·`'…'`·`"…"`)이고, 문서 전체가 flow map일 수 있으며, flow collection은 여러 행에 걸치고 그 안에 주석을 둘 수 있다. anchor·alias·tag·여러 문서·중복 키·알 수 없는 키는 `E_FORMAT`이다.
 - 2.5.2 **명세 정의**(아무 경로). 틀은 `ait contract new spec`이 준다(7.4.1a):
 
 ```yaml
@@ -902,22 +902,22 @@ git은 커밋을 보낼 때 조상을 모두 함께 보내므로 보내는 쪽�
   - `tree`: 확인할 tree의 OID. fulfill·`ait commit`이면 stage된 상태 T0, 관문이면 정규화된 후보 T다. 모든 파일을 꺼내려면 `top=$(git rev-parse --show-toplevel) && d=$(mktemp -d) && GIT_INDEX_FILE="$d/index" git -C "$top" read-tree TREE && GIT_INDEX_FILE="$d/index" git -C "$top" checkout-index -a --prefix="$d/tree/"`를 쓴다(index 파일은 git이 새로 만들게 둔다. 하위 디렉터리에서 실행해도 전부 꺼내도록 `-C`로 뿌리에서 실행한다).
   - `tasks`: 과제마다 `task`, `contract`, `role`, `consumer`(demand), `provider`, `engine`(`exec`·`prompt`), `body`. 범위 목록은 표시를 `,`로 이은 한 문자열이다. `=SCOPES`를 줬으면 그 범위다.
   - exec 과제면 이어서 `command`, `success`와, environment가 있으면 그 환경 정의 파일의 행들을 들여써서 `environment` 아래에 그대로 싣는다.
-  - 쓰기 규칙(확인 요청 파일과 결과 틀): 문자열 값은 언제나 `"…"`로 감싸고 `"`·`\`만 이스케이프한다. 여러 행인 문자열(`body`)은 `|` 블록 문자열로 쓴다. 문자열의 목록(`command`)은 flow list이고 원소도 `"…"`다. 정수 목록(`success`)은 flow list다. `tasks`는 블록 list다. 빈 값은 빈 문자열이다.
+  - 쓰기 규칙(확인 요청 파일과 결과 틀): 읽은 값이 쓴 값과 같도록 YAML의 규칙대로 쓴다. 문자열 값은 `"…"`이고 YAML의 이스케이프를 쓴다. 여러 행이 될 수 있는 문자열(`body`)은 `|` 블록 문자열이고, 앞의 공백이나 끝의 행바꿈은 표시(`|2`, `|-`, `|+`)로 지키며, 블록으로 담을 수 없는 값이면 `"…"`다. 문자열의 목록(`command`)은 flow list이고 원소도 `"…"`다. 정수 목록(`success`)은 flow list다. `tasks`는 블록 list이고 키보다 들여쓰지 않을 수 있다. 빈 값은 값을 쓰지 않는다.
 
 ```yaml
 input: "5d41402abc4b2a76b9719d911017c592ae2b1c3f"
 tree: "7c4a8d09ca3762af61e59520943dc26494f8941b"
 tasks:
-  - task: "D1a2b3c4d5e6f:specs/no-oversell.yaml"
-    contract: "D1a2b3c4d5e6f"
-    role: "demand"
-    consumer: "src/order.c:10-40"
-    provider: "src/stock.c"
-    engine: "exec"
-    body: |
-      재고가 0인 상품의 예약 요청은 거절한다.
-    command: ["sh", "tests/no_oversell.sh"]
-    success: [0]
+- task: "D1a2b3c4d5e6f:specs/no-oversell.yaml"
+  contract: "D1a2b3c4d5e6f"
+  role: "demand"
+  consumer: "src/order.c:10-40"
+  provider: "src/stock.c"
+  engine: "exec"
+  body: |-
+    재고가 0인 상품의 예약 요청은 거절한다.
+  command: ["sh", "tests/no_oversell.sh"]
+  success: [0]
 ```
 
 - 8.3 **확인 입력** IN: 아래 행(각 행은 LF로 끝난다)을 차례로 이은 바이트열을 `git hash-object --stdin`에 넣은 값이다. 아래의 V는 관문이면 후보 U, fulfill·commit이면 T0다.

@@ -12,12 +12,12 @@ printf '\000junk' >> .ait/$O && git add .ait/$O && tick && git commit -q --no-ve
 expect_err "a record with a NUL" E_FORMAT ait future cancel $O -m x
 git reset -q --hard "$H"
 
-# 8.4: the template is kept when its input is the same value, however it is written
+# 8.4: the template is kept when its input is the same value, however it is written (ait writes it quoted)
 echo y >> src/stock.c && git add src/stock.c
-run ait fulfill $O -m x; W=$(out_value check-result); IN=$(sed -n 's/^input: //p' "$W")
-printf '# mine\ninput: "%s"\nresults:\n  - task: %s:specs/pass.yaml\n    outcome: pass\n    basis: filled\n' "$IN" "$O" > "$W"
+run ait fulfill $O -m x; W=$(out_value check-result); IN=$(sed -n 's/^input: //p' "$W" | tr -d '"')
+printf '# mine\ninput: %s\nresults:\n  - task: %s:specs/pass.yaml\n    outcome: pass\n    basis: filled\n' "$IN" "$O" > "$W"
 run ait fulfill $O -m x
-check "a filled result with a quoted input is kept" grep -q "basis: filled" "$W"
+check "a filled result with a plain input is kept" grep -q "basis: filled" "$W"
 git reset -q --hard "$H"
 
 # 8.4: only the task values change from +n to the ID

@@ -3,6 +3,7 @@
  * Records are stored facts; everything else here is computed (rule 1).
  */
 #include "ait.h"
+#include <yaml.h>
 #include "quote.h"
 #include "strvec.h"
 #include "utf8.h"
@@ -811,7 +812,7 @@ void repin(struct record *r, enum key k, struct tree *t, int new_only)
 }
 
 /* the body lines of a definition, each after INDENT */
-void body_lines(struct strbuf *sb, struct string_list *kv, const char *indent)
+static void body_lines(struct strbuf *sb, struct string_list *kv, const char *indent)
 {
 	struct string_list body = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
@@ -1063,45 +1064,19 @@ int read_text(struct strbuf *sb, const char *path)
 }
 
 /*
- * The YAML subset of spec 2.5.1, read by recursive descent as YAML 1.2 places
- * its forms: block maps and lists by indentation, flow collections, plain and
- * quoted scalars, literal blocks and comments. One function reads each form,
- * and the boundaries of tokens are decided in scalar() and line_end() alone.
- * The values are flattened into KV: "a: x" is "a", list items are "a.0",
- * keys inside them "a.0.b"; '.' and '\' in a key are escaped, so a path names
- * one value. Every value keeps where it starts in the text and its kind.
+ * The YAML subset of spec 2.5.1, read by libyaml as YAML places it. What the
+ * subset leaves out shows in libyaml's events and is refused here: aliases,
+ * anchors, tags, document markers and directives, folded blocks, keys that
+ * are not scalars, a root that is not a map. The values are flattened into
+ * KV: "a: x" is "a", list items are "a.0", keys inside them "a.0.b"; '.' and
+ * '\' in a key are escaped, so a path names one value. Every value keeps
+ * where its text starts (a byte offset) and its kind.
  */
 struct yval {
 	char *s;
 	size_t at;
 	char kind;	/* 'l' a list, 'm' a map, '?' a key with nothing under it, 0 a scalar */
 };
-
-struct yaml {
-	const char *text, *p, *what;
-	struct string_list *kv;
-	char *err;
-	int depth;
-};
-
-static int yaml_fail(struct yaml *y, const char *fmt, ...)
-{
-	struct strbuf sb = STRBUF_INIT;
-	const char *c;
-	va_list ap;
-	int line = 1;
-
-	for (c = y->text; c < y->p; c++)
-		line += *c == '\n';
-	strbuf_addf(&sb, "bad format: '%s': ", y->what);
-	va_start(ap, fmt);
-	strbuf_vaddf(&sb, fmt, ap);
-	va_end(ap);
-	strbuf_addf(&sb, " in line %d", line);
-	if (!y->err)
-		y->err = strbuf_detach(&sb, NULL);
-	return -1;
-}
 
 /* the path of KEY (a map key, or a list index) under PATH, NULL being the root */
 static char *yaml_path(const char *path, const char *key)
@@ -1118,357 +1093,159 @@ static char *yaml_path(const char *path, const char *key)
 	return strbuf_detach(&sb, NULL);
 }
 
-static int yaml_put(struct yaml *y, const char *path, char *s, size_t at, char kind)
+/* the byte offset of the character MARK (libyaml counts characters) */
+static size_t yaml_byte(const char *text, yaml_mark_t mark)
 {
-	struct yval *v;
+	const char *p = text;
+	size_t n = 0;
 
-	if (!path)
-		return 0;
-	if (unsorted_string_list_has_string(y->kv, path))
-		return yaml_fail(y, "duplicate key '%s'", path);
-	v = xcalloc(1, sizeof(*v));
-	*v = (struct yval){ s, at, kind };
-	string_list_append(y->kv, path)->util = v;
-	return 0;
+	for (; *p && (n < mark.index || ((unsigned char)*p & 0xc0) == 0x80); p++)
+		n += ((unsigned char)*p & 0xc0) != 0x80;
+	return p - text;
 }
 
-/* a comment: '#' at the start of a line or after a blank */
-static int comment(struct yaml *y)
+/* an event the subset leaves out, or NULL */
+static const char *yaml_outside(yaml_event_t *e, int docs)
 {
-	return *y->p == '#' && (y->p == y->text || y->p[-1] == ' ' || y->p[-1] == '\n');
-}
-
-/* the rest of the line holds blanks and maybe a comment; then past its end */
-static int line_end(struct yaml *y)
-{
-	y->p += strspn(y->p, " ");
-	if (comment(y))
-		y->p = strchrnul(y->p, '\n');
-	if (*y->p && *y->p != '\n')
-		return yaml_fail(y, "unexpected '%c'", *y->p);
-	y->p += !!*y->p;
-	return 0;
-}
-
-/* from a line's start, past blank and comment lines to the next content: its indentation, or -1 at the end */
-static int next_line(struct yaml *y)
-{
-	for (;;) {
-		int n = strspn(y->p, " ");
-
-		y->p += n;
-		if (comment(y))
-			y->p = strchrnul(y->p, '\n');
-		if (*y->p != '\n')
-			return *y->p ? n : -1;
-		y->p++;
-	}
-}
-
-/* in a flow collection, past blanks, line ends and comments */
-static void flow_gap(struct yaml *y)
-{
-	for (;;) {
-		y->p += strspn(y->p, " \n");
-		if (!comment(y))
-			return;
-		y->p = strchrnul(y->p, '\n');
-	}
-}
-
-/*
- * a scalar: '...' (with '' for '), "..." (escaping only \" and \\), or plain;
- * a plain scalar starts with no indicator and ends at ": ", " #", the line's
- * end, and in FLOW also at ",[]{}"; AT gets where its text starts
- */
-static char *scalar(struct yaml *y, int flow, size_t *at)
-{
-	struct strbuf sb = STRBUF_INIT;
-	const char *v = y->p, *stop = flow ? " \n,[]{}" : " \n";
-	char q = *v;
-
-	if (q == '\'' || q == '"') {
-		*at = v + 1 - y->text;
-		for (v++; *v && *v != '\n' && (*v != q || (q == '\'' && v[1] == '\'')); v++) {
-			if (q == '"' && *v == '\\' && v[1] != '"' && v[1] != '\\') {
-				y->p = v;
-				yaml_fail(y, "an escape other than \\\" or \\\\");
-				return NULL;
-			}
-			if ((q == '"' && *v == '\\') || (q == '\'' && *v == '\''))
-				v++;
-			strbuf_addch(&sb, *v);
-		}
-		if (*v != q) {
-			yaml_fail(y, "an unterminated quote");
-			return NULL;
-		}
-		y->p = v + 1;
-		return strbuf_detach(&sb, NULL);
-	}
-	if (!*v || strchr(",[]{}#&*!|>'\"%@`", *v) || (strchr("-?:", *v) && strchr(stop, v[1] ? v[1] : ' '))) {
-		yaml_fail(y, "no value at '%c'", *v && *v != '\n' ? *v : ' ');
+	switch (e->type) {
+	case YAML_ALIAS_EVENT:
+		return "an alias";
+	case YAML_DOCUMENT_START_EVENT:
+		return docs ? "more than one document" : !e->data.document_start.implicit ||
+		       e->data.document_start.version_directive ||
+		       e->data.document_start.tag_directives.start != e->data.document_start.tag_directives.end ?
+		       "a document marker or directive" : NULL;
+	case YAML_DOCUMENT_END_EVENT:
+		return e->data.document_end.implicit ? NULL : "a document marker or directive";
+	case YAML_SCALAR_EVENT:
+		return e->data.scalar.anchor ? "an anchor" :
+		       !e->data.scalar.plain_implicit && !e->data.scalar.quoted_implicit ? "a tag" :
+		       e->data.scalar.style == YAML_FOLDED_SCALAR_STYLE ? "a folded block" : NULL;
+	case YAML_SEQUENCE_START_EVENT:
+		return e->data.sequence_start.anchor ? "an anchor" : !e->data.sequence_start.implicit ? "a tag" : NULL;
+	case YAML_MAPPING_START_EVENT:
+		return e->data.mapping_start.anchor ? "an anchor" : !e->data.mapping_start.implicit ? "a tag" : NULL;
+	default:
 		return NULL;
 	}
-	*at = v - y->text;
-	while (*v && *v != '\n' && !(*v == ':' && strchr(stop, v[1] ? v[1] : ' ')) && !(*v == '#' && v[-1] == ' ') &&
-	       !(flow && strchr(",[]{}", *v)))
-		strbuf_addch(&sb, *v++);
-	strbuf_rtrim(&sb);
-	y->p = v;
-	return strbuf_detach(&sb, NULL);
 }
 
-/* a map key and its ':' at the point: the key, or NULL with the point kept when there is none */
-static char *key(struct yaml *y, int flow)
-{
-	const char *start = y->p;
-	char *err = y->err, *k;
-	size_t at;
+/* an open map or list: its path, the key read for its next value, the count of its items */
+struct yframe {
+	char *path, *key;
+	int n;
+	char kind;
+};
 
-	k = scalar(y, flow, &at);
-	y->p += strspn(y->p, " ");
-	if (k && *y->p == ':') {
-		y->p++;
-		return k;
+/*
+ * where the node of E goes under TOP, the innermost open collection (NULL at
+ * the root): its path; NULL when it is the root map, or the key of TOP's next
+ * value (kept in TOP), or with WHY set
+ */
+static char *yaml_place(struct yframe *top, yaml_event_t *e, const char **why)
+{
+	char *path;
+
+	if (!top) {
+		if (e->type != YAML_MAPPING_START_EVENT)
+			*why = "no key";
+		return NULL;
 	}
-	y->p = start;
-	y->err = err;
+	if (top->kind == 'l')
+		return yaml_path(top->path, xstrfmt("%d", top->n++));
+	if (top->key) {
+		path = yaml_path(top->path, top->key);
+		top->key = NULL;
+		return path;
+	}
+	if (e->type == YAML_SCALAR_EVENT)
+		top->key = xstrdup((char *)e->data.scalar.value);
+	else
+		*why = "a key that is not a scalar";
 	return NULL;
 }
 
-/* where the point stands in its line */
-static int column(struct yaml *y)
+/* the kind of the node of E, as struct yval keeps it */
+static char yaml_kind(yaml_event_t *e)
 {
-	const char *l = y->p;
-
-	while (l > y->text && l[-1] != '\n')
-		l--;
-	return y->p - l;
+	if (e->type == YAML_MAPPING_START_EVENT)
+		return 'm';
+	if (e->type == YAML_SEQUENCE_START_EVENT)
+		return 'l';
+	return e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE && !e->data.scalar.length ? '?' : 0;
 }
 
-static int dash(struct yaml *y)
+/* one event of the document into KV, with the open collections in STACK: NULL, or what is wrong */
+static const char *yaml_event(const char *text, struct string_list *kv, struct yframe *stack, int *depth, yaml_event_t *e)
 {
-	return *y->p == '-' && (!y->p[1] || y->p[1] == ' ' || y->p[1] == '\n');
-}
+	const char *why = NULL;
+	struct yval *v;
+	char *path;
 
-static int block_map(struct yaml *y, const char *path, int indent);
-static int block_list(struct yaml *y, const char *path, int indent);
-
-static int deeper(struct yaml *y)
-{
-	return ++y->depth > 16 ? yaml_fail(y, "nested too deeply") : 0;
-}
-
-/* a flow list "[a, b]" or map "{k: v}" at the point, over as many lines as written */
-static int flow(struct yaml *y, const char *path)
-{
-	char close = *y->p == '[' ? ']' : '}', *k, *s;
-	size_t at = y->p - y->text;
-	int n;
-
-	if (deeper(y) || yaml_put(y, path, xstrdup(""), at, close == ']' ? 'l' : 'm'))
-		return -1;
-	y->p++;
-	flow_gap(y);
-	for (n = 0; *y->p != close; n++) {
-		char *sub = yaml_path(path, xstrfmt("%d", n));
-
-		if (close == '}') {
-			if (!(k = key(y, 1)))
-				return yaml_fail(y, "no key");
-			sub = yaml_path(path, k);
-			flow_gap(y);
-		}
-		if (*y->p == '[' || *y->p == '{') {
-			if (flow(y, sub))
-				return -1;
-		} else if (!(s = scalar(y, 1, &at)) || yaml_put(y, sub, s, at, 0)) {
-			return -1;
-		}
-		flow_gap(y);
-		if (*y->p == ',') {
-			y->p++;
-			flow_gap(y);
-		} else if (*y->p != close) {
-			return yaml_fail(y, "expected ',' or '%c'", close);
-		}
+	if (e->type == YAML_MAPPING_END_EVENT || e->type == YAML_SEQUENCE_END_EVENT)
+		(*depth)--;
+	if (e->type != YAML_SCALAR_EVENT && e->type != YAML_MAPPING_START_EVENT && e->type != YAML_SEQUENCE_START_EVENT)
+		return NULL;
+	path = yaml_place(*depth ? &stack[*depth - 1] : NULL, e, &why);
+	if (why)
+		return why;
+	if (path && unsorted_string_list_has_string(kv, path))
+		return xstrfmt("duplicate key '%s'", path);
+	if (path) {
+		v = xcalloc(1, sizeof(*v));
+		v->s = xstrdup(e->type == YAML_SCALAR_EVENT ? (char *)e->data.scalar.value : "");
+		v->kind = yaml_kind(e);
+		/* a quoted scalar's text starts after its quote */
+		v->at = yaml_byte(text, e->start_mark) + (e->type == YAML_SCALAR_EVENT &&
+			(e->data.scalar.style == YAML_SINGLE_QUOTED_SCALAR_STYLE ||
+			 e->data.scalar.style == YAML_DOUBLE_QUOTED_SCALAR_STYLE));
+		string_list_append(kv, path)->util = v;
 	}
-	y->p++;
-	y->depth--;
-	return 0;
-}
-
-/* a literal block "|": the lines below more indented than INDENT, clipped to one final newline */
-static int literal(struct yaml *y, const char *path, int indent)
-{
-	struct strbuf sb = STRBUF_INIT;
-	size_t at = y->p - y->text;
-	int block = -1;
-
-	while (*y->p) {
-		const char *e = strchrnul(y->p, '\n');
-		int in = strspn(y->p, " "), blank = y->p + in == e;
-
-		if (!blank && in <= indent)
-			break;
-		if (!blank && block < 0) {
-			block = in;
-			at = y->p + in - y->text;
-		}
-		if (!blank && in < block)
-			return yaml_fail(y, "a line less indented than the block's first");
-		strbuf_add(&sb, y->p + (blank ? e - y->p : block), blank ? 0 : e - y->p - block);
-		strbuf_addch(&sb, '\n');
-		y->p = e + !!*e;
-	}
-	while (sb.len > 1 && sb.buf[sb.len - 2] == '\n')
-		strbuf_setlen(&sb, sb.len - 1);
-	return yaml_put(y, path, block < 0 ? xstrdup("") : strbuf_detach(&sb, NULL), at, 0);
-}
-
-/*
- * what stands under a key or dash whose line is done: a block map or list more
- * indented than INDENT, a list at INDENT under a key (UNDER_KEY), or nothing
- */
-static int block(struct yaml *y, const char *path, int indent, int under_key)
-{
-	int n = next_line(y);
-	size_t at = y->p - y->text;
-
-	if (n < 0 || n < indent || (n == indent && !(under_key && dash(y)))) {
-		y->p -= n < 0 ? 0 : n;
-		return yaml_put(y, path, xstrdup(""), at, '?');
-	}
-	if (dash(y))
-		return yaml_put(y, path, xstrdup(""), at, 'l') || block_list(y, path, n);
-	if (!key(y, 0))
-		return yaml_fail(y, "no key");
-	y->p = y->text + at;
-	return yaml_put(y, path, xstrdup(""), at, 'm') || block_map(y, path, n);
-}
-
-/* what follows ": " or "- " on its line, in the map or list at INDENT */
-static int value(struct yaml *y, const char *path, int indent, int under_key)
-{
-	size_t at;
-	char *s;
-
-	y->p += strspn(y->p, " ");
-	if (!*y->p || *y->p == '\n' || comment(y))
-		return line_end(y) || block(y, path, indent, under_key);
-	if (*y->p == '|') {
-		y->p++;
-		return line_end(y) || literal(y, path, indent);
-	}
-	if (*y->p == '[' || *y->p == '{')
-		return flow(y, path) || line_end(y);
-	if (!(s = scalar(y, 0, &at)))
-		return -1;
-	return yaml_put(y, path, s, at, 0) || line_end(y);
-}
-
-/* after a block's entry, the next line at INDENT: 1 to go on, 0 when the block ended, -1 on a bad indentation */
-static int next_entry(struct yaml *y, int indent)
-{
-	int n = next_line(y);
-
-	if (n < 0)
-		return 0;
-	if (n > indent)
-		return yaml_fail(y, "bad indentation");
-	y->p -= n < indent ? n : 0;
-	return n == indent;
-}
-
-/* the entries "KEY: VALUE" of a block map standing at INDENT */
-static int block_map(struct yaml *y, const char *path, int indent)
-{
-	int more;
-	char *k;
-
-	if (deeper(y))
-		return -1;
-	do {
-		if (!(k = key(y, 0)))
-			return yaml_fail(y, "no key");
-		if (*y->p && *y->p != ' ' && *y->p != '\n')
-			return yaml_fail(y, "no blank after ':'");
-		if (value(y, yaml_path(path, k), indent, 1) || (more = next_entry(y, indent)) < 0)
-			return -1;
-		if (more && dash(y))
-			return yaml_fail(y, "a list item among the entries of a map");
-	} while (more);
-	y->depth--;
-	return 0;
-}
-
-/* the items "- VALUE" of a block list standing at INDENT; an item may open a map on its own line */
-static int block_list(struct yaml *y, const char *path, int indent)
-{
-	int n = 0, more;
-
-	if (deeper(y))
-		return -1;
-	do {
-		char *item = yaml_path(path, xstrfmt("%d", n++));
-		size_t at;
-
-		y->p++;
-		y->p += strspn(y->p, " ");
-		at = y->p - y->text;
-		if (*y->p && *y->p != '\n' && !comment(y) && key(y, 0)) {
-			/* "- k: v": a map whose keys stand where its first one does */
-			y->p = y->text + at;
-			if (yaml_put(y, item, xstrdup(""), at, 'm') || block_map(y, item, column(y)))
-				return -1;
-		} else if (value(y, item, indent, 0)) {
-			return -1;
-		}
-		if ((more = next_entry(y, indent)) < 0)
-			return -1;
-		if (more && !dash(y)) {
-			y->p -= indent;
-			break;
-		}
-	} while (more);
-	y->depth--;
-	return 0;
-}
-
-/* a document is a block map, or one flow map (YAML 1.2), and nothing after it */
-static void document(struct yaml *y, int indent)
-{
-	const char *start = y->p;
-
-	if (*y->p == '{') {
-		if (flow(y, NULL) || line_end(y))
-			return;
-	} else if (!key(y, 0)) {
-		yaml_fail(y, "no key");
-		return;
-	} else {
-		y->p = start;
-		if (block_map(y, NULL, indent))
-			return;
-	}
-	if (next_line(y) >= 0)
-		yaml_fail(y, "text after the document");
+	if (e->type == YAML_SCALAR_EVENT)
+		return NULL;
+	if (*depth == 16)
+		return "nested too deeply";
+	stack[*depth].path = path;
+	stack[*depth].key = NULL;
+	stack[*depth].n = 0;
+	stack[*depth].kind = yaml_kind(e);
+	(*depth)++;
+	return NULL;
 }
 
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err)
 {
-	struct yaml y = { text, text, what, kv, NULL, 0 };
-	int n;
+	struct yframe stack[16];
+	yaml_parser_t parser;
+	yaml_event_t e;
+	const char *why = NULL;
+	int depth = 0, docs = 0, done = 0;
+	size_t line = 0;
 
-	if (!is_utf8(text))
-		yaml_fail(&y, "not UTF-8");
-	else if (strpbrk(text, "\t\r"))
-		yaml_fail(&y, "a tab or CR");
-	else if ((n = next_line(&y)) >= 0)
-		document(&y, n);
-	*err = y.err;
-	return y.err ? -1 : 0;
+	*err = NULL;
+	if (!is_utf8(text) || strpbrk(text, "\t\r")) {
+		*err = xstrfmt("bad format: '%s': %s", what, is_utf8(text) ? "a tab or CR" : "not UTF-8");
+		return -1;
+	}
+	yaml_parser_initialize(&parser);
+	yaml_parser_set_input_string(&parser, (const unsigned char *)text, strlen(text));
+	while (!done && !why && yaml_parser_parse(&parser, &e)) {
+		line = e.start_mark.line;
+		docs += e.type == YAML_DOCUMENT_START_EVENT;
+		why = yaml_outside(&e, docs > 1);
+		if (!why)
+			why = yaml_event(text, kv, stack, &depth, &e);
+		done = e.type == YAML_STREAM_END_EVENT;
+		yaml_event_delete(&e);
+	}
+	if (!done && !why) {
+		why = parser.problem;
+		line = parser.problem_mark.line;
+	}
+	if (why)
+		*err = xstrfmt("bad format: '%s': %s in line %d", what, why, (int)line + 1);
+	yaml_parser_delete(&parser);
+	return why ? -1 : 0;
 }
 
 void yaml(const char *text, struct string_list *kv, const char *what)
