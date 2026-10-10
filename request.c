@@ -143,18 +143,21 @@ static void follow(struct tree *h, struct tree *index, const char *c)
 	struct string_list skipped = STRING_LIST_INIT_DUP, left = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct strbuf info = STRBUF_INIT;
+	char *o = NULL;
 	int fd = lock_worktree(top), rc = fd < 0 || !at(c), unset;
 
 	tree_diff(h, ct, &paths);
 	for_each_string_list_item(item, &paths) {
 		struct entry *was = tree_get(index, item->string);
 
-		strbuf_addf(&info, "%s %s\t%s\n", was ? was->mode : "0",
-			    was ? was->oid : "0000000000000000000000000000000000000000", item->string);
+		index_line(&info, was ? was->mode : "0", was ? was->oid : "0000000000000000000000000000000000000000",
+			   item->string);
 		string_list_append(starts_with(item->string, ".ait/") ? &ait : &rest, item->string);
 	}
+	if (!rc && paths.nr && !(o = tree_with(ct->oid, info.buf, NULL)))
+		rc = 1;
 	if (!rc && paths.nr)
-		git_run(NULL, NULL, &rc, "read-tree -i -m %s %s", tree_with(ct->oid, info.buf, NULL), c);
+		git_run(NULL, NULL, &rc, "read-tree -i -m %s %s", o, c);
 	if (!rc && ait.nr)
 		string_list_split(&skipped, git_run(NULL, NULL, &unset, "ls-files -t -- .ait"), "\n", -1);
 	for_each_string_list_item(item, &ait) {
@@ -916,6 +919,7 @@ static void block(struct request *q, struct verdict v)
 static char *judged_tree(struct request *q, struct string_list *changed)
 {
 	struct strbuf info = STRBUF_INIT;
+	char *tree;
 	size_t i;
 
 	for (i = 0; i < q->s.nr; i++) {
@@ -924,12 +928,14 @@ static char *judged_tree(struct request *q, struct string_list *changed)
 		if (unchanged(r))
 			continue;
 		put(r, PREV, r->old ? blob_at(q->ht, xstrfmt(".ait/%s", r->id)) : "-");
-		strbuf_addf(&info, "100644 %s\t.ait/%s\n",
-			    line1(git_run(record_text(r, ALL_KEYS), NULL, NULL, "hash-object -w --stdin")), r->id);
+		index_line(&info, "100644", line1(git_run(record_text(r, ALL_KEYS), NULL, NULL, "hash-object -w --stdin")),
+			   xstrfmt(".ait/%s", r->id));
 		if (changed)
 			string_list_append(changed, r->id)->util = r;
 	}
-	return tree_with(q->v->oid, info.buf, NULL);
+	if (!(tree = tree_with(q->v->oid, info.buf, NULL)))
+		reject(128, NULL, "%s", git_failed());
+	return tree;
 }
 
 /*

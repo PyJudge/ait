@@ -121,9 +121,11 @@ write('utf8.c', '#include "git-compat-util.h"\n#include "utf8.h"\n', [
 write('utf8.h', '#ifndef UTF8_H\n#define UTF8_H\n', [
     rng('utf8.h', 6, 6), 'int is_utf8(const char *text);\n#endif'])
 write('quote.c', '#include "git-compat-util.h"\n#include "strbuf.h"\n#include "quote.h"\n', [
-    fn('quote.c', 11), fn('quote.c', 28), fn('quote.c', 50)])
+    fn('quote.c', 11), fn('quote.c', 28), fn('quote.c', 50), rng('quote.c', 9, 9), rng('quote.c', 215, 233),
+    fn('quote.c', 235), fn('quote.c', 243), fn('quote.c', 267), fn('quote.c', 322)])
 write('quote.h', '#ifndef QUOTE_H\n#define QUOTE_H\nstruct strbuf;\n', [
-    'void sq_quote_buf(struct strbuf *, const char *src);\nvoid sq_quote_buf_pretty(struct strbuf *, const char *src);\n#endif'])
+    'void sq_quote_buf(struct strbuf *, const char *src);\nvoid sq_quote_buf_pretty(struct strbuf *, const char *src);\n',
+    rng('quote.h', 86, 86), 'size_t quote_c_style(const char *name, struct strbuf *, FILE *, unsigned);\n#endif'])
 # run-command: start_command(), finish_command(), pipe_command() and what they call
 write('run-command.c', '''#include "git-compat-util.h"
 #include "run-command.h"

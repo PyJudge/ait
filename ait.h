@@ -37,6 +37,7 @@ struct tree *index_load(void);
 struct entry *tree_get(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
 const char *blob_text(const char *oid);
+void index_line(struct strbuf *sb, const char *mode, const char *oid, const char *path);
 char *tree_with(const char *base, const char *index_info, struct string_list *paths);
 void tree_diff(struct tree *a, struct tree *b, struct string_list *paths);
 

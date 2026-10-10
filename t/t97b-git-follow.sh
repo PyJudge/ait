@@ -100,6 +100,12 @@ tick; run env PATH="$T/bin:$PATH" ait future offer src/stock.c specs/p.yaml -m o
 check "E_GIT with the command" sh -c "[ $rc = 128 ] && grep -qx \"fatal: git failed: 'git update-ref': boom\" '$T/err'"
 git reset -q --hard "$H"; rm -rf real link
 
+# 5.5-4/5: a committed path git quotes in --index-info is quoted; a failure after the commit is only a warning
+echo x > '"q.c' && git add '"q.c'
+tick; run ait commit -m c
+check "commits and syncs a path starting with a quote" sh -c "[ $rc = 0 ] && [ ! -s '$T/err' ] && [ -z \"\$(git status --porcelain)\" ]"
+git reset -q --hard "$H"; rm -f '"q.c'
+
 # 4: the state files hold a path a line; a worktree path with a line feed is not supported
 git worktree add -q "$T/a
 b" -b nl

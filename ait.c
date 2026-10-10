@@ -534,7 +534,8 @@ static char *hooks_dir(void)
 
 static int cmd_init(int argc, const char **argv)
 {
-	char *dir = hooks_dir();
+	char *dir = hooks_dir(), *tree;
+	struct strbuf info = STRBUF_INIT;
 	struct string_list_item *wt;
 	struct tree *t;
 	int i, bad = 0, in_repo = 0;
@@ -582,8 +583,10 @@ static int cmd_init(int argc, const char **argv)
 	}
 	precondition(1);
 	/* spec 7.1.1-5: if another init won the race, its init file is ours too */
-	if (publish(tree_with(t->oid, xstrfmt("100644 %s\t.ait/init\n", line1(git_run("version 1\n", NULL, NULL,
-		    "hash-object -w --stdin"))), NULL), "[CONTRACT] ait init\n", index_load())) {
+	index_line(&info, "100644", line1(git_run("version 1\n", NULL, NULL, "hash-object -w --stdin")), ".ait/init");
+	if (!(tree = tree_with(t->oid, info.buf, NULL)))
+		reject(128, NULL, "%s", git_failed());
+	if (publish(tree, "[CONTRACT] ait init\n", index_load())) {
 		const char *now = object("HEAD:.ait/init", 1, NULL, NULL);
 
 		if (!now || strcmp(now, "version 1\n"))

@@ -109,10 +109,22 @@ const char *blob_text(const char *oid)
 }
 
 /*
- * BASE in a throwaway index (spec 4.8), then INDEX_INFO ("MODE OID\tPATH"
- * lines), or the work-tree files PATHS staged by git update-index --add as git
- * stages them (core.fileMode, core.symlinks, paths beyond a symlink, filters);
- * the tree, or NULL with git's reason in git_error when git refuses the paths
+ * a line of git update-index --index-info, the path quoted as git reads it
+ * back when it holds '"', a control character or more (git-update-index(1))
+ */
+void index_line(struct strbuf *sb, const char *mode, const char *oid, const char *path)
+{
+	strbuf_addf(sb, "%s %s\t", mode, oid);
+	quote_c_style(path, sb, NULL, 0);
+	strbuf_addch(sb, '\n');
+}
+
+/*
+ * BASE in a throwaway index (spec 4.8), then INDEX_INFO (index_line()s), or the
+ * work-tree files PATHS staged by git update-index --add as git stages them
+ * (core.fileMode, core.symlinks, paths beyond a symlink, filters); the tree,
+ * or NULL with git's reason in git_error: the caller judges, as a failure
+ * after a commit is published is only a warning (5.5-5)
  */
 char *tree_with(const char *base, const char *index_info, struct string_list *paths)
 {
@@ -140,8 +152,6 @@ char *tree_with(const char *base, const char *index_info, struct string_list *pa
 		tree = line1(git_run(NULL, index, &rc, "write-tree"));
 	unlink(index);
 	rmdir(dir);
-	if (rc && !paths)
-		reject(128, NULL, "%s", git_failed());
 	return tree;
 }
 
@@ -1220,6 +1230,9 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 		(*depth)--;
 	if (e->type != YAML_SCALAR_EVENT && e->type != YAML_MAPPING_START_EVENT && e->type != YAML_SEQUENCE_START_EVENT)
 		return NULL;
+	/* a value is text, as a file ait reads is (an escaped NUL would cut it) */
+	if (e->type == YAML_SCALAR_EVENT && strlen((char *)e->data.scalar.value) != e->data.scalar.length)
+		return "a NUL character";
 	path = yaml_place(*depth ? &stack[*depth - 1] : NULL, e, &why);
 	if (why)
 		return why;
