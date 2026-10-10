@@ -40,3 +40,4 @@
 34. **macOS에서 인자를 git처럼 NFC로 바꿈.** "git이 할 수 있는 일은 git에게서 받는다"(CLAUDE.md)에서 도출. git의 compat/precompose_utf8.c를 옮겨 core.precomposeUnicode일 때 argv를 조합형으로 바꾼다. 그래서 셸 glob 등이 준 NFD 철자의 경로도 git이 가진 경로로 찾는다.
 35. **고정이 맞는지는 레코드의 `file`·`provider` 행을 그 tree의 항목과 그대로 비교함.** 1.5a에서 도출. 정의를 파싱하지 않으므로 과거의 깨진 blob이 todo를 멈추지 않는다. H8의 since는 그 경로들이 바뀐 커밋에서만 다시 계산하고 나머지는 부모를 따른다(13.4).
 36. **명세 파일의 상위 경로가 HEAD나 index에서 파일이면 E_INCOMPLETE.** 규칙 3("계약 커밋은 코드를 바꾸지 않는다")에서 도출. git add는 그 파일 자리에 디렉터리를 넣으므로 받으면 `[CONTRACT]` 커밋이 그 파일을 지운다. hint는 그 파일을 지우고 `ait commit`으로 먼저 커밋하라는 것이다.
+37. **ait가 git에 고정한 설정(`-c core.quotePath=false` 등)과 `LANGUAGE=C`는 git이 실행하는 hook에도 그대로 이어짐(사용자 결정).** ait가 돌리는 저장소는 일반적인 git 저장소이고, hook은 git이 정한 환경에서 git대로 실행된다.
