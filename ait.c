@@ -134,7 +134,7 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 	if (rc)
 		*rc = code;
 	else if (code)
-		reject(128, top ? NULL : "run this command inside a git repository", "%s", git_failed());
+		reject(128, NULL, "%s", git_failed());
 	strbuf_release(&err);
 	return strbuf_detach(&out, &git_out_len);
 }

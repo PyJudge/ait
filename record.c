@@ -1831,6 +1831,9 @@ struct string_list *def_get(struct tree *t, const char *path)
 	if (missing)
 		reject(128, NULL, "bad format: '%s': needs 'body', and 'command' with 'engine: exec'%s", path,
 		       yline(kv, missing));
+	/* an empty success would let no exit code pass; left out, it is [0] (user decision) */
+	if (yget(kv, "success") && !yget(kv, "success.0"))
+		reject(128, NULL, "bad format: '%s': bad value of 'success'%s", path, yline(kv, "success"));
 	string_list_insert(&parsed, oid)->util = kv;
 	return kv;
 }
