@@ -54,5 +54,8 @@ git reset -q --hard "$H"; rm -rf specs/y
 git config core.hooksPath .githooks && mkdir -p .githooks && printf '#!/bin/sh\nexit 0\n' > .githooks/pre-commit && chmod +x .githooks/pre-commit
 run ait init
 check "init names how to commit the hook" err_has "then commit it: stage '.githooks/pre-commit' and run 'ait commit -m <why>'"
+printf '#!/bin/sh\nexit 0\n' > .githooks/pre-push && chmod +x .githooks/pre-push
+run ait init
+check "the pre-push lines are the three of 7.1.1" sh -c "grep -qxF 'hint: if command -v ait >/dev/null 2>&1; then ait hook pre-push \"\$@\" < \"\$t\" || { s=\$?; rm -f \"\$t\"; exit \$s; }; fi' '$T/err'"
 git config --unset core.hooksPath; rm -rf .githooks
 done_testing

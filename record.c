@@ -1422,7 +1422,8 @@ static struct yval *yaml_value(const char *text, yaml_event_t *e, char *pattern,
 }
 
 /* one event of the document into KV, with the open collections in STACK: NULL, or what is wrong */
-static const char *yaml_event(const char *text, struct string_list *kv, struct yframe *stack, int *depth, yaml_event_t *e)
+static const char *yaml_event(const char *text, struct string_list *kv, struct yframe *stack, int *depth,
+			      yaml_event_t *e)
 {
 	const char *why = NULL;
 	struct yval *v = NULL;

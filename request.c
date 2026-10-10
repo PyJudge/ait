@@ -8,8 +8,13 @@
 #include <yaml.h>
 #include "strvec.h"
 #include "quote.h"
-#include "utf8.h"
 #include <sys/stat.h>
+
+/* a helper clause of 7.3.1: what it names and what it gives ("-" keeps, NULL not given) */
+struct clause {
+	const char *verb, *k[2], *a, *b, *f, *alias;
+	int future;
+};
 
 struct request {
 	struct state s;		/* every record keeps its HEAD version in ->old */
@@ -40,17 +45,11 @@ struct request {
 	size_t ncl, alloc_cl;
 };
 
-/* a helper clause of 7.3.1: what it names and what it gives ("-" keeps, NULL not given) */
-struct clause {
-	const char *verb, *k[2], *a, *b, *f, *alias;
-	int future;
-};
-
-#define REQUEST_INIT { .msg = STRBUF_INIT, .files = STRING_LIST_INIT_DUP, \
-	.scoped = STRING_LIST_INIT_DUP, .selected = STRING_LIST_INIT_DUP, .conf = STRING_LIST_INIT_DUP, \
-	.missing = STRING_LIST_INIT_DUP, .tasks = STRING_LIST_INIT_DUP, .hints = STRING_LIST_INIT_DUP, \
-	.carried = STRING_LIST_INIT_DUP, .mixed = STRING_LIST_INIT_DUP, .declared = STRING_LIST_INIT_DUP, \
-	.results = STRING_LIST_INIT_DUP, .renamed = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
+#define REQUEST_INIT { .msg = STRBUF_INIT, .files = STRING_LIST_INIT_DUP, .declared = STRING_LIST_INIT_DUP, \
+	.results = STRING_LIST_INIT_DUP, .renamed = STRING_LIST_INIT_DUP, .scoped = STRING_LIST_INIT_DUP, \
+	.selected = STRING_LIST_INIT_DUP, .conf = STRING_LIST_INIT_DUP, .missing = STRING_LIST_INIT_DUP, \
+	.tasks = STRING_LIST_INIT_DUP, .hints = STRING_LIST_INIT_DUP, .carried = STRING_LIST_INIT_DUP, \
+	.mixed = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
 
 /* spec 2.3: the allowed transitions of a demand or offer ('x') and of a link ('u'), and who makes them */
 static const struct move {
@@ -75,7 +74,10 @@ static int allowed(struct request *q, struct record *r, const char *from, const 
 	return 0;
 }
 
-/* spec 5.2-2: an integration (7.1.3), or a rebase, am or sequencer that has not stopped at a commit (git v2.53.0 wt-status.c:1791) */
+/*
+ * spec 5.2-2: an integration (7.1.3), or a rebase, am or sequencer that has
+ * not stopped at a commit (git v2.53.0 wt-status.c:1791)
+ */
 static int git_op_in_progress(void)
 {
 	static const char *const files[] = { "rebase-merge", "rebase-apply", "sequencer/todo", NULL };
@@ -112,6 +114,7 @@ static int at(const char *c)
 	       object(headref, 0, oid, NULL) && !strcmp(oid, c);
 }
 
+/* "'A' 'B'": the paths named in a message or a hint's prose, as git names them */
 static char *quoted_paths(struct string_list *paths)
 {
 	struct strbuf sb = STRBUF_INIT;
@@ -177,24 +180,24 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
 	struct string_list ait = STRING_LIST_INIT_DUP, rest = STRING_LIST_INIT_DUP;
 	struct string_list skipped = STRING_LIST_INIT_DUP, left = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	int fd = lock_worktree(top), rc = fd < 0 || !at(c), unset;
+	int fd = lock_worktree(top), rc = fd < 0 || !at(c), failed;
 
 	for_each_string_list_item(item, paths)
 		string_list_append(starts_with(item->string, ".ait/") ? &ait : &rest, item->string);
 	if (!rc && o)
 		git_run(NULL, NULL, &rc, "read-tree -i -m %s %s", o, c);
 	if (!rc && ait.nr)
-		string_list_split(&skipped, git_run(NULL, NULL, &unset, "ls-files -t -- .ait"), "\n", -1);
+		string_list_split(&skipped, git_run(NULL, NULL, &failed, "ls-files -t -- .ait"), "\n", -1);
 	for_each_string_list_item(item, &ait) {
-		int bad = rc;
-
-		if (!bad && unsorted_string_list_has_string(&skipped, xstrfmt("S %s", item->string)))
+		if (rc)
+			break;
+		if (unsorted_string_list_has_string(&skipped, xstrfmt("S %s", item->string)))
 			continue;
-		if (!bad && tree_get(ct, item->string))
-			git_run(NULL, NULL, &bad, "checkout-index -f -q -- %s", item->string);
-		else if (!bad)
-			bad = unlink(xstrfmt("%s/%s", top, item->string)) && errno != ENOENT;
-		if (bad)
+		if (tree_get(ct, item->string))
+			git_run(NULL, NULL, &failed, "checkout-index -f -q -- %s", item->string);
+		else
+			failed = unlink(xstrfmt("%s/%s", top, item->string)) && errno != ENOENT;
+		if (failed)
 			string_list_append(&left, item->string);
 	}
 	/* read-tree and checkout-index leave the entries without the files' stat data */
@@ -204,9 +207,9 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
 	}
 	/* the sparse patterns back over .ait/; when that fails, those files are left as they are */
 	if (!rc && ait.nr && sparse()) {
-		git_run(NULL, NULL, &unset, "sparse-checkout reapply");
+		git_run(NULL, NULL, &failed, "sparse-checkout reapply");
 		for_each_string_list_item(item, &ait)
-			if (unset && !unsorted_string_list_has_string(&left, item->string))
+			if (failed && !unsorted_string_list_has_string(&left, item->string))
 				string_list_append(&left, item->string);
 	}
 	if (!at(c))
@@ -237,11 +240,19 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
  */
 const char *published;
 
+/* the branch R is no longer H: another commit is on it, or it is gone where H was a commit */
+static int moved(void)
+{
+	char oid[48];
+
+	return object(headref, 0, oid, NULL) ? strcmp(oid, head ? head : "") != 0 : head != NULL;
+}
+
 int publish(const char *tree, const char *msg, struct tree *index)
 {
 	struct tree *t = tree_load(tree);
 	struct string_list paths = STRING_LIST_INIT_DUP;
-	char *o = index_before(head_tree(), t, index, &paths), *c, oid[48];
+	char *o = index_before(head_tree(), t, index, &paths), *c;
 	int rc;
 
 	c = line1(head ? git_run(msg, NULL, NULL, "commit-tree %s -p %s", tree, head) :
@@ -250,7 +261,7 @@ int publish(const char *tree, const char *msg, struct tree *index)
 	if (rc) {
 		char *why = git_failed();
 
-		if (object(headref, 0, oid, NULL) ? strcmp(oid, head ? head : "") != 0 : head != NULL)
+		if (moved())
 			return 1;
 		reject(128, NULL, "%s", why);
 	}
@@ -382,6 +393,12 @@ static const char *arg(struct request *q, int *i)
 	return q->args.v[(*i)++];
 }
 
+/* the request's own name, "contract" or "ct", which may come before its clauses (7.3.1) */
+static int contract_word(const char *a)
+{
+	return !strcmp(a, "contract") || !strcmp(a, "ct");
+}
+
 /* the words of the helper grammar (7.3.1) and the reserved aliases (1.9) */
 static int is_word(const char *a)
 {
@@ -404,7 +421,7 @@ static struct record *resolve(struct request *q, const char *k)
 	return readable(state_get(&q->s, k));
 }
 
-/* spec 3.2a: a scope list "A,B", each pinned at T; the same scope twice is a bad scope */
+/* spec 3.2a: a scope list "A,B", each pinned at T, its shape checked before (shapes()) */
 static void scope_list(struct string_list *out, const char *list, struct tree *t, struct tree *index, int allow_new,
 		       int allow_abs)
 {
@@ -415,7 +432,7 @@ static void scope_list(struct string_list *out, const char *list, struct tree *t
 	for_each_string_list_item(item, &parts) {
 		char *path = scope_path(item->string);
 
-		/* decision 5: a twin in the index refuses it too, unless the index spells it so */
+		/* 7.3.3: a case twin in the index refuses it too, unless the index spells it so */
 		if (!tree_get(index, path) && case_twin(index, path))
 			reject(128, xstrfmt("give it as git has it: '%s'", case_twin(index, path)), "bad scope: '%s'", item->string);
 		string_list_append(out, pin(item->string, t, allow_new, allow_abs));
@@ -474,14 +491,31 @@ static void new_contract(struct request *q, struct clause *c)
 	put(r, PREV, "-");
 }
 
+/* a clause of the request is named ALIAS */
+static int alias_used(struct request *q, const char *alias)
+{
+	size_t i;
+
+	for (i = 0; i < q->ncl; i++)
+		if (q->cl[i].alias && !strcmp(q->cl[i].alias, alias))
+			return 1;
+	return 0;
+}
+
+/* V is the lone "-" that keeps what a clause's contract has (7.3.1) */
+static int keeps(const char *v)
+{
+	return v && !strcmp(v, "-");
+}
+
 /* the shapes of a clause's arguments (3.1-3.2), before any tree is read (5.13-1) */
 static void shapes(const char *list, int defs, int keep)
 {
 	struct string_list parts = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
-	/* "-" keeps what a clause's contract has (7.3.2); as scopes of ID=SCOPES it is no PATH (3.1) */
-	if (!list || (keep && !strcmp(list, "-")))
+	/* "-" keeps a value in a clause; as the scopes of ID=SCOPES it is no PATH (3.1) */
+	if (!list || (keep && keeps(list)))
 		return;
 	string_list_split(&parts, list, ",", -1);
 	for_each_string_list_item(item, &parts) {
@@ -501,8 +535,7 @@ static void shapes(const char *list, int defs, int keep)
 static void parse_clauses(struct request *q)
 {
 	const char **v = q->args.v;
-	int n = q->args.nr, i = n && (!strcmp(v[0], "contract") || !strcmp(v[0], "ct"));
-	size_t k;
+	int n = q->args.nr, i = n && contract_word(v[0]);
 
 	if (i == n)
 		reject(129, NULL, "a request needs a clause");
@@ -524,14 +557,16 @@ static void parse_clauses(struct request *q)
 			c->b = arg(q, &i);
 			c->f = arg(q, &i);
 			if (i < n && !strcmp(v[i], "as")) {
+				const char *alias;
+
 				i++;
-				c->alias = arg(q, &i);
-				if (!islower(*c->alias) || strlen(c->alias) > 32 || is_word(c->alias) ||
-				    c->alias[strspn(c->alias, "abcdefghijklmnopqrstuvwxyz0123456789_")])
-					reject(129, NULL, "bad alias '%s'", c->alias);
-				for (k = 0; k + 1 < q->ncl; k++)
-					if (q->cl[k].alias && !strcmp(q->cl[k].alias, c->alias))
-						reject(129, NULL, "alias '%s' is used twice in one request", c->alias);
+				alias = arg(q, &i);
+				if (!islower(*alias) || strlen(alias) > 32 || is_word(alias) ||
+				    alias[strspn(alias, "abcdefghijklmnopqrstuvwxyz0123456789_")])
+					reject(129, NULL, "bad alias '%s'", alias);
+				if (alias_used(q, alias))
+					reject(129, NULL, "alias '%s' is used twice in one request", alias);
+				c->alias = alias;
 			}
 		} else if (!strcmp(c->verb, "amend")) {
 			c->k[0] = arg(q, &i);
@@ -552,9 +587,8 @@ static void parse_clauses(struct request *q)
 		} else {
 			reject(129, NULL, "unknown clause '%s'", c->verb);
 		}
-		/* 7.3.1: a lone "-" keeps what an amend's contract has; a new contract has nothing to keep */
-		if (strcmp(c->verb, "amend") && ((c->a && !strcmp(c->a, "-")) || (c->b && !strcmp(c->b, "-")) ||
-						 (c->f && !strcmp(c->f, "-"))))
+		/* 7.3.1: a new contract has nothing to keep */
+		if (strcmp(c->verb, "amend") && (keeps(c->a) || keeps(c->b) || keeps(c->f)))
 			reject(129, NULL, "'-' keeps a value only in amend");
 		shapes(c->a, 0, 1);
 		shapes(c->b, 0, 1);
@@ -580,8 +614,8 @@ static void apply(struct request *q, struct clause *c)
 			reject(129, NULL, "amend '%s' takes A B FILES (a demand) or B FILES (an offer)", c->k[0]);
 		if (c->future)
 			put(r, STATE, "future");
-		r->recheck = is_current(r) && (!c->b || (!strcmp(c->a ? c->a : "-", "-") && !strcmp(c->b, "-") &&
-							 !strcmp(c->f, "-")));
+		/* 7.3.2: an amend that keeps everything checks K again */
+		r->recheck = is_current(r) && (!c->b || ((!c->a || keeps(c->a)) && keeps(c->b) && keeps(c->f)));
 		if (c->b) {
 			scopes(q, r, CONSUMER, c->a ? c->a : "-");
 			scopes(q, r, PROVIDER, c->b);
@@ -610,42 +644,7 @@ static void apply(struct request *q, struct clause *c)
 	}
 }
 
-/*
- * S as a YAML string: as it is when libyaml's reader reads it back, or,
- * holding other bytes (a path git keeps as bytes), quoted as git shows such
- * a path (core.quotePath). libyaml's emitter takes UTF-8 sequences its reader
- * refuses: surrogates (ED A0..BF) and code points past U+10FFFF (F4 90.., F5..)
- */
-static const char *yaml_text(const char *s)
-{
-	struct strbuf sb = STRBUF_INIT;
-	const unsigned char *p;
-	yaml_event_t e;
-	int reads = yaml_scalar_event_initialize(&e, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1, YAML_ANY_SCALAR_STYLE);
-
-	if (reads)
-		yaml_event_delete(&e);
-	for (p = (const unsigned char *)s; reads && *p; p++)
-		if ((p[0] == 0xed && p[1] >= 0xa0) || (p[0] == 0xf4 && p[1] >= 0x90) || p[0] >= 0xf5)
-			reads = 0;
-	if (reads)
-		return s;
-	quote_c_style(s, &sb, NULL, 0);
-	return strbuf_detach(&sb, NULL);
-}
-
-/* the task named T in a result file, its name written as the check files write it */
-static struct string_list_item *task_of(struct request *q, const char *t)
-{
-	struct string_list_item *task;
-
-	for_each_string_list_item(task, &q->tasks)
-		if (!strcmp(yaml_text(task->string), t))
-			return task;
-	return NULL;
-}
-
-
+/* R does not change in this request: it means what HEAD has, or it is a new link released at once (7.3.5) */
 static int unchanged(struct record *r)
 {
 	return r->old ? as_in_head(r) : *r->id == 'u' && in_state(r, "released");
@@ -682,9 +681,11 @@ static char *hints(struct request *q)
 	return strbuf_detach(&sb, NULL);
 }
 
-/* a word of a hint command: quoted for the shell when it holds a character the shell reads (5.9a) */
+/* a word of a hint command, if there is one: quoted for the shell when it holds a character the shell reads (5.9a) */
 static void word(struct strbuf *sb, const char *w)
 {
+	if (!w)
+		return;
 	strbuf_addch(sb, ' ');
 	sq_quote_buf_pretty(sb, w);
 }
@@ -708,30 +709,25 @@ static int names(struct request *q, struct clause *c, int i, struct record *k)
 static const char *free_alias(struct request *q, const char *base)
 {
 	char *alias = xstrdup(base);
-	size_t i;
 	int n = 0;
 
-	for (i = 0; i < q->ncl; i++)
-		if (q->cl[i].alias && !strcmp(q->cl[i].alias, alias)) {
-			alias = xstrfmt("%s%d", base, ++n);
-			i = -1;
-		}
+	while (alias_used(q, alias))
+		alias = xstrfmt("%s%d", base, ++n);
 	return alias;
 }
 
 /* the words of clause C as a helper takes them; MOVED, when given, is its provider argument as it stands */
 static void clause_words(struct strbuf *sb, struct clause *c, const char *moved)
 {
-	const char *const words[] = { c->k[0], c->k[1], c->a, moved ? NULL : c->b, c->f };
-	size_t i;
-
 	strbuf_addf(sb, "%s %s", c->future ? " future" : "", c->verb);
-	for (i = 0; i < ARRAY_SIZE(words); i++) {
-		if (i == 4 && moved)
-			strbuf_addf(sb, " %s", moved);
-		if (words[i])
-			word(sb, words[i]);
-	}
+	word(sb, c->k[0]);
+	word(sb, c->k[1]);
+	word(sb, c->a);
+	if (moved)
+		strbuf_addf(sb, " %s", moved);
+	else
+		word(sb, c->b);
+	word(sb, c->f);
 	if (c->alias)
 		strbuf_addf(sb, " as %s", c->alias);
 }
@@ -751,7 +747,7 @@ static char *again(struct request *q, struct string_list *ks, char mode, const c
 	size_t i;
 
 	strbuf_addstr(&sb, "ait");
-	if (!strcmp(q->args.v[0], "contract") || !strcmp(q->args.v[0], "ct"))
+	if (contract_word(q->args.v[0]))
 		word(&sb, q->args.v[0]);
 	for (i = 0; i < q->ncl; i++) {
 		struct clause c = q->cl[i];
@@ -929,12 +925,13 @@ static void fix_hints(struct request *q, struct string_list *ids)
 
 	for_each_string_list_item(item, ids) {
 		for_each_string_list_item(sc, &((struct record *)item->util)->f[PROVIDER]) {
-			char *path = scope_path(sc->string);
+			char *path = scope_path(sc->string), *amend;
 			struct record *owner = NULL;
 
 			for (k = 0; k < q->s.nr && !owner; k++)
 				if (q->s.r[k]->old && declares(q->s.r[k]->old, path))
 					owner = q->s.r[k];
+			amend = owner ? amend_clause(owner, "-", def_paths(owner->old)) : NULL;
 			if (!owner)
 				add_hint(q, q->gate ? code_first(q, "<your code>") : "make the code meet the failed task(s) and stage it, "
 					 "then rerun without -r to get the new tasks");
@@ -944,11 +941,10 @@ static void fix_hints(struct request *q, struct string_list *ids)
 						    "fix '%s', then rerun this command" : "fix '%s' and stage it again, then rerun this command",
 						    path));
 			else if (q->gate)
-				add_hint(q, xstrfmt("fix '%s' and carry it in this request: '%s'", path,
-						    again(q, &none, 0, amend_clause(owner, "-", def_paths(owner->old)))));
+				add_hint(q, xstrfmt("fix '%s' and carry it in this request: '%s'", path, again(q, &none, 0, amend)));
 			else
 				add_hint(q, xstrfmt("fix '%s' and commit it first: 'ait %s -m <why>', then rerun this command",
-						    path, amend_clause(owner, "-", def_paths(owner->old))));
+						    path, amend));
 		}
 	}
 }
@@ -1002,6 +998,41 @@ static char *judged_tree(struct request *q, struct string_list *changed)
 	if (!(tree = tree_with(q->v->oid, info.buf, NULL)))
 		reject(128, NULL, "%s", git_failed());
 	return tree;
+}
+
+/*
+ * S as a YAML string: as it is when libyaml's reader reads it back, or,
+ * holding other bytes (a path git keeps as bytes), quoted as git shows such
+ * a path (core.quotePath). libyaml's emitter takes UTF-8 sequences its reader
+ * refuses: surrogates (ED A0..BF) and code points past U+10FFFF (F4 90.., F5..)
+ */
+static const char *yaml_text(const char *s)
+{
+	struct strbuf sb = STRBUF_INIT;
+	const unsigned char *p;
+	yaml_event_t e;
+	int reads = yaml_scalar_event_initialize(&e, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1, YAML_ANY_SCALAR_STYLE);
+
+	if (reads)
+		yaml_event_delete(&e);
+	for (p = (const unsigned char *)s; reads && *p; p++)
+		if ((p[0] == 0xed && p[1] >= 0xa0) || (p[0] == 0xf4 && p[1] >= 0x90) || p[0] >= 0xf5)
+			reads = 0;
+	if (reads)
+		return s;
+	quote_c_style(s, &sb, NULL, 0);
+	return strbuf_detach(&sb, NULL);
+}
+
+/* the task named T in a result file, its name written as the check files write it */
+static struct string_list_item *task_of(struct request *q, const char *t)
+{
+	struct string_list_item *task;
+
+	for_each_string_list_item(task, &q->tasks)
+		if (!strcmp(yaml_text(task->string), t))
+			return task;
+	return NULL;
 }
 
 /*
@@ -1087,16 +1118,21 @@ static char *task_def(struct string_list_item *task)
 	return strchr(task->string, ':') + 1;
 }
 
-/* spec 8.2 and 4.7: the check request and the result template for the tasks */
-static void write_check_files(struct request *q, const char *in, const char *req, const char *res)
+/* the style of a body in the check request: a "|" block, or "..." where libyaml's block keeps LS or PS raw (2.5.1) */
+static yaml_scalar_style_t body_style(const char *body)
 {
-	struct strbuf sb = STRBUF_INIT, old = STRBUF_INIT;
-	struct string_list kv = STRING_LIST_INIT_DUP;
+	return strstr(body, "\xe2\x80\xa8") || strstr(body, "\xe2\x80\xa9") ? YAML_DOUBLE_QUOTED_SCALAR_STYLE :
+	       YAML_LITERAL_SCALAR_STYLE;
+}
+
+/* spec 8.2: the check request: what to check, in which tree, task by task */
+static void write_request_file(struct request *q, const char *in, const char *req)
+{
+	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *task;
 	yaml_emitter_t y;
-	char *err;
 
-	/* 8.2: the tree to check, T0 for fulfill and commit, the normalized candidate T for the gate */
+	/* the tree to check: T0 for fulfill and commit, the normalized candidate T for the gate */
 	ybegin(&y, &sb);
 	ykey(&y, "input", in);
 	ykey(&y, "tree", q->gate ? judged_tree(q, NULL) : q->v->oid);
@@ -1117,9 +1153,7 @@ static void write_check_files(struct request *q, const char *in, const char *req
 		ykey(&y, "provider", shows(r, PROVIDER, q->v, was_current(r)));
 		ykey(&y, "engine", engine);
 		yscalar(&y, "body", YAML_PLAIN_SCALAR_STYLE);
-		/* libyaml's "|" writer keeps LS and PS raw, which 2.5.1 has no place for; "..." escapes them */
-		yscalar(&y, yget(kv, "body"), strstr(yget(kv, "body"), "\xe2\x80\xa8") || strstr(yget(kv, "body"), "\xe2\x80\xa9") ?
-			YAML_DOUBLE_QUOTED_SCALAR_STYLE : YAML_LITERAL_SCALAR_STYLE);
+		yscalar(&y, yget(kv, "body"), body_style(yget(kv, "body")));
 		if (!strcmp(engine, "exec")) {
 			yscalar(&y, "command", YAML_PLAIN_SCALAR_STYLE);
 			yopen(&y, 1, 1);
@@ -1138,7 +1172,20 @@ static void write_check_files(struct request *q, const char *in, const char *req
 	yend(&y);
 	mkdir(xstrfmt("%s/ait", gitdir), 0777);
 	write_state(req, sb.buf);
-	if (!read_text(&old, res) && !yaml_parse(old.buf, &kv, res, &err) && yget(&kv, "input") &&
+}
+
+/* spec 4.7 and 8.4: the result template, kept when it already answers this input, so a filled one stays */
+static void write_result_template(struct request *q, const char *in, const char *res)
+{
+	static const char *const fields[] = { "outcome", "basis", "reason", NULL };
+	struct string_list kv = STRING_LIST_INIT_DUP;
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *task;
+	yaml_emitter_t y;
+	char *err;
+	int i;
+
+	if (!read_text(&sb, res) && !yaml_parse(sb.buf, &kv, res, &err) && yget(&kv, "input") &&
 	    !strcmp(yget(&kv, "input"), in))
 		return;
 	strbuf_reset(&sb);
@@ -1151,12 +1198,10 @@ static void write_check_files(struct request *q, const char *in, const char *req
 	for_each_string_list_item(task, &q->tasks) {
 		yopen(&y, 0, 0);
 		ykey(&y, "task", task->string);
-		yscalar(&y, "outcome", YAML_PLAIN_SCALAR_STYLE);
-		yscalar(&y, "", YAML_PLAIN_SCALAR_STYLE);
-		yscalar(&y, "basis", YAML_PLAIN_SCALAR_STYLE);
-		yscalar(&y, "", YAML_PLAIN_SCALAR_STYLE);
-		yscalar(&y, "reason", YAML_PLAIN_SCALAR_STYLE);
-		yscalar(&y, "", YAML_PLAIN_SCALAR_STYLE);
+		for (i = 0; fields[i]; i++) {
+			yscalar(&y, fields[i], YAML_PLAIN_SCALAR_STYLE);
+			yscalar(&y, "", YAML_PLAIN_SCALAR_STYLE);
+		}
 		yclose(&y, 0);
 	}
 	yclose(&y, 1);
@@ -1165,9 +1210,9 @@ static void write_check_files(struct request *q, const char *in, const char *req
 }
 
 /*
- * spec 8.4: the results answer this state (0 when they do not), every task once,
- * each pass with a basis; FAILED and FAILING collect the tasks that did not pass, FAILS those that failed.
- * TEXT gets the file, for the commit message.
+ * spec 8.4: the results answer this state (0 when they do not), every task
+ * once, each pass with a basis; FAILED and FAILING collect the tasks that did
+ * not pass, FAILS those that failed. TEXT gets the file, for the message.
  */
 static int read_results(struct request *q, const char *input, struct strbuf *text, struct strbuf *failed,
 			struct string_list *failing, struct string_list *fails)
@@ -1176,7 +1221,8 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 	static const char *const schema[] = { "input s", "results l", "results.N m", "results.N.task s",
 					      "results.N.outcome s", "results.N.basis s", "results.N.reason s", NULL };
 	struct string_list *kv = &q->results, seen = STRING_LIST_INIT_DUP;
-	char *hint = xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis", q->result);
+	char *hint = xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis",
+			     q->result);
 	char *err;
 	const char *t;
 	size_t i;
@@ -1238,7 +1284,6 @@ static void also_undertaken(struct request *q, struct record *l)
 		return;
 	d = link_end(&q->s, l, 0);
 	o = link_end(&q->s, l, 1);
-
 	for (i = 0; i < q->s.nr; i++) {
 		struct record *o2 = q->s.r[i] == l ? NULL : partner(&q->s, q->s.r[i], d);
 
@@ -1302,6 +1347,20 @@ static void transitions(struct request *q)
 	}
 }
 
+/*
+ * spec 1.5b: current R is checked when it becomes current, is asked to be
+ * checked again, has its code touched, is carried by a target offer, or has
+ * pins this request changed without giving it scopes
+ */
+static int checked(struct request *q, struct record *r)
+{
+	if (!is_current(r))
+		return 0;
+	return !was_current(r) || r->recheck || touches(r->old, q->ht, q->v) || carried(q, r) ||
+	       (!unsorted_string_list_has_string(&q->scoped, r->id) &&
+		strcmp(record_text(r, PIN_KEYS), record_text(r->old, PIN_KEYS)));
+}
+
 /* spec 1.5b: the contracts this request checks, decided before anything is pinned again */
 static void check_set(struct request *q)
 {
@@ -1317,9 +1376,7 @@ static void check_set(struct request *q)
 			repin(r, CONSUMER, q->v, 1);
 			repin(r, PROVIDER, q->v, 1);
 		}
-		if (is_current(r) && (!was_current(r) || r->recheck || touches(r->old, q->ht, q->v) ||
-				      carried(q, r) ||
-				      (!unsorted_string_list_has_string(&q->scoped, r->id) && strcmp(record_text(r, PIN_KEYS), record_text(r->old, PIN_KEYS)))))
+		if (checked(q, r))
 			string_list_append(&q->conf, r->id)->util = r;
 	}
 	string_list_sort(&q->conf);
@@ -1331,13 +1388,13 @@ static void check_set(struct request *q)
 /* spec 7.7.3-4: the code to check is there; abstract contracts need a scope first */
 static void code_present(struct request *q)
 {
-	struct string_list write = STRING_LIST_INIT_DUP, stage = STRING_LIST_INIT_DUP, missing = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *sc;
-	int moved = 0;
 
 	for_each_string_list_item(item, &q->conf) {
-		struct record *k = item->util;
+		struct string_list write = STRING_LIST_INIT_DUP, stage = STRING_LIST_INIT_DUP, missing = STRING_LIST_INIT_DUP;
 		struct string_list one = STRING_LIST_INIT_DUP;
+		struct record *k = item->util;
+		int moved = 0;
 
 		string_list_append(&one, k->id)->util = k;
 		if (is_abstract(k))
@@ -1348,7 +1405,7 @@ static void code_present(struct request *q)
 			char *file = scope_path(sc->string);
 			int written = !access(xstrfmt("%s/%s", top, file), F_OK), new = starts_with(sc->string, "new:");
 
-			/* decision 5: the file came in another case; git add keeps that spelling */
+			/* 7.3.3: the file came in another case; git add keeps that spelling */
 			if (case_twin(q->v, file))
 				reject(128, xstrfmt("give it as git has it: '%s'", case_twin(q->v, file)), "bad scope: '%s'", sc->string);
 			if (!written && new)
@@ -1369,10 +1426,6 @@ static void code_present(struct request *q)
 				 xstrfmt("if it was moved, rerun with '%s=%s'", k->id, moved_arg(k, q->v)));
 		if (write.nr || stage.nr || moved)
 			string_list_append(&q->missing, item->string)->util = item->util;
-		string_list_clear(&write, 0);
-		string_list_clear(&stage, 0);
-		string_list_clear(&missing, 0);
-		moved = 0;
 	}
 	if (!q->missing.nr)
 		return;
@@ -1554,8 +1607,10 @@ static int finish(struct request *q)
 	    !read_results(q, input, &results, &failed, &failing, &fails))
 		strbuf_reset(&results);
 	if (q->first.code || (q->tasks.nr && !q->force && !results.len)) {
-		if (input && q->tasks.nr)
-			write_check_files(q, input, req, res);
+		if (input && q->tasks.nr) {
+			write_request_file(q, input, req);
+			write_result_template(q, input, res);
+		}
 		report(q, req, res, input && q->tasks.nr);
 		if (q->first.code)
 			reject(q->first.code, q->first.hint, "%s", q->first.msg);
@@ -1567,7 +1622,8 @@ static int finish(struct request *q)
 	if (failed.len) {
 		/* 5.8 E_CHECK_FAILED: an unknown task is checked again elsewhere, a failed one is fixed */
 		if (failing.nr > fails.nr) {
-			add_hint(q, xstrfmt("check it where its environment is available (see '%s') and rerun with -r %s", req, quoted(res)));
+			add_hint(q, xstrfmt("check it where its environment is available (see '%s') and rerun with -r %s", req,
+					    quoted(res)));
 			add_hint(q, "if it is trivial, add --force (recorded as forced)");
 		}
 		fix_hints(q, &fails);
@@ -1657,11 +1713,14 @@ int cmd_fulfill(int argc, const char **argv)
 		session(1);
 	load(&q);
 	q.v = q.noted;
-	for_each_string_list_item(item, &ids)
-		if (!state_get(&q.s, item->string) || *item->string == 'u')
+	/* each target's record, kept with its ID=SCOPES */
+	for_each_string_list_item(item, &ids) {
+		struct record *r = state_get(&q.s, item->string);
+
+		if (!r || *item->string == 'u')
 			reject(128, NULL, "no such contract: '%s'", item->string);
-		else
-			readable(state_get(&q.s, item->string));
+		readable(r);
+	}
 	if (q.fulfill)
 		carry(&q, &ids);
 	/* the selected targets: plain IDs, and ID=SCOPES of a future contract that no target offer carries */
@@ -1671,17 +1730,23 @@ int cmd_fulfill(int argc, const char **argv)
 		if (q.fulfill && (!item->util || (in_state(r, "future") && !carried(&q, r))))
 			select_promise(&q, r);
 	}
-	for_each_string_list_item(item, &q.carried)
-		if (in_state(state_get(&q.s, item->string), "future"))
-			put(state_get(&q.s, item->string), STATE, "current");
-	for_each_string_list_item(item, &ids)
-		if (item->util) {
-			string_list_append(&q.scoped, item->string);
-			/* 7.7.1: only what becomes or stays current is checked, so only it takes scopes (5.13-4) */
-			if (!is_current(state_get(&q.s, item->string)))
-				reject(128, NULL, "bad scope: '%s' is not checked by this command", item->string);
-			given_scopes(&q, state_get(&q.s, item->string), item->util);
-		}
+	for_each_string_list_item(item, &q.carried) {
+		struct record *d = state_get(&q.s, item->string);
+
+		if (in_state(d, "future"))
+			put(d, STATE, "current");
+	}
+	for_each_string_list_item(item, &ids) {
+		struct record *r = state_get(&q.s, item->string);
+
+		if (!item->util)
+			continue;
+		string_list_append(&q.scoped, item->string);
+		/* 7.7.1: only what becomes or stays current is checked, so only it takes scopes (5.13-4) */
+		if (!is_current(r))
+			reject(128, NULL, "bad scope: '%s' is not checked by this command", item->string);
+		given_scopes(&q, r, item->util);
+	}
 	if (q.fulfill && !q.selected.nr)
 		reject(129, NULL, "nothing to fulfill: give the IDs of future contracts");
 	tree_diff(q.ht, q.v, &paths);
@@ -1737,6 +1802,41 @@ static char *missing_hint(struct request *q, const char *path)
 }
 
 /*
+ * spec 7.3.3: PATH is a spec file git can stage as it is in the work tree: no
+ * case twin in HEAD or the index, a file there and not reached through a
+ * symlink, and not under a file git has (rule 3: a contract commit changes no code)
+ */
+static void judge_file(struct request *q, const char *path)
+{
+	const char *why = not_a_file(path), *in_head = case_twin(q->ht, path), *in_index = case_twin(q->index, path);
+	const char *twin = in_head ? in_head : in_index, *slash;
+	struct stat st;
+
+	/* git add stages nothing for a path that differs in case only from one git has */
+	if (in_head && in_index && strcmp(in_head, in_index))
+		reject(1, "spell it the same in HEAD and the index, then rerun this command",
+		       "spec files do not match the contract: '%s' is '%s' and '%s' in git", path, in_head, in_index);
+	if (twin && (tree_get(q->ht, path) || tree_get(q->index, path)))
+		reject(1, xstrfmt("spell it the same in HEAD and the index ('%s' there), then rerun this command", twin),
+		       "spec files do not match the contract: '%s' is '%s' in git", path, twin);
+	if (twin)
+		reject(1, xstrfmt("give it as git has it: '%s'", twin),
+		       "spec files do not match the contract: '%s' is '%s' in git", path, twin);
+	if (why)
+		reject(1, NULL, "spec files do not match the contract: '%s' %s", path, why);
+	for (slash = strchr(path, '/'); slash; slash = strchr(slash + 1, '/')) {
+		char *up = xstrndup(path, slash - path);
+
+		/* git add would put the directory in that file's place */
+		if (file_entry(q->ht, up) || file_entry(q->noted, up))
+			reject(1, xstrfmt("remove '%s' and run 'ait commit -m <why>' first, then rerun this command", up),
+			       "spec files do not match the contract: '%s' is under the file '%s' in git", path, up);
+	}
+	if (lstat(xstrfmt("%s/%s", top, path), &st))
+		reject(1, missing_hint(q, path), "spec files do not match the contract: missing '%s'", path);
+}
+
+/*
  * spec 7.3.3: the files of the request from the work tree on HEAD, staged by
  * git as git stages them; each a regular file, and the index holding HEAD's
  * version or the work tree's (no partial staging); git failing is E_GIT
@@ -1748,35 +1848,8 @@ static struct tree *stage_files(struct request *q)
 	struct tree *u;
 	char *tree;
 
-	for_each_string_list_item(item, &q->files) {
-		const char *why = not_a_file(item->string);
-		const char *in_head = case_twin(q->ht, item->string), *in_index = case_twin(q->index, item->string), *slash;
-		struct stat st;
-
-		/* decision 5: a path of HEAD or the index differs from it in case only; git add stages nothing then */
-		if (in_head && in_index && strcmp(in_head, in_index))
-			reject(1, "spell it the same in HEAD and the index, then rerun this command",
-			       "spec files do not match the contract: '%s' is '%s' and '%s' in git", item->string, in_head, in_index);
-		if ((in_head || in_index) && (tree_get(q->ht, item->string) || tree_get(q->index, item->string)))
-			reject(1, xstrfmt("spell it the same in HEAD and the index ('%s' there), then rerun this command",
-					  in_head ? in_head : in_index),
-			       "spec files do not match the contract: '%s' is '%s' in git", item->string, in_head ? in_head : in_index);
-		if (in_head || in_index)
-			reject(1, xstrfmt("give it as git has it: '%s'", in_head ? in_head : in_index),
-			       "spec files do not match the contract: '%s' is '%s' in git", item->string, in_head ? in_head : in_index);
-		if (why)
-			reject(1, NULL, "spec files do not match the contract: '%s' %s", item->string, why);
-		for (slash = strchr(item->string, '/'); slash; slash = strchr(slash + 1, '/')) {
-			char *up = xstrndup(item->string, slash - item->string);
-
-			/* rule 3: a contract commit changes no code; git add would put the directory in that file's place */
-			if (file_entry(q->ht, up) || file_entry(q->noted, up))
-				reject(1, xstrfmt("remove '%s' and run 'ait commit -m <why>' first, then rerun this command", up),
-				       "spec files do not match the contract: '%s' is under the file '%s' in git", item->string, up);
-		}
-		if (lstat(xstrfmt("%s/%s", top, item->string), &st))
-			reject(1, missing_hint(q, item->string), "spec files do not match the contract: missing '%s'", item->string);
-	}
+	for_each_string_list_item(item, &q->files)
+		judge_file(q, item->string);
 	/* on HEAD, the index's own versions of the files, so git add starts where the index is (core.fileMode) */
 	for_each_string_list_item(item, &q->files) {
 		struct entry *was = file_entry(q->noted, item->string);
@@ -1827,7 +1900,7 @@ int cmd_request(int argc, const char **argv)
 
 	q.gate = 1;
 	parse_options(&q, argc, argv);
-	if (q.args.nr > 1 && (!strcmp(q.args.v[0], "contract") || !strcmp(q.args.v[0], "ct")) && one_of(q.args.v[1], direct))
+	if (q.args.nr > 1 && contract_word(q.args.v[0]) && one_of(q.args.v[1], direct))
 		unsupported(xstrfmt("contract %s", q.args.v[1]));
 	parse_clauses(&q);
 	read_files(&q);

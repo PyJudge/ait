@@ -600,13 +600,14 @@ static char *hooks_dir(void)
 	return line1(git("rev-parse --path-format=absolute --git-path hooks"));
 }
 
-/* the shell lines that make a hook of a user's run "ait hook NAME", stdin passed on for pre-push (7.1.1) */
+/* the shell lines of 7.1.1 that make a hook of a user's run "ait hook NAME", stdin passed on for pre-push */
 static char *hook_lines(const char *name)
 {
 	if (strcmp(name, "pre-push"))
 		return xstrfmt("if command -v ait >/dev/null 2>&1; then ait hook %s \"$@\" || exit $?; fi", name);
 	return xstrdup("t=$(mktemp) && cat > \"$t\" || exit 1\n"
-		       "if command -v ait >/dev/null 2>&1; then ait hook pre-push \"$@\" < \"$t\" || { s=$?; rm -f \"$t\"; exit $s; }; fi\n"
+		       "if command -v ait >/dev/null 2>&1; then ait hook pre-push \"$@\" < \"$t\" "
+		       "|| { s=$?; rm -f \"$t\"; exit $s; }; fi\n"
 		       "exec < \"$t\"; rm -f \"$t\"");
 }
 
