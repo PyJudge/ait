@@ -110,7 +110,10 @@ write('wrapper.c', '#include "git-compat-util.h"\n#include "strbuf.h"\n', [
     fn('wrapper.c', 21), fn('wrapper.c', 41), fn('wrapper.c', 49), fn('wrapper.c', 74), fn('wrapper.c', 79),
     fn('wrapper.c', 95), fn('wrapper.c', 111), fn('wrapper.c', 116), fn('wrapper.c', 130), fn('wrapper.c', 146),
     fn('wrapper.c', 171), fn('wrapper.c', 205), fn('wrapper.c', 228), fn('wrapper.c', 250), fn('wrapper.c', 286),
-    fn('wrapper.c', 305), fn('wrapper.c', 375), fn('wrapper.c', 682), fn('wrapper.c', 691), fn('compat/nonblock.c', 6), fn('compat/qsort_s.c', 9), fn('compat/qsort_s.c', 48)])
+    fn('wrapper.c', 305), fn('wrapper.c', 346), fn('wrapper.c', 375), fn('wrapper.c', 682), fn('wrapper.c', 691), fn('compat/nonblock.c', 6), fn('compat/qsort_s.c', 9), fn('compat/qsort_s.c', 48)])
+# setup: the standard descriptors open, as git's common main makes them before anything (common-init.c:45)
+write('setup.c', '#include "git-compat-util.h"\n#include "setup.h"\n', [fn('setup.c', 2074)])
+write('setup.h', '#ifndef SETUP_H\n#define SETUP_H\n', ['void sanitize_stdfds(void);\n#endif'])
 # utf8: validity only; is_utf8 steps with pick_one_utf8_char instead of utf8_width, which also measures the column width
 write('utf8.c', '#include "git-compat-util.h"\n#include "utf8.h"\n', [
     fn('utf8.c', 122), fn('utf8.c', 241)],
@@ -174,6 +177,7 @@ ssize_t xwrite(int fd, const void *buf, size_t len);
 ssize_t read_in_full(int fd, void *buf, size_t count);
 ssize_t write_in_full(int fd, const void *buf, size_t count);
 FILE *xfdopen(int fd, const char *mode);
+int xdup(int fd);
 int enable_pipe_nonblock(int fd);
 void write_file_buf(const char *path, const char *buf, size_t len);
 __attribute__((format (printf, 2, 3)))

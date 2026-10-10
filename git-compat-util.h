@@ -72,6 +72,7 @@ ssize_t xwrite(int fd, const void *buf, size_t len);
 ssize_t read_in_full(int fd, void *buf, size_t count);
 ssize_t write_in_full(int fd, const void *buf, size_t count);
 FILE *xfdopen(int fd, const char *mode);
+int xdup(int fd);
 int enable_pipe_nonblock(int fd);
 void write_file_buf(const char *path, const char *buf, size_t len);
 __attribute__((format (printf, 2, 3)))

@@ -372,8 +372,11 @@ void state_load(struct state *s, struct tree *t)
 		/* 2.1.2a: the init file is no record; only its one line is checked, and it stays as T has it */
 		if (!strcmp(id, "init"))
 			r->bad = text && !strcmp(text, "version 1\n") ? NULL : xstrdup("must be the single line 'version 1'");
-		else if (strcmp(e->mode, "100644") || !id_ok(id))
+		else if (strcmp(e->mode, "100644") || !id_ok(id)) {
+			/* 2.1.3: no record was ever there to restore */
 			r->bad = xstrdup("not a record path");
+			r->mend = xstrfmt("remove '.ait/%s'", id);
+		}
 		else if (!text)
 			r->bad = xstrdup("not a text file");
 		else
@@ -389,12 +392,16 @@ void state_load(struct state *s, struct tree *t)
 			continue;
 		d = link_end(s, r, 0);
 		o = link_end(s, r, 1);
-		if (!d || !o || *d->id != 'D' || *o->id != 'O')
+		if (!d || !o || *d->id != 'D' || *o->id != 'O') {
+			/* the link is as it was; what went is its end */
 			r->bad = r->old->bad = xstrdup("its demand or offer does not exist");
+			r->mend = r->old->mend = xstrfmt("restore '.ait/%s' as in the last commit where it was there",
+							 d && *d->id == 'D' ? r->id + 24 : xstrndup(r->id + 10, 13));
+		}
 	}
 }
 
-static int oid_ok(const char *s)
+int oid_ok(const char *s)
 {
 	return s && strlen(s) == 40 && strspn(s, "0123456789abcdef") == 40;
 }
@@ -467,16 +474,23 @@ static int fail_with(struct verdict *v, int code, const char *word, char *hint, 
 	return code;
 }
 
+/* 5.10: a malformed record stops with its error; the mend is the one chosen where it was found malformed */
 static int bad_record(struct verdict *v, struct record *r, const char *why)
 {
-	return fail_with(v, 128, "format", xstrfmt("records are written only by ait; restore '.ait/%s' as in the "
-						   "last commit where it was valid, then commit that alone as "
-						   "spec/ait-mini.md says", r->id),
+	return fail_with(v, 128, "format", xstrfmt("records are written only by ait; %s, then commit that alone as "
+						   "spec/ait-mini.md says", r->mend ? r->mend :
+						   xstrfmt("restore '.ait/%s' as in the last commit where it was valid", r->id)),
 			 xstrfmt("bad format: '.ait/%s': %s", r->id, why));
 }
 
 static const char *const contract_states[] = { "future", "current", "cancelled", "withdrawn", NULL };
 static const char *const link_states[] = { "undertaken", "released", NULL };
+
+/* R means what its HEAD version means: the request did not change it (prev aside, 6.2) */
+static int as_in_head(struct record *r)
+{
+	return r->old && !strcmp(record_text(r, MEANING_KEYS), record_text(r->old, MEANING_KEYS));
+}
 
 /* spec 5.9 a-c for one record: how many values each key has, each value, role and state; NULL when it holds */
 static char *record_check(struct record *r)
@@ -521,6 +535,14 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 			continue;
 		d = link_end(s, r, 0);
 		o = link_end(s, r, 1);
+		/* 5.9a transition hint 1: an error HEAD already had is not this request's, so it is mended as 5.10 says */
+		if (in_state(r, "undertaken") && is_current(o) && in_state(d, "future") && as_in_head(r) && as_in_head(d) &&
+		    as_in_head(o))
+			return fail_with(v, 1, "state", xstrfmt("records are written only by ait; restore '.ait/%s' '.ait/%s' "
+								 "'.ait/%s' as in the last commit where they were valid, then "
+								 "commit that alone as spec/ait-mini.md says, then rerun this "
+								 "command", d->id, o->id, r->id),
+					 xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
 		if (in_state(r, "undertaken") && is_current(o) && in_state(d, "future")) {
 			fail_with(v, 1, "state", was_current(d) ?
 				  xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: "
@@ -836,27 +858,56 @@ char *pins(struct record *r)
 	return hit->util;
 }
 
-/* the confirmed pins: every "Ait-Check: ID reported|forced PINS" in HEAD's history, read when first asked */
+/*
+ * every Ait-Check value in HEAD's history as git's trailer parser gives it (5.4),
+ * a folded one unfolded, with the commit that holds it as util; read once
+ */
+static struct string_list *check_trailers(void)
+{
+	static struct string_list values = STRING_LIST_INIT_DUP;
+	static int loaded;
+	const char *p, *end;
+
+	if (loaded++ || !head)
+		return &values;
+	/* "COMMIT\1VALUE\1VALUE..." NUL-terminated per commit: neither byte is in a value */
+	p = git("log -z --format=%H%x01%(trailers:key=Ait-Check,valueonly,unfold,separator=%x01) %s", head);
+	for (end = p + git_out_len; p < end; p += strlen(p) + 1) {
+		struct string_list fields = STRING_LIST_INIT_DUP;
+		size_t i;
+
+		string_list_split(&fields, p, "\x01", -1);
+		for (i = 1; i < fields.nr; i++)
+			if (*fields.items[i].string)
+				string_list_append(&values, fields.items[i].string)->util = xstrdup(fields.items[0].string);
+	}
+	return &values;
+}
+
+/* an Ait-Check value that is exactly "ID reported|forced PINS" (5.4): "ID PINS", else NULL */
+static char *check_of(const char *value)
+{
+	static const char *const how[] = { "reported", "forced", NULL };
+	char id[48], word[16], p[48], more;
+
+	if (sscanf(value, "%47s %15s %47s %c", id, word, p, &more) == 3 && one_of(word, how) && oid_ok(p) &&
+	    !strcmp(value, xstrfmt("%s %s %s", id, word, p)))
+		return xstrfmt("%s %s", id, p);
+	return NULL;
+}
+
+/* the confirmed pins: "ID PINS" of every check in HEAD's history */
 static struct string_list *checks(void)
 {
 	static struct string_list confirmed = STRING_LIST_INIT_DUP;
 	static int loaded;
-	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
-	if (loaded++ || !head)
+	if (loaded++)
 		return &confirmed;
-	string_list_split(&lines, git("log --format=%(trailers:key=Ait-Check,valueonly,separator=%x0a) %s", head),
-			  "\n", -1);
-	/* spec 5.4: exactly "ID reported|forced PINS" */
-	for_each_string_list_item(item, &lines) {
-		static const char *const how[] = { "reported", "forced", NULL };
-		char id[48], word[16], p[48], more;
-
-		if (sscanf(item->string, "%47s %15s %47s %c", id, word, p, &more) == 3 && one_of(word, how) && oid_ok(p) &&
-		    !strcmp(item->string, xstrfmt("%s %s %s", id, word, p)))
-			string_list_insert(&confirmed, xstrfmt("%s %s", id, p));
-	}
+	for_each_string_list_item(item, check_trailers())
+		if (check_of(item->string))
+			string_list_insert(&confirmed, check_of(item->string));
 	return &confirmed;
 }
 
@@ -901,37 +952,40 @@ static int same_pins(const char *text, struct record *r)
 /*
  * 9.1 for H8: the commit of HEAD's first-parent history where R became unverified
  * with the pins it has now: going back from HEAD while the commit holds R current
- * with these pins and R is unverified there, the last such commit. ait looks 100 commits back.
+ * with these pins and R is unverified there, the last such commit. Verified at C
+ * is what unverified() says at HEAD: a commit with the check is C or an ancestor
+ * of C, and C's tree has what the pins name. NULL when the 100 commits ait looks
+ * at end before that.
  */
 const char *unverified_since(struct record *r)
 {
-	struct string_list lines = STRING_LIST_INIT_DUP;
+	struct string_list confirmed = STRING_LIST_INIT_DUP, walk = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
 	const char *record = blob_at(head_tree(), xstrfmt(".ait/%s", r->id)), *since = NULL;
-	char *pinned = xstrfmt(" %s", pins(r)), *found = xstrfmt("\t%s ", r->id);
-	size_t i, checked = 0;
+	char *want = xstrfmt("%s %s", r->id, pins(r));
+	size_t i;
 
 	if (!head)
 		return NULL;
-	/* "C<TAB>ID HOW PINS<TAB>...": the oldest commit that holds the check of these pins confirms all after it */
-	string_list_split(&lines, git("log --first-parent -n 100 --format=%H%x09%(trailers:key=Ait-Check,valueonly,"
-				      "separator=%x09) %s", head), "\n", -1);
-	for (i = 0; i < lines.nr; i++) {
-		const char *at = strstr(lines.items[i].string, found);
-
-		if (at && starts_with(strchrnul(at + strlen(found), ' '), pinned))
-			checked = i + 1;
-	}
-	for (i = 0; i < lines.nr && *lines.items[i].string; i++) {
-		char *commit = xstrndup(lines.items[i].string, 40);
-		struct tree *t = tree_load(commit);
+	for_each_string_list_item(item, check_trailers())
+		if (check_of(item->string) && !strcmp(check_of(item->string), want)) {
+			string_list_insert(&confirmed, item->util);
+			string_list_split(&confirmed, git("rev-list --ancestry-path %s", xstrfmt("%s..%s", (char *)item->util, head)),
+					  "\n", -1);
+		}
+	string_list_sort(&confirmed);
+	string_list_split(&walk, git("log --first-parent -n 100 --format=%H %s", head), "\n", -1);
+	for (i = 0; i < walk.nr && *walk.items[i].string; i++) {
+		struct tree *t = tree_load(walk.items[i].string);
 		const char *there = blob_at(t, xstrfmt(".ait/%s", r->id));
 
 		/* 9.1: the same pins (provider and file lines) of a current contract; prev alone is no change */
-		if (!there || (strcmp(there, record) && !same_pins(blob_text(there), r)) || (i < checked && !off_pins(r, t)))
-			break;
-		since = commit;
+		if (!there || (strcmp(there, record) && !same_pins(blob_text(there), r)) ||
+		    (string_list_has_string(&confirmed, walk.items[i].string) && !off_pins(r, t)))
+			return since;
+		since = walk.items[i].string;
 	}
-	return since;
+	return walk.nr > 100 ? NULL : since;
 }
 
 /* spec 2.5.2: an input of the definition DEF is a PATH of 3.1 */

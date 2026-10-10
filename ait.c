@@ -5,6 +5,7 @@
 #include "ait.h"
 #include "run-command.h"
 #include "quote.h"
+#include "setup.h"
 #include <dirent.h>
 #include <sys/file.h>
 #include <regex.h>
@@ -191,7 +192,9 @@ static void setup(int bare_ok)
 	int i, major = 0, minor = 0, rc;
 	char oid[48];
 
-	sscanf(git("version"), "git version %d.%d", &major, &minor);
+	/* ait runs on git: without it nothing can be read */
+	if (sscanf(git_run(NULL, NULL, &rc, "version"), "git version %d.%d", &major, &minor) != 2)
+		reject(128, "install git 2.36 or later", "cannot run git");
 	/* "git cat-file --batch-command" came in 2.36 (git v2.53.0 Documentation/RelNotes/2.36.0.adoc:75) */
 	if (major < 2 || (major == 2 && minor < 36))
 		reject(128, "install git 2.36 or later", "git %d.%d is too old for ait", major, minor);
@@ -278,8 +281,8 @@ static int held(const char *wt)
 	return fd;
 }
 
-/* local state is written whole; a failure is E_IO (spec 5.7) */
-static void write_state(const char *path, const char *text)
+/* a file ait writes is written whole; a failure is E_IO (spec 5.7, 5.8) */
+void write_state(const char *path, const char *text)
 {
 	char *tmp = xstrfmt("%s.%d.tmp", path, (int)getpid());
 	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0666);
@@ -532,7 +535,8 @@ static int cmd_init(int argc, const char **argv)
 		int rc = 0;
 
 		if (access(path, F_OK) && !in_repo) {
-			write_file(path, "#!/bin/sh\ncommand -v ait >/dev/null 2>&1 || exit 0\nexec ait hook %s \"$@\"\n", hooks[i]);
+			write_state(path, xstrfmt("#!/bin/sh\ncommand -v ait >/dev/null 2>&1 || exit 0\nexec ait hook %s \"$@\"\n",
+						  hooks[i]));
 			chmod(path, 0755);
 			continue;
 		}
@@ -605,13 +609,21 @@ static int pre_push(void)
 
 	strbuf_read(&in, 0, 0);
 	string_list_split(&lines, in.buf, "\n", -1);
+	/*
+	 * githooks(5): "LOCAL-REF SP LOCAL-OID SP REMOTE-REF SP REMOTE-OID"; the local
+	 * name is what was given, spaces and all, so the fields are read from the right
+	 */
 	for (i = 0; i < lines.nr; i++) {
-		char ref[1024], oid[48];
+		struct string_list fields = STRING_LIST_INIT_DUP;
+		const char *oid;
 
-		if (sscanf(lines.items[i].string, "%1023s %47s", ref, oid) != 2 || strspn(oid, "0") == strlen(oid) ||
-		    !object(xstrfmt("%s^{commit}", oid), 0, NULL, NULL))
+		if (!*lines.items[i].string)
 			continue;
-		validate_at(tree_load(oid));
+		string_list_split(&fields, lines.items[i].string, " ", -1);
+		if (fields.nr < 4 || !oid_ok(oid = fields.items[fields.nr - 3].string))
+			reject(128, NULL, "bad pre-push input '%s'", lines.items[i].string);
+		if (strspn(oid, "0") != strlen(oid) && object(xstrfmt("%s^{commit}", oid), 0, NULL, NULL))
+			validate_at(tree_load(oid));
 	}
 	return 0;
 }
@@ -851,8 +863,9 @@ static int cmd_todo(int argc, const char **argv)
 		file_lines("file", r, t);
 		link_lines(&s, r, t);
 		putchar('\n');
-		if (unver)
-			recheck_hint(&hs, state_get(&hs, r->id) ? state_get(&hs, r->id) : r, ht, 0);
+		/* H7 and H8 are about K unverified in HEAD, where the amend runs; staged changes are commit's (7.7a) */
+		if (unver && state_get(&hs, r->id) && is_current(state_get(&hs, r->id)) && unverified(state_get(&hs, r->id), ht))
+			recheck_hint(&hs, state_get(&hs, r->id), ht, 0);
 		/* H10: my future offer, or my demand that was reopened (mini counts what I made, 1.3) */
 		else if (future && mine && (*r->id == 'O' || reopened(r)))
 			fulfill_hint(&s, r, t);
@@ -885,9 +898,34 @@ static struct cmd {
 };
 
 /* after git v2.53.0 git.c: run the command from the table, hand the rest to git (spec 7.14) */
+/* git v2.53.0 git.c:512-527 (run_builtin), with the message of 5.8 E_IO: a command's output reached stdout */
+static int check_stdout(void)
+{
+	struct stat st;
+
+	/* Somebody closed stdout? */
+	if (fstat(fileno(stdout), &st))
+		return 0;
+	/* Ignore write errors for pipes and sockets.. */
+	if (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode))
+		return 0;
+
+	/* Check for ENOSPC and EIO errors.. */
+	if (fflush(stdout))
+		die_errno("write error: standard output");
+	if (ferror(stdout))
+		die("write error: standard output");
+	if (fclose(stdout))
+		die_errno("write error: standard output");
+	return 0;
+}
+
 int main(int argc, const char **argv)
 {
 	size_t i;
+
+	/* the standard descriptors are open before anything, as in git's common main (common-init.c:45) */
+	sanitize_stdfds();
 
 	if (argc < 2) {
 		puts("usage: ait <command> [<args>]\n\nsee spec/ait-mini.md for the commands of ait-mini");
@@ -902,7 +940,7 @@ int main(int argc, const char **argv)
 		session_prefix();
 		if (strcmp(argv[1], "init") && strcmp(argv[1], "hook"))
 			check_hooks();
-		return commands[i].fn(argc - 1, argv + 1);
+		return commands[i].fn(argc - 1, argv + 1) || check_stdout();
 	}
 	execvp("git", (char *const *)argv);
 	die_errno("cannot run git");

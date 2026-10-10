@@ -22,6 +22,7 @@ char *line1(char *s);
 void newid(char *out, int prefix);
 const char *session(int need);
 int lock_worktree(const char *wt);
+void write_state(const char *path, const char *text);
 int integrating(void);
 extern char agent[72], sid[16];
 
@@ -43,7 +44,8 @@ struct record {
 	struct string_list f[NKEYS];
 	struct record *old;		/* the HEAD version */
 	const char *alias;
-	char *bad;
+	char *bad;			/* why it is malformed (5.10), and how to mend it: */
+	char *mend;			/* "remove 'PATH'" or "restore 'PATH' ..." */
 	int seq, recheck;
 	int clause;			/* 1 + the helper clause that made it */
 };
@@ -85,6 +87,7 @@ char *def_paths(struct record *r);
 int declares(struct record *r, const char *path);
 int contract_path(struct state *s, const char *path);
 int path_ok(const char *p);
+int oid_ok(const char *s);
 int agent_ok(const char *name);
 void no_range(const char *arg);
 void scope_shape(const char *arg);

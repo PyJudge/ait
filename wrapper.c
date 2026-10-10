@@ -266,6 +266,15 @@ ssize_t write_in_full(int fd, const void *buf, size_t count)
 	return total;
 }
 
+/* git v2.53.0 wrapper.c:346 */
+int xdup(int fd)
+{
+	int ret = dup(fd);
+	if (ret < 0)
+		die_errno("dup failed");
+	return ret;
+}
+
 /* git v2.53.0 wrapper.c:375 */
 FILE *xfdopen(int fd, const char *mode)
 {

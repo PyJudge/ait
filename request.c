@@ -781,21 +781,44 @@ static char *gate_hint(struct request *q, struct verdict *v)
 		       again(q, &set, 'f', NULL));
 }
 
+/*
+ * 5.9a, code first for the gate: commit code that meets the condition with ait
+ * commit, which would be E_MIXED while spec files are staged; so they go first
+ */
+static char *code_first(struct request *q, const char *code)
+{
+	struct string_list paths = STRING_LIST_INIT_DUP, staged = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+
+	tree_diff(q->ht, q->noted, &paths);
+	for_each_string_list_item(item, &paths)
+		if (contract_path(&q->s, item->string))
+			string_list_append(&staged, item->string);
+	return xstrfmt("%scommit code that meets it first: stage %s and run 'ait commit -m <why>', then rerun this command",
+		       staged.nr ? xstrfmt("unstage %s first; then ", quoted_paths(&staged)) : "", code);
+}
+
+/* "rerun this command", or the command without the ID=SCOPES of what SET reopens, which leaves the check set (5.9a) */
+static char *then_rerun(struct request *q, struct string_list *set)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, set)
+		if (unsorted_string_list_has_string(&q->scoped, item->string))
+			return xstrfmt("rerun '%s'", rerun(q, set, NULL));
+	return xstrdup("rerun this command");
+}
+
 /* the reopen hint of 5.9a: inside the helper's request, or run first before fulfill or commit again */
 static char *reopen_hint(struct request *q, struct record *k)
 {
 	struct string_list set = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	int scoped = 0;
 
 	reopen_set(&q->s, k, &set);
 	if (q->gate)
 		return xstrfmt("to change '%s' without a check, reopen it: '%s'", k->id, again(q, &set, 'f', NULL));
-	/* what is reopened leaves the check set, so its ID=SCOPES leaves the command (5.9a, 7.7.1) */
-	for_each_string_list_item(item, &set)
-		scoped |= unsorted_string_list_has_string(&q->scoped, item->string);
 	return xstrfmt("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>', then %s", k->id,
-		       reopen_ids(&q->s, k), scoped ? xstrfmt("rerun '%s'", rerun(q, &set, NULL)) : "rerun this command");
+		       reopen_ids(&q->s, k), then_rerun(q, &set));
 }
 
 /*
@@ -845,9 +868,8 @@ static void fix_hints(struct request *q, struct string_list *ids)
 				if (q->s.r[k]->old && declares(q->s.r[k]->old, path))
 					owner = q->s.r[k];
 			if (!owner)
-				add_hint(q, q->gate ? "commit code that meets it first: stage <your code> and run 'ait commit -m <why>', "
-					 "then rerun this command" : "make the code meet the failed task(s) and stage it, then rerun "
-					 "without -r to get the new tasks");
+				add_hint(q, q->gate ? code_first(q, "<your code>") : "make the code meet the failed task(s) and stage it, "
+					 "then rerun without -r to get the new tasks");
 			else if (q->gate && unsorted_string_list_has_string(&q->files, path))
 				add_hint(q, xstrfmt("fix '%s', then rerun this command", path));
 			else if (q->gate)
@@ -879,8 +901,8 @@ static void condition_hint(struct request *q, struct record *k)
 			strbuf_addf(&sb, "ait future amend %s %s<new defs>", k->id, *k->id == 'D' ? "- - " : "- ");
 		else
 			strbuf_addf(&sb, " future amend %s", item->string);
-	add_hint(q, xstrfmt("to change its condition, reopen it with the new one: '%s -m <why>', then rerun this command",
-			    sb.buf));
+	add_hint(q, xstrfmt("to change its condition, reopen it with the new one: '%s -m <why>', then %s", sb.buf,
+			    then_rerun(q, &set)));
 }
 
 /* the first blocking condition wins (5.13); fulfill and commit keep computing their report */
@@ -968,7 +990,7 @@ static void write_check_files(struct request *q, const char *in, const char *req
 		strbuf_addstr(&sb, "]\n");
 	}
 	mkdir(xstrfmt("%s/ait", gitdir), 0777);
-	write_file_buf(req, sb.buf, sb.len);
+	write_state(req, sb.buf);
 	if (!read_text(&old, res) && !yaml_parse(old.buf, &kv, res, &err) && yget(&kv, "input") &&
 	    !strcmp(yget(&kv, "input"), in))
 		return;
@@ -977,7 +999,7 @@ static void write_check_files(struct request *q, const char *in, const char *req
 		    "# (what you ran or read, and what it showed); reason says why, when fail or unknown\nresults:\n", in);
 	for_each_string_list_item(task, &q->tasks)
 		strbuf_addf(&sb, "  - task: %s\n    outcome:\n    basis:\n    reason:\n", task->string);
-	write_file_buf(res, sb.buf, sb.len);
+	write_state(res, sb.buf);
 }
 
 /*
@@ -1127,7 +1149,9 @@ static void check_set(struct request *q)
 /* spec 7.7.3-4: the code to check is there; abstract contracts need a scope first */
 static void code_present(struct request *q)
 {
+	struct string_list write = STRING_LIST_INIT_DUP, stage = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *sc;
+	int moved = 0;
 
 	for_each_string_list_item(item, &q->conf) {
 		struct record *k = item->util;
@@ -1143,21 +1167,27 @@ static void code_present(struct request *q)
 
 			if (blob_at(q->v, file))
 				continue;
-			/* 5.8 E_CODE_REQUIRED: the code that is there to stage, or where it went; the gate commits code first */
 			if (!written && new)
-				add_hint(q, xstrfmt("write '%s'", file));
-			if ((written || new) && q->gate)
-				add_hint(q, xstrfmt("commit code that meets it first: stage '%s' and run 'ait commit -m <why>', "
-						    "then rerun this command", file));
-			else if (written || new)
-				add_hint(q, xstrfmt("stage '%s', then rerun this command", file));
-			else if (k->old && q->gate)
-				add_hint(q, xstrfmt("if it was moved, run '%s'", again(q, &one, 'm', NULL)));
-			else if (k->old)
-				add_hint(q, xstrfmt("if it was moved, rerun with '%s=%s'", k->id, moved_arg(k, q->v)));
-			if (!unsorted_string_list_has_string(&q->missing, item->string))
-				string_list_append(&q->missing, item->string)->util = item->util;
+				string_list_append(&write, file);
+			if (written || new)
+				string_list_append(&stage, file);
+			else
+				moved = 1;
 		}
+		/* 5.8 E_CODE_REQUIRED, a hint per kind with all its paths: write, stage (the gate commits code first), or moved */
+		if (write.nr)
+			add_hint(q, xstrfmt("write %s", quoted_paths(&write)));
+		if (stage.nr)
+			add_hint(q, q->gate ? code_first(q, quoted_paths(&stage)) :
+				 xstrfmt("stage %s, then rerun this command", quoted_paths(&stage)));
+		if (moved && k->old)
+			add_hint(q, q->gate ? xstrfmt("if it was moved, run '%s'", again(q, &one, 'm', NULL)) :
+				 xstrfmt("if it was moved, rerun with '%s=%s'", k->id, moved_arg(k, q->v)));
+		if (write.nr || stage.nr || moved)
+			string_list_append(&q->missing, item->string)->util = item->util;
+		string_list_clear(&write, 0);
+		string_list_clear(&stage, 0);
+		moved = 0;
 	}
 	if (!q->missing.nr)
 		return;
@@ -1469,12 +1499,12 @@ int cmd_fulfill(int argc, const char **argv)
 		reject(129, NULL, "nothing to fulfill: give the IDs of future contracts");
 	tree_diff(q.ht, q.v, &paths);
 	for_each_string_list_item(item, &paths)
-		if (contract_path(&q.s, item->string)) {
+		if (contract_path(&q.s, item->string))
 			string_list_append(&q.mixed, item->string);
-			block(&q, (struct verdict){ 1, "mixed", xstrfmt("unstage the spec files ('%s'), then rerun this command",
-									  item->string),
-						    xstrfmt("contract changes and code changes are mixed: '%s'", item->string) });
-		}
+	if (q.mixed.nr)
+		block(&q, (struct verdict){ 1, "mixed", xstrfmt("unstage the spec files (%s), then rerun this command",
+								  quoted_paths(&q.mixed)),
+					    xstrfmt("contract changes and code changes are mixed: '%s'", q.mixed.items[0].string) });
 	return finish(&q);
 }
 
