@@ -508,7 +508,7 @@ static void parse_clauses(struct request *q)
 	}
 }
 
-static char *reopen_hint(struct request *q, struct record *k);
+static char *reopen_first(struct request *q, struct record *k);
 
 /* spec 7.3.2: a clause applies to the records as the earlier clauses left them */
 static void apply(struct request *q, struct clause *c)
@@ -537,7 +537,7 @@ static void apply(struct request *q, struct clause *c)
 		/* 7.3.2: K is future; cancelled already is a noop */
 		r = resolve(q, c->k[0]);
 		if (!in_state(r, "future") && !in_state(r, "cancelled"))
-			reject(1, was_current(r) ? reopen_hint(q, r) : NULL, "not allowed: '%s' cannot go from %s to cancelled",
+			reject(1, was_current(r) ? reopen_first(q, r) : NULL, "not allowed: '%s' cannot go from %s to cancelled",
 			       r->id, val(r, STATE));
 		put(r, STATE, "cancelled");
 	} else {
@@ -712,8 +712,8 @@ static char *again(struct request *q, struct string_list *ks, char mode, const c
 	}
 	for_each_string_list_item(item, ks)
 		if (!string_list_has_string(&done, item->string))
-			strbuf_addf(&sb, mode == 'f' ? " future amend %s" : " amend %s %s%s -", item->string,
-				    *item->string == 'D' ? "- " : "", mode == 'f' ? "" : moved_arg(item->util, q->ht));
+			strbuf_addf(&sb, " %s", mode == 'f' ? xstrfmt("future amend %s", item->string) :
+				    amend_clause(item->util, moved_arg(item->util, q->ht), "-"));
 	if (add && mode != 'u')
 		strbuf_addf(&sb, " %s", add);
 	strbuf_addstr(&sb, " -m <why>");
@@ -813,15 +813,14 @@ static char *then_rerun(struct request *q, struct string_list *set)
 }
 
 /* the reopen hint of 5.9a: inside the helper's request, or run first before fulfill or commit again */
-static char *reopen_hint(struct request *q, struct record *k)
+static char *reopen_first(struct request *q, struct record *k)
 {
 	struct string_list set = STRING_LIST_INIT_DUP;
 
 	reopen_set(&q->s, k, &set);
 	if (q->gate)
 		return xstrfmt("to change '%s' without a check, reopen it: '%s'", k->id, again(q, &set, 'f', NULL));
-	return xstrfmt("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>', then %s", k->id,
-		       reopen_ids(&q->s, k), then_rerun(q, &set));
+	return xstrfmt("%s, then %s", reopen_hint(&q->s, k), then_rerun(q, &set));
 }
 
 /*
@@ -850,7 +849,7 @@ static void next_hints(struct request *q, struct string_list *ids)
 			}
 			add_hint(q, xstrfmt("if it does not hold yet, make it a promise: '%s'", again(q, &set, 'f', NULL)));
 		} else if (was_current(r) && !carried(q, r)) {
-			add_hint(q, reopen_hint(q, r));
+			add_hint(q, reopen_first(q, r));
 		}
 	}
 }
@@ -877,11 +876,10 @@ static void fix_hints(struct request *q, struct string_list *ids)
 				add_hint(q, xstrfmt("fix '%s', then rerun this command", path));
 			else if (q->gate)
 				add_hint(q, xstrfmt("fix '%s' and carry it in this request: '%s'", path,
-						    again(q, &none, 0, xstrfmt("amend %s %s%s", owner->id,
-										*owner->id == 'D' ? "- - " : "- ", def_paths(owner->old)))));
+						    again(q, &none, 0, amend_clause(owner, "-", def_paths(owner->old)))));
 			else
-				add_hint(q, xstrfmt("fix '%s' and commit it first: 'ait amend %s %s%s -m <why>', then rerun this command",
-						    path, owner->id, *owner->id == 'D' ? "- - " : "- ", def_paths(owner->old)));
+				add_hint(q, xstrfmt("fix '%s' and commit it first: 'ait %s -m <why>', then rerun this command",
+						    path, amend_clause(owner, "-", def_paths(owner->old))));
 		}
 	}
 }
@@ -893,19 +891,12 @@ static void fix_hints(struct request *q, struct string_list *ids)
 static void condition_hint(struct request *q, struct record *k)
 {
 	struct string_list set = STRING_LIST_INIT_DUP;
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
 
 	if (q->gate || !was_current(k))
 		return;
 	reopen_set(&q->s, k, &set);
-	for_each_string_list_item(item, &set)
-		if (item->util == k)
-			strbuf_addf(&sb, "ait future amend %s %s<new defs>", k->id, *k->id == 'D' ? "- - " : "- ");
-		else
-			strbuf_addf(&sb, " future amend %s", item->string);
-	add_hint(q, xstrfmt("to change its condition, reopen it with the new one: '%s -m <why>', then %s", sb.buf,
-			    then_rerun(q, &set)));
+	add_hint(q, xstrfmt("to change its condition, reopen it with the new one: 'ait %s -m <why>', then %s",
+			    reopen_clauses(&q->s, k, "<new defs>"), then_rerun(q, &set)));
 }
 
 /* the first blocking condition wins (5.13); fulfill and commit keep computing their report */
@@ -1217,7 +1208,7 @@ static void transitions(struct request *q)
 				reject(1, j ? undertake_hint(q, d, end) : NULL, "not allowed: '%s' is %s", end->id, val(end, STATE));
 		}
 		if (!allowed(q, r, from, to))
-			reject(1, was_current(r) && *r->id != 'u' ? reopen_hint(q, r) : NULL,
+			reject(1, was_current(r) && *r->id != 'u' ? reopen_first(q, r) : NULL,
 			       "not allowed: '%s' cannot go from %s to %s", r->id, from, to);
 	}
 }

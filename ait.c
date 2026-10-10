@@ -728,8 +728,7 @@ static int cmd_hook(int argc, const char **argv)
 	/* the reopen hint, then H7; H8 brings its own reopen hint after it */
 	for_each_string_list_item(item, &gone) {
 		if (code_found(item->util, t))
-			suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", item->string,
-				reopen_ids(&hs, item->util));
+			suggest("%s", reopen_hint(&hs, item->util));
 		recheck_hint(&hs, item->util, t, 1);
 	}
 	return 0;
@@ -749,10 +748,9 @@ static void recheck_hint(struct state *s, struct record *r, struct tree *h, int 
 		return;
 	}
 	since = guard ? NULL : unverified_since(r);
-	suggest("'%s' has no code under its scope%s; if it was moved, run 'ait amend %s %s%s - -m <why>' to get the tasks",
-		r->id, since ? xstrfmt(" (unverified since '%s')", since) : "", r->id, *r->id == 'D' ? "- " : "",
-		moved_arg(r, h));
-	suggest("to change '%s' without a check, reopen it: 'ait future amend %s -m <why>'", r->id, reopen_ids(s, r));
+	suggest("'%s' has no code under its scope%s; if it was moved, run 'ait %s -m <why>' to get the tasks",
+		r->id, since ? xstrfmt(" (unverified since '%s')", since) : "", amend_clause(r, moved_arg(r, h), "-"));
+	suggest("%s", reopen_hint(s, r));
 }
 
 /* H10: fulfil my promise P, with a scope for P and each abstract future demand it undertakes, or where its code went */

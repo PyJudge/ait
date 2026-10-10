@@ -581,8 +581,8 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 	for (i = 0; i < s->nr; i++)
 		if (is_live(s->r[i]) && !files_match(s->r[i], t)) {
 			fail_with(v, 1, "incomplete", xstrfmt("make the spec files of '%s' match it, or reopen it "
-							       "with them: 'ait future amend %s -m <why>'",
-							       s->r[i]->id, reopen_ids(s, s->r[i])),
+							       "with them: 'ait %s -m <why>'",
+							       s->r[i]->id, reopen_clauses(s, s->r[i], NULL)),
 				  xstrfmt("spec files do not match the contract: '%s'", s->r[i]->id));
 			v->k = s->r[i];
 			return 1;
@@ -776,8 +776,14 @@ void reopen_set(struct state *s, struct record *k, struct string_list *out)
 	}
 }
 
-/* "K future amend O..." of the reopen command run on its own */
-char *reopen_ids(struct state *s, struct record *k)
+/* the clause amending K to PROVIDER and FILES, "-" keeping what K has; a demand keeps its consumer (7.3.2) */
+char *amend_clause(struct record *k, const char *provider, const char *files)
+{
+	return xstrfmt("amend %s %s%s %s", k->id, *k->id == 'D' ? "- " : "", provider, files);
+}
+
+/* "future amend K future amend O..." reopening K and what it takes along; K gets DEFS when given (5.9a) */
+char *reopen_clauses(struct state *s, struct record *k, const char *defs)
 {
 	struct string_list set = STRING_LIST_INIT_DUP;
 	struct strbuf sb = STRBUF_INIT;
@@ -785,8 +791,15 @@ char *reopen_ids(struct state *s, struct record *k)
 
 	reopen_set(s, k, &set);
 	for_each_string_list_item(item, &set)
-		strbuf_addf(&sb, "%s%s", sb.len ? " future amend " : "", item->string);
+		strbuf_addf(&sb, "%sfuture %s", sb.len ? " " : "", item->util == k && defs ? amend_clause(k, "-", defs) :
+			    xstrfmt("amend %s", item->string));
 	return strbuf_detach(&sb, NULL);
+}
+
+/* the reopen hint of 5.9a, run on its own */
+char *reopen_hint(struct state *s, struct record *k)
+{
+	return xstrfmt("to change '%s' without a check, reopen it: 'ait %s -m <why>'", k->id, reopen_clauses(s, k, NULL));
 }
 
 /* the provider of R can be found in T: each scope is a file there (spec 1.5c, 7.7.3-4) */
