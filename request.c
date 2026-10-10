@@ -604,19 +604,25 @@ static void apply(struct request *q, struct clause *c)
 }
 
 /*
- * S as a YAML string: as it is when libyaml takes it as UTF-8, or, holding
- * other bytes (a path git keeps as bytes), quoted as git shows such a path
- * (core.quotePath)
+ * S as a YAML string: as it is when libyaml's reader reads it back, or,
+ * holding other bytes (a path git keeps as bytes), quoted as git shows such
+ * a path (core.quotePath). libyaml's emitter takes UTF-8 sequences its reader
+ * refuses: surrogates (ED A0..BF) and code points past U+10FFFF (F4 90.., F5..)
  */
 static const char *yaml_text(const char *s)
 {
 	struct strbuf sb = STRBUF_INIT;
+	const unsigned char *p;
 	yaml_event_t e;
+	int reads = yaml_scalar_event_initialize(&e, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1, YAML_ANY_SCALAR_STYLE);
 
-	if (yaml_scalar_event_initialize(&e, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1, YAML_ANY_SCALAR_STYLE)) {
+	if (reads)
 		yaml_event_delete(&e);
+	for (p = (const unsigned char *)s; reads && *p; p++)
+		if ((p[0] == 0xed && p[1] >= 0xa0) || (p[0] == 0xf4 && p[1] >= 0x90) || p[0] >= 0xf5)
+			reads = 0;
+	if (reads)
 		return s;
-	}
 	quote_c_style(s, &sb, NULL, 0);
 	return strbuf_detach(&sb, NULL);
 }

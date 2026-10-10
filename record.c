@@ -1363,7 +1363,8 @@ static char *yaml_place(struct yframe *top, yaml_event_t *e, char **pattern, con
 		top->key = NULL;
 		return path;
 	}
-	if (e->type == YAML_SCALAR_EVENT)
+	/* 2.5.1: a key is a plain or quoted scalar, no "|" block */
+	if (e->type == YAML_SCALAR_EVENT && e->data.scalar.style != YAML_LITERAL_SCALAR_STYLE)
 		top->key = xstrdup((char *)e->data.scalar.value);
 	else
 		*why = "a key that is not a scalar";
@@ -1623,20 +1624,21 @@ static void trim_block(struct strbuf *text, const char *key, struct yval *v)
 	/* the end of the block's last line; the next line keeps its indentation */
 	while (e > head && text->buf[e - 1] != '\n')
 		e--;
-	/* back over the lines that hold spaces only */
+	/* back one line of spaces at a time, while the value reads the same without it */
 	for (p = e; p > head; p = line) {
 		line = p - 1;
 		while (line > head && text->buf[line - 1] != '\n')
 			line--;
 		if (text->buf[line + strspn(text->buf + line, " ")] != '\n')
 			break;
+		strbuf_reset(&trimmed);
+		strbuf_add(&trimmed, text->buf, text->len);
+		strbuf_splice(&trimmed, line, p - line, "", 0);
+		string_list_clear(&after, 0);
+		if (yaml_parse(trimmed.buf, &after, "", &err) || !yget(&after, key) || strcmp(yget(&after, key), v->s))
+			break;
+		strbuf_splice(text, line, p - line, "", 0);
 	}
-	if (p == e)
-		return;
-	strbuf_add(&trimmed, text->buf, text->len);
-	strbuf_splice(&trimmed, p, e - p, "", 0);
-	if (!yaml_parse(trimmed.buf, &after, "", &err) && yget(&after, key) && !strcmp(yget(&after, key), v->s))
-		strbuf_splice(text, p, e - p, "", 0);
 }
 
 /*
