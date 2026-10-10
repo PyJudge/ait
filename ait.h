@@ -90,6 +90,7 @@ const char *unusable(struct record *r, struct tree *t);
 /* record.c: paths and scopes (3) */
 int path_ok(const char *p);
 int oid_ok(const char *s);
+int sid_ok(const char *s);
 int agent_ok(const char *name);
 void no_range(const char *arg);
 void scope_shape(const char *arg);

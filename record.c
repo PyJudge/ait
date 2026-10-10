@@ -34,8 +34,8 @@ static void listing(struct tree *t, char *p, const char *fmt)
 }
 
 /*
- * One sorted listing per tree: lookups are a bsearch, a diff is a merge walk.
- * Callers name trees by object ID; a commit and its tree share one listing.
+ * One sorted listing per tree, its lookups a bsearch; a commit and its tree
+ * share one listing
  */
 struct tree *tree_load(const char *treeish)
 {
@@ -151,8 +151,8 @@ char *tree_with(const char *base, const char *index_info, struct string_list *pa
 		return xstrdup(base);
 	/* 5.8 E_IO: the directory 4.8 names cannot be written */
 	if (!mkdtemp(dir))
-		reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command", xstrndup(dir, strrchr(dir, '/') - dir)),
-		       "write error: '%s': %s", dir, strerror(errno));
+		reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command",
+				    xstrndup(dir, strrchr(dir, '/') - dir)), "write error: '%s': %s", dir, strerror(errno));
 	index = xstrfmt("%s/index", dir);
 	git_run(NULL, index, &rc, "read-tree %s", base);
 	if (!rc && *index_info)
@@ -201,6 +201,15 @@ int one_of(const char *word, const char *const *set)
 {
 	for (; *set; set++)
 		if (!strcmp(word, *set))
+			return 1;
+	return 0;
+}
+
+/* S holds a control character */
+static int has_control(const char *s)
+{
+	for (; *s; s++)
+		if ((unsigned char)*s < 0x20 || *s == 0x7f)
 			return 1;
 	return 0;
 }
@@ -289,7 +298,7 @@ static void record_sort(struct record *r)
 		QSORT(r->f[k].items, r->f[k].nr, cmp_value);
 }
 
-/* the canonical lines of R (2.2.1) for the keys in KEYS (a bit per enum key) */
+/* the canonical lines of R (2.2.1) for the keys in KEYS_WANTED, a bit per enum key */
 char *record_text(struct record *r, unsigned keys_wanted)
 {
 	struct strbuf sb = STRBUF_INIT;
@@ -314,7 +323,8 @@ struct record *state_get(struct state *s, const char *id)
 	return NULL;
 }
 
-struct record *state_add(struct state *s, const char *id)
+/* a record with no values yet */
+static struct record *record_new(const char *id)
 {
 	struct record *r = xcalloc(1, sizeof(*r));
 	int k;
@@ -322,6 +332,13 @@ struct record *state_add(struct state *s, const char *id)
 	snprintf(r->id, sizeof(r->id), "%s", id);
 	for (k = 0; k < NKEYS; k++)
 		string_list_init_dup(&r->f[k]);
+	return r;
+}
+
+struct record *state_add(struct state *s, const char *id)
+{
+	struct record *r = record_new(id);
+
 	ALLOC_GROW(s->r, s->nr + 1, s->alloc);
 	s->r[s->nr++] = r;
 	return r;
@@ -364,9 +381,7 @@ static void record_parse(struct record *r, const char *text)
 			break;
 		for (k = 0; k < NKEYS && !(skip_prefix(l, keys[k], &v) && *v == ' '); k++)
 			;
-		if (k == NKEYS || !v[1] || isspace(v[1]) || isspace(l[strlen(l) - 1]) ||
-		    l[strcspn(l, "\r\t\x7f\x01\x02\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f\x10\x11\x12"
-			     "\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f")]) {
+		if (k == NKEYS || !v[1] || isspace(v[1]) || isspace(l[strlen(l) - 1]) || has_control(l)) {
 			r->bad = xstrfmt("bad line '%s'", l);
 			return;
 		}
@@ -413,8 +428,7 @@ void state_load(struct state *s, struct tree *t)
 			/* 2.1.3: no record was ever there to restore */
 			r->bad = xstrdup("not a record path");
 			r->mend = xstrfmt("remove '.ait/%s'", id);
-		}
-		else if (!text)
+		} else if (!text)
 			r->bad = xstrdup("not a text file");
 		else
 			record_parse(r, text);
@@ -438,6 +452,12 @@ void state_load(struct state *s, struct tree *t)
 	}
 }
 
+/* spec 4.1: a session ID, S and 12 hex digits */
+int sid_ok(const char *s)
+{
+	return s && *s == 'S' && strlen(s) == 13 && strspn(s + 1, "0123456789abcdef") == 12;
+}
+
 int oid_ok(const char *s)
 {
 	return s && strlen(s) == 40 && strspn(s, "0123456789abcdef") == 40;
@@ -448,11 +468,9 @@ int path_ok(const char *p)
 {
 	struct string_list parts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	int ok = *p && *p != '/' && *p != '-' && strcmp(p, ".ait") && !starts_with(p, ".ait/");
-	const char *c;
+	int ok = *p && *p != '/' && *p != '-' && strcmp(p, ".ait") && !starts_with(p, ".ait/") &&
+		 !p[strcspn(p, " :,")] && !has_control(p);
 
-	for (c = p; *c; c++)
-		ok &= *c != ' ' && *c != ':' && *c != ',' && (unsigned char)*c >= 0x20 && *c != 0x7f;
 	string_list_split(&parts, p, "/", -1);
 	for_each_string_list_item(item, &parts)
 		ok &= *item->string && strcmp(item->string, ".") && strcmp(item->string, "..");
@@ -496,8 +514,7 @@ static int value_ok(struct record *r, enum key k, const char *v)
 		       (!strcmp(d, "def") || !strcmp(d, "input")) && !strcmp(v, xstrfmt("%s %s %s %s", a, b, c, d));
 	case CREATOR:
 		/* 2.2.2: "AGENT SID", or "unknown -" for a record an integration made without a session */
-		return n == 2 && !strcmp(v, xstrfmt("%s %s", a, b)) && (!strcmp(v, "unknown -") ||
-		       (agent_ok(a) && *b == 'S' && strlen(b) == 13 && strspn(b + 1, "0123456789abcdef") == 12));
+		return n == 2 && !strcmp(v, xstrfmt("%s %s", a, b)) && (!strcmp(v, "unknown -") || (agent_ok(a) && sid_ok(b)));
 	case PREV:
 		return !strcmp(v, "-") || oid_ok(v);
 	default:
@@ -836,7 +853,7 @@ char *reopen_hint(struct state *s, struct record *k)
 	return xstrfmt("to change '%s' without a check, reopen it: 'ait %s -m <why>'", k->id, reopen_clauses(s, k, NULL));
 }
 
-/* the provider of R can be found in T: each scope is a file there (spec 1.5c, 7.7.3-4) */
+/* the provider of R can be found in T: each scope that names a file is one there (spec 1.5c, 7.7.3-4) */
 int code_found(struct record *r, struct tree *t)
 {
 	struct string_list missing = STRING_LIST_INIT_DUP;
@@ -922,7 +939,7 @@ const char *engine_of(struct tree *t, const char *def)
 	return yget(kv, "engine") && *yget(kv, "engine") ? "exec" : "prompt";
 }
 
-/* spec 5.4: their hash, the PINS of an Ait-Check line; each text is hashed once */
+/* spec 5.4: the PINS of an Ait-Check line, the hash of R's provider and file lines; each text is hashed once */
 char *pins(struct record *r)
 {
 	static struct string_list hashed = STRING_LIST_INIT_DUP;
@@ -1028,11 +1045,8 @@ int unverified(struct record *r, struct tree *t)
 /* the record TEXT of a past version, as record_parse() reads it; NULL when there is none or it is malformed */
 static struct record *record_read(const char *text)
 {
-	struct record *x = xcalloc(1, sizeof(*x));
-	int k;
+	struct record *x = record_new("");
 
-	for (k = 0; k < NKEYS; k++)
-		string_list_init_dup(&x->f[k]);
 	if (text)
 		record_parse(x, text);
 	return text && !x->bad ? x : NULL;
@@ -1120,8 +1134,9 @@ static int unverified_at(struct record *r, const char *c, struct history *h)
  */
 const char *unverified_since(struct record *r)
 {
-	struct history h = { STRING_LIST_INIT_DUP, STRING_LIST_INIT_DUP, STRING_LIST_INIT_DUP, STRING_LIST_INIT_DUP,
-			     STRING_LIST_INIT_DUP };
+	static const enum key pinned[] = { PROVIDER, FILES };
+	struct history h = { .confirmed = STRING_LIST_INIT_DUP, .changed = STRING_LIST_INIT_DUP,
+			     .parent = STRING_LIST_INIT_DUP, .seen = STRING_LIST_INIT_DUP, .off = STRING_LIST_INIT_DUP };
 	struct string_list commits = STRING_LIST_INIT_DUP;
 	struct strvec paths = STRVEC_INIT;
 	struct string_list_item *item, *pin = string_list_lookup(checks(), xstrfmt("%s %s", r->id, pins(r)));
@@ -1139,31 +1154,31 @@ const char *unverified_since(struct record *r)
 	string_list_sort(&h.confirmed);
 	/* the commits that change R's code or spec files against their first parent, the one off_at() inherits from */
 	strvec_pushl(&paths, "log", "--full-history", "--diff-merges=first-parent", "--format=%H", head, "--", NULL);
-	for (i = 0; i < NKEYS; i++)
-		if (i == PROVIDER || i == FILES)
-			for_each_string_list_item(item, &r->f[i])
-				strvec_push(&paths, scope_path(item->string));
+	for (i = 0; i < ARRAY_SIZE(pinned); i++)
+		for_each_string_list_item(item, &r->f[pinned[i]])
+			strvec_push(&paths, scope_path(item->string));
 	string_list_split(&h.changed, git_args(&paths, NULL, NULL, NULL), "\n", -1);
 	string_list_sort(&h.changed);
-	/* "C P1 P2 ..." newest first */
+	/* "C P1 P2 ..." newest first, each line split once into its commit and parents */
 	string_list_split(&commits, git("rev-list --topo-order --parents %s", head), "\n", -1);
 	for_each_string_list_item(item, &commits) {
-		struct string_list ids = STRING_LIST_INIT_DUP;
+		struct string_list *ids = xcalloc(1, sizeof(*ids));
 
-		string_list_split(&ids, item->string, " ", -1);
+		string_list_init_dup(ids);
+		string_list_split(ids, item->string, " ", -1);
+		item->util = ids;
 		if (*item->string)
-			string_list_insert(&h.parent, ids.items[0].string)->util = ids.nr > 1 ? ids.items[1].string : NULL;
+			string_list_insert(&h.parent, ids->items[0].string)->util = ids->nr > 1 ? ids->items[1].string : NULL;
 	}
 	for_each_string_list_item(item, &commits) {
-		struct string_list ids = STRING_LIST_INIT_DUP;
+		struct string_list *ids = item->util;
 
-		string_list_split(&ids, item->string, " ", -1);
-		if (!*item->string || !unverified_at(r, ids.items[0].string, &h))
+		if (!*item->string || !unverified_at(r, ids->items[0].string, &h))
 			continue;
-		for (i = 1; i < ids.nr && !unverified_at(r, ids.items[i].string, &h); i++)
+		for (i = 1; i < ids->nr && !unverified_at(r, ids->items[i].string, &h); i++)
 			;
-		if (i == ids.nr)
-			return ids.items[0].string;
+		if (i == ids->nr)
+			return ids->items[0].string;
 	}
 	return NULL;
 }
@@ -1262,23 +1277,26 @@ int read_text(struct strbuf *sb, const char *path)
  * The YAML subset of spec 2.5.1, read by libyaml as YAML places it. What the
  * subset leaves out shows in libyaml's events and is refused here: aliases,
  * anchors, tags, directives, a second document, folded blocks, keys that are
- * not scalars, a root that is not a map. The markers "---" and "..." of the
- * one document are YAML's, and libyaml's emitter writes "..." itself. The values are flattened into
- * KV: "a: x" is "a", list items are "a.0", keys inside them "a.0.b"; '.' and
- * '\' in a key are escaped, so a path names one value. Every value keeps
- * where its text starts (a byte offset) and its kind.
+ * not plain or quoted scalars, a root that is not a map. The markers "---"
+ * and "..." of the one document are YAML's; libyaml's emitter writes "..."
+ * itself. The values are flattened into KV: "a: x" is "a", list items are
+ * "a.0", keys inside them "a.0.b"; '.' and '\' in a key are escaped, so a
+ * path names one value. Each value keeps where it stands in the text, its
+ * kind and style, its pattern for the schemas and its parent.
  */
+
 /* the path the root map is kept under: no key gives it, as yaml_path() escapes a '\\' of a key */
 #define ROOT "\\"
 
 struct yval {
-	char *s;
-	size_t start, at, end;	/* where the node starts, where the value's text starts, where the node ends */
-	int line, literal;	/* LITERAL: the text from AT spells the value as it is */
+	char *s;		/* the value; "" for a map or a list */
+	char kind;		/* 'l' a list, 'm' a map, '?' a key with nothing under it, 0 a scalar */
 	int plain, block;	/* a plain scalar; a "|" block */
+	size_t start, at, end;	/* where the node starts, where the value's text starts, where the node ends */
+	int line;		/* the line the node starts on, from 1 */
+	int literal;		/* the text from AT spells the value as it is */
 	char *pattern;		/* its path with "N" for each list index, as schemas name it (NULL: the root) */
 	struct yval *parent;	/* the map or list it is in (NULL: the root) */
-	char kind;	/* 'l' a list, 'm' a map, '?' a key with nothing under it, 0 a scalar */
 };
 
 /* the path of KEY (a map key, or a list index) under PATH, NULL being the root */
@@ -1381,6 +1399,28 @@ static char yaml_kind(yaml_event_t *e)
 	return e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE && !e->data.scalar.length ? '?' : 0;
 }
 
+/* the node of E in TEXT, with its PATTERN and PARENT */
+static struct yval *yaml_value(const char *text, yaml_event_t *e, char *pattern, struct yval *parent)
+{
+	struct yval *v = xcalloc(1, sizeof(*v));
+	int scalar = e->type == YAML_SCALAR_EVENT;
+
+	v->s = xstrdup(scalar ? (char *)e->data.scalar.value : "");
+	v->kind = yaml_kind(e);
+	v->plain = scalar && e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE;
+	v->block = scalar && e->data.scalar.style == YAML_LITERAL_SCALAR_STYLE;
+	v->start = yaml_byte(text, e->start_mark);
+	v->end = yaml_byte(text, e->end_mark);
+	/* a quoted scalar's text starts after its quote */
+	v->at = v->start + (scalar && (e->data.scalar.style == YAML_SINGLE_QUOTED_SCALAR_STYLE ||
+				       e->data.scalar.style == YAML_DOUBLE_QUOTED_SCALAR_STYLE));
+	v->line = e->start_mark.line + 1;
+	v->literal = !strncmp(text + v->at, v->s, strlen(v->s));
+	v->pattern = pattern;
+	v->parent = parent;
+	return v;
+}
+
 /* one event of the document into KV, with the open collections in STACK: NULL, or what is wrong */
 static const char *yaml_event(const char *text, struct string_list *kv, struct yframe *stack, int *depth, yaml_event_t *e)
 {
@@ -1404,20 +1444,7 @@ static const char *yaml_event(const char *text, struct string_list *kv, struct y
 	if (path && unsorted_string_list_has_string(kv, path))
 		return xstrfmt("duplicate key '%s'", path);
 	if (path) {
-		v = xcalloc(1, sizeof(*v));
-		v->s = xstrdup(e->type == YAML_SCALAR_EVENT ? (char *)e->data.scalar.value : "");
-		v->kind = yaml_kind(e);
-		v->plain = e->type == YAML_SCALAR_EVENT && e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE;
-		v->pattern = pattern;
-		v->parent = *depth ? stack[*depth - 1].node : NULL;
-		v->block = e->type == YAML_SCALAR_EVENT && e->data.scalar.style == YAML_LITERAL_SCALAR_STYLE;
-		v->line = e->start_mark.line + 1;
-		v->start = yaml_byte(text, e->start_mark);
-		v->end = yaml_byte(text, e->end_mark);
-		/* a quoted scalar's text starts after its quote */
-		v->at = v->start + (e->type == YAML_SCALAR_EVENT && (e->data.scalar.style == YAML_SINGLE_QUOTED_SCALAR_STYLE ||
-								      e->data.scalar.style == YAML_DOUBLE_QUOTED_SCALAR_STYLE));
-		v->literal = !strncmp(text + v->at, v->s, strlen(v->s));
+		v = yaml_value(text, e, pattern, *depth ? stack[*depth - 1].node : NULL);
 		string_list_append(kv, path)->util = v;
 	}
 	if (e->type == YAML_SCALAR_EVENT)
@@ -1458,12 +1485,17 @@ char *nul_line(const char *buf)
 static const char *not_text(const char *text, size_t *line)
 {
 	static const char *const breaks[] = { "\r", "\xc2\x85", "\xe2\x80\xa8", "\xe2\x80\xa9", NULL };
+	struct string_list lines = STRING_LIST_INIT_DUP;
 	const char *p, *first = NULL;
+	size_t n;
 	int i;
 
-	for (p = text, *line = 0; *p; p += strcspn(p, "\n") + !!p[strcspn(p, "\n")], ++*line)
-		if (!is_utf8(xstrndup(p, strcspn(p, "\n"))))
+	string_list_split(&lines, text, "\n", -1);
+	for (n = 0; n < lines.nr; n++)
+		if (!is_utf8(lines.items[n].string)) {
+			*line = n;
 			return "not UTF-8";
+		}
 	for (i = 0; breaks[i]; i++)
 		if ((p = strstr(text, breaks[i])) && (!first || p < first))
 			first = p;
@@ -1481,10 +1513,6 @@ int yaml_parse(const char *text, struct string_list *kv, const char *what, char 
 	size_t line = 0;
 
 	*err = NULL;
-	/*
-	 * 2.5.1: UTF-8, and LF the only line break; libyaml takes CR, NEL, LS and
-	 * PS as line breaks too (YAML 1.1). Where a tab may stand is YAML's.
-	 */
 	if ((why = not_text(text, &line))) {
 		*err = xstrfmt("bad format: '%s': %s in line %d", what, why, (int)line + 1);
 		return -1;
@@ -1591,19 +1619,17 @@ static size_t last_dot(const char *p)
 
 /*
  * " in line N" of the value of KEY, for E_FORMAT (5.8: the file and the
- * line); for a KEY that is not there, of the nearest map above it that is,
- * the root at last, or line 1 of a file with none
+ * line); for a KEY that is not there, of the nearest node on its path that
+ * is, the root at last, or line 1 of a file with none
  */
 char *yline(struct string_list *kv, const char *key)
 {
 	char *up = xstrdup(key);
 	struct string_list_item *item;
-	size_t dot;
 
-	while (!(item = unsorted_string_list_lookup(kv, up)) && *up) {
-		dot = last_dot(up);
-		up[dot < strlen(up) ? dot : 0] = 0;
-	}
+	/* the path without its last key, until a node is there or nothing is left */
+	while (!(item = unsorted_string_list_lookup(kv, up)) && *up)
+		up[last_dot(up) == strlen(up) ? 0 : last_dot(up)] = '\0';
 	if (!item)
 		item = unsorted_string_list_lookup(kv, ROOT);
 	return xstrfmt(" in line %d", item ? ((struct yval *)item->util)->line : 1);
@@ -1618,32 +1644,32 @@ static void trim_block(struct strbuf *text, const char *key, struct yval *v)
 {
 	struct string_list after = STRING_LIST_INIT_DUP;
 	struct strbuf trimmed = STRBUF_INIT;
-	size_t head = v->start + strcspn(text->buf + v->start, "\n") + 1, e = v->end, p, line;
+	size_t head = v->start + strcspn(text->buf + v->start, "\n") + 1, e = v->end, p, start;
 	char *err;
 
 	/* the end of the block's last line; the next line keeps its indentation */
 	while (e > head && text->buf[e - 1] != '\n')
 		e--;
 	/* back one line of spaces at a time, while the value reads the same without it */
-	for (p = e; p > head; p = line) {
-		line = p - 1;
-		while (line > head && text->buf[line - 1] != '\n')
-			line--;
-		if (text->buf[line + strspn(text->buf + line, " ")] != '\n')
+	for (p = e; p > head; p = start) {
+		start = p - 1;
+		while (start > head && text->buf[start - 1] != '\n')
+			start--;
+		if (text->buf[start + strspn(text->buf + start, " ")] != '\n')
 			break;
 		strbuf_reset(&trimmed);
 		strbuf_add(&trimmed, text->buf, text->len);
-		strbuf_splice(&trimmed, line, p - line, "", 0);
+		strbuf_splice(&trimmed, start, p - start, "", 0);
 		string_list_clear(&after, 0);
 		if (yaml_parse(trimmed.buf, &after, "", &err) || !yget(&after, key) || strcmp(yget(&after, key), v->s))
 			break;
-		strbuf_splice(text, line, p - line, "", 0);
+		strbuf_splice(text, start, p - start, "", 0);
 	}
 }
 
 /*
  * spec 8.4: the result file TEXT, parsed into KV, as the message carries it:
- * each value RENAMED names made what it says, each "|" block without its
+ * each value RENAMED names given its new text, each "|" block without its
  * trailing blank lines; from the last value back, so the places of the others hold
  */
 void yaml_finish(struct strbuf *text, struct string_list *kv, struct string_list *renamed)

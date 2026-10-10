@@ -390,7 +390,7 @@ static char *session_read(const char *s, char *name)
 	struct strbuf sb = STRBUF_INIT;
 	char *wt;
 
-	if (!s || *s != 'S' || strlen(s) != 13 || strspn(s + 1, "0123456789abcdef") != 12)
+	if (!sid_ok(s))
 		return NULL;
 	if (strbuf_read_file(&sb, state_path(xstrfmt("sessions/%s", s)), 0) < 0)
 		return NULL;
