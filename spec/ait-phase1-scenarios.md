@@ -68,7 +68,7 @@ exec 정의에 쓰는 스크립트. 아래 각 `tests/X`마다 exec 정의 `spec
   3. `-r <W>`를 붙여 다시 실행한다.
 - `<W>`·`<Q>`: 직전 명령이 쓴 `check-result`·`check-request` 경로(`<git-dir>/ait/check-result.yaml`·`check-request.yaml`).
 - Q·W의 내용을 보는 곳은 YAML 부분집합(2.5.1)으로 읽은 값을 비교한다. 두 파일은 8.2의 쓰기 규칙(문자열은 언제나 `"…"`)으로 쓰이므로 표기가 아니라 값이 맞으면 된다. 예: `command: [./tests/pass.sh]`는 `command: ["./tests/pass.sh"]`와 같다.
-- `pins(REV, ID)`: `git show REV:.ait/ID | grep -E '^(provider|file) ' | git hash-object --stdin`의 출력이다. 그 커밋에서 그 계약의 provider 행과 `file` 행을 레코드의 순서대로(각 행은 LF로 끝난다) 이은 바이트열의 해시다(5.4). 기록줄 `Ait-Check: ID reported <pins>`·`Ait-Check: ID forced <pins>`의 `<pins>`는 그 기록줄을 가진 커밋 REV에서의 `pins(REV, ID)`다.
+- `pins(REV, ID)`: `git show REV:.ait/ID | grep -E '^(provider|file) ' | git hash-object --stdin`의 출력이다. 그 커밋에서 그 계약의 provider 행과 `file` 행을 레코드의 순서대로(각 행은 LF로 끝난다) 이은 바이트열의 해시다(5.4). 확인 행 `check reported <pins>`·`check forced <pins>`의 `<pins>`는 그 판을 가진 커밋 REV에서의 `pins(REV, ID)`다.
 - 대문자 session 변수(`A` 등)는 `ait session open`의 출력값이다.
 - 메시지를 생략한 쓰기 명령에는 `-m m`이 붙는다고 본다.
 - "session 없이"는 `AIT_SESSION=-`로 실행한다는 뜻이다(5.1). 그냥 `AIT_SESSION`이 없으면 그 worktree의 기본 session이 쓰인다.
@@ -289,8 +289,8 @@ tick; ait offer src/stock.c:1-10 p as o1 offer src/order.c p as o4 future demand
    - Q에는 `input`, `tree`, 과제 `+1:specs/pass.yaml`의 `role offer`, `provider src/stock.c`, `engine exec`, `body pass`, `command: [./tests/pass.sh]`, `success: [0]`이 있다(값으로 비교한다, 0.2).
    - W에는 같은 `input`과 과제 하나가 빈 outcome으로 있다.
 2. `fill <W> pass` 후 같은 명령에 `-r <W>` → `ok`.
-   - stdout에 `check <O> reported`가 있다. `rec(O)`에 확인 행 `check reported <pins(HEAD, O)>`가 `file` 행 다음, `creator` 행 앞에 있다(2.2.2). 기록줄에도 `Ait-Check: <O> reported <pins(HEAD, O)>`가 있다.
-   - 메시지는 `[CONTRACT] m`, 빈 행, W의 내용(`task:` 값의 `+1`을 `<O>`로 바꾸고 `|` 블록 끝의 빈 행을 뺀 것, 8.4), 빈 행, 기록줄(`Ait-Request`·`Ait-Agent`·`Ait-Session`·`Ait-Check: <O> reported <pins(HEAD, O)>`) 순서다.
+   - stdout에 `check <O> reported`가 있다. `rec(O)`에 확인 행 `check reported <pins(HEAD, O)>`가 `file` 행 다음, `creator` 행 앞에 있다(2.2.2). 기록줄에는 확인 행이 없다(5.4).
+   - 메시지는 `[CONTRACT] m`, 빈 행, W의 내용(`task:` 값의 `+1`을 `<O>`로 바꾸고 `|` 블록 끝의 빈 행을 뺀 것, 8.4), 빈 행, 기록줄(`Ait-Request`·`Ait-Agent`·`Ait-Session`) 순서다.
 3. (2 대신) `fill <W> fail` 또는 `fill <W> unknown`으로 → `err E_CHECK_FAILED`, `불변`. stderr에 `+1:specs/pass.yaml`이 있다. fail이면 hint는 코드 먼저 `commit code that meets it first: stage <your code> and run 'ait commit -m <why>', then rerun this command`(관문은 HEAD의 코드를 확인하고, provider `src/stock.c`는 코드다)와, O가 이 요청이 새로 만드는 current 계약이므로 약속으로 하기 `if it does not hold yet, make it a promise: 'ait future offer src/stock.c specs/pass.yaml -m <why>'`다(같은 명령의 `offer` 절을 `future offer`로 바꾸고 옵션은 `-m <why>`만 남긴다, 5.8, 5.9a). O는 HEAD에 없으므로 되돌리기 hint는 없다. unknown이면 hint는 `check it where its environment is available (see '<Q>') and rerun with -r '<W>'`, `if it is trivial, add --force (recorded as forced)`, 그리고 fail과 같은 약속으로 하기이고, `commit code …`는 없다(5.8. 계약마다의 hint는 fail·unknown 모두 같다).
 4. prompt 정의도 같다: `ait offer src/stock.c p -r pass` → `check <O> reported`.
 5. 정의가 여럿이면 과제도 여럿이다: `ait offer src/stock.c p,tests/pass.sh` → `task +1:specs/p.yaml prompt`, `task +1:specs/pass.yaml exec`. 다음은 모두 `err E_FORMAT`, `불변`이다.
@@ -302,7 +302,7 @@ tick; ait offer src/stock.c:1-10 p as o1 offer src/order.c p as o4 future demand
 6. 확인 입력: `-r` 없이 같은 명령을 두 번 실행하면 두 W의 `input`이 같다(새 레코드의 무작위 ID는 들어가지 않는다). W를 채운 뒤 작업 폴더의 `specs/p.yaml`를 고치고 `-r <W>` → `err E_NEEDS_RESULTS`(확인 입력이 바뀌었다). 새 W가 쓰인다.
 7. ait는 아무것도 실행하지 않는다: 작업 폴더의 `tests/pass.sh`를 `#!/bin/sh` / `touch $T/ran` 으로 바꿔 둔 채 1~2를 해도 `$T/ran`이 생기지 않는다.
 8. `ait future offer src/stock.c tests/pass.sh` → `ok`. future는 결과가 필요 없다.
-9. `--force`: `ait offer src/stock.c tests/pass.sh --force` → `ok`, `check <O> forced`. `rec(O)`의 확인 행은 `check forced <pins(HEAD, O)>`이고, 기록줄에 `Ait-Check: <O> forced <pins(HEAD, O)>`가 있으며 결과 문단은 없다. `-r <W> --force` → `err E_USAGE`.
+9. `--force`: `ait offer src/stock.c tests/pass.sh --force` → `ok`, `check <O> forced`. `rec(O)`의 확인 행은 `check forced <pins(HEAD, O)>`이고 결과 문단은 없다. `-r <W> --force` → `err E_USAGE`.
 10. `+n`은 새 레코드 순서다: `ait future drop <K> offer src/stock.c p`(K는 current)의 과제 이름은 `+2:specs/p.yaml`이다(drop이 `+1`). `-r pass`로 커밋하면 메시지의 결과에서 `+2`가 새 O의 ID로 바뀌어 있다.
 
 ## T11 직접 작성: contract new · add · commit (6, 7.4–7.6)
@@ -529,14 +529,14 @@ export AIT_SESSION=-
 2. 5행을 `s5 guard`로 바꾸고 `tick; git commit -qam impl`. 이어서 stage 없이 `tick; ait fulfill O -r pass` → `ok`.
    - stdout: `request <R>`, `fulfilled <O>`, `check <O> reported`.
    - 커밋의 name-status는 `M .ait/<O>` 하나뿐이다.
-   - 메시지는 `[FULFILL] m`, 빈 행, 결과, 빈 행, 기록줄 순서다. `rec(O)`의 확인 행은 `check reported <pins(HEAD, O)>`이고, 기록줄에 같은 `Ait-Check: <O> reported <pins(HEAD, O)>`가 있다. PINS는 다시 고정한 뒤의 고정(아래 provider 행과 `file` 행)의 해시다(7.7.4).
+   - 메시지는 `[FULFILL] m`, 빈 행, 결과, 빈 행, 기록줄 순서다. `rec(O)`의 확인 행은 `check reported <pins(HEAD, O)>`다. PINS는 다시 고정한 뒤의 고정(아래 provider 행과 `file` 행)의 해시다(7.7.4).
    - `rec(O)`의 provider는 `src/stock.c:1-10 <blob(HEAD:src/stock.c)>`다. 확인한 tree로 다시 고정된다(7.7.4). `ait peek now O`에 `unverified` 행이 없다.
 3. `tick; ait future offer src/order.c tests/pass.sh as o2`. order.c와 `tests/pass.sh`를 고쳐 stage → `ait fulfill O2` → `err E_MIXED`, 보고에 `mixed tests/pass.sh`와 `ready no`.
 4. `git reset -q --hard` 후:
    - `ait fulfill O2 O2` → `err E_USAGE`. alias나 메시지가 없을 때도 `err E_USAGE`.
    - 없는 ID → `err E_ID`.
    - 이미 current인 O → `err E_STATE`. hint는 `'<O>' is already current; to check it again, run 'ait amend <O> -m <why>' to get the tasks`다(5.9a의 전이 hint).
-   - `tick; ait fulfill O2 --force` → `ok`, `check <O2> forced`. `rec(O2)`의 확인 행은 `check forced <pins(HEAD, O2)>`이고, 기록줄에 `Ait-Check: <O2> forced <pins(HEAD, O2)>`가 있으며 결과 문단은 없다. 결과 대신 판단으로 넘긴 것이 기록된다(8.5).
+   - `tick; ait fulfill O2 --force` → `ok`, `check <O2> forced`. `rec(O2)`의 확인 행은 `check forced <pins(HEAD, O2)>`이고 결과 문단은 없다. 결과 대신 판단으로 넘긴 것이 기록된다(8.5).
 5. **확인할 코드가 없으면 이행되지 않는다**: `tick; ait future offer new:src/g.c p as o3`. `ait fulfill O3` → `err E_CODE_REQUIRED`(`E_FORMAT`이 아니다. 이행 후 상태라면 current의 provider가 `new:`여서 validate a에 걸리지만, 확인할 코드를 먼저 본다, 5.13-7, 7.7.3-3·4), `불변`. 보고에 `code-required <O3>`와 `ready no`가 있고 과제 행(`task`·`check-request`·`check-result`)은 없다(확인할 수 없다, 7.7.6). hint에 아직 쓰지 않은 `new:` 형 `write 'src/g.c'`와 `stage 'src/g.c'`(stage 규칙), 그리고 `rerun with '<O3>=<new scope>'`가 있고, O3는 내가 만든 future이므로 `ait future cancel <O3> -m <why>`가 있다. `ait future amend`와 `ait future drop`은 없다(되돌리기 안내는 current 계약에만, 철회는 current에만 쓴다, 5.8). `--force`로도 같다(5.14).
 6. 결과는 보고다. ait는 진위를 보장하지 않고 드러낸다(0.4a): `tick; ait future offer src/stock.c tests/guard.sh as o4`. stock.c 5행의 `guard`를 지워 stage(이제 guard가 없다) → `tick; ait fulfill O4 -r pass` → `ok`. `git log -1 --format=%B`에 그 결과(과제·outcome·basis)가 있다.
 7. **코드가 없는 약속의 todo**(H10): 준비를 다시 한 뒤 `tick; git rm -q src/stock.c; git commit -qm rm`(O는 future이므로 경고가 없다). `ait todo` → O 블록의 provider는 `src/stock.c:1-10 ?missing`이다. stderr의 hint(H10)는 `'<O>' has no code under its scope; if it was moved, run 'ait fulfill <O>=<new scope> -m <why>' to get the tasks`와, O가 A의 계약이므로 이어지는 `if it is gone for good, run 'ait future cancel <O> -m <why>'`다. `when ready, stage the code`로 시작하는 형은 없다(provider를 HEAD에서 찾을 수 없다, 5.9a).
@@ -792,9 +792,9 @@ ait는 결과 파일을 확인 결과 단계에서 연다(8.4). 시험은 이름
     - stderr에 `warning: '<D2>' is reopened in this merge: its pins changed without a check`와 `warning: '<O2>' is reopened in this merge: it undertakes reopened '<D2>'`가 있다(O2의 고정은 바뀌지 않았고 D2를 포함하므로 함께 되돌린다, 7.1.5). hint(H10)에 `ait fulfill <D2> -m <why>`와 `ait fulfill <O2> -m <why>`가 있다.
     - `rec(D2)`·`rec(O2)`의 state는 future다. O2의 행은 state 말고 바뀌지 않았지만, D2를 포함하므로 함께 되돌려진다(규칙 5). `.ait/undertake/<D2>-<O2>`는 `state undertaken` 그대로다. `rec(O2)`의 prev는 병합 전 O2 판의 blob 한 행이다(두 출발 판이 같아 극대 판이 하나다, 7.1.3-5).
     - stage 없이 `tick; ait fulfill O2 -r pass` → stdout에 `fulfilled <D2> via <O2>`와 `fulfilled <O2>`가 있다. 과제는 `<D2>:specs/long2.yaml`과 `<O2>:specs/p.yaml`이다.
-14. **cherry-pick 해결은 `Ait-Check` 행을 그대로 두지만 판정은 확인 행으로 한다**(7.1.5, 1.5a, 5.4): 준비를 다시 하고 master에 11의 K를 둔다. 거기서 갈라진 c3이 `tests/long.sh` 2행을 고쳐 `contract add tests/long.sh`·`tick; contract commit -r pass`(Rk3. `rec(K)`에 `check reported <pins(Rk3, K)>`, 기록줄에 `Ait-Check: <K> reported <pins(Rk3, K)>`). master도 2행을 다르게 고쳐 같은 방법으로 커밋한다. master에서 `tick; git cherry-pick <Rk3 커밋>` → `tests/long.sh`와 `.ait/<K>`·`.ait/<O>`·`.ait/<D>`가 충돌한다. long.sh를 합쳐 쓰고 레코드는 `--ours`로 정리한 뒤 `git add -A; tick; git cherry-pick --continue` → 성공.
-    - 메시지의 `Ait-Request`는 Rk3이 아닌 새 RID이고, `Ait-Check: <K> reported <pins(Rk3, K)>` 행은 그대로 남는다.
-    - K는 합친 long.sh로 다시 고정되어 고정이 current인 출발 판 어느 것과도 다르므로 확인이 아니다(`Ait-Check` 행은 판정에 쓰지 않는다). hook이 K를 되돌린다: stderr에 `warning: '<K>' is reopened in this merge: its pins changed without a check`가 있고 `rec(K)`의 state는 future다.
+14. **cherry-pick 해결도 확인 행으로 판정한다**(7.1.3-3, 1.5a): 준비를 다시 하고 master에 11의 K를 둔다. 거기서 갈라진 c3이 `tests/long.sh` 2행을 고쳐 `contract add tests/long.sh`·`tick; contract commit -r pass`(Rk3. `rec(K)`에 `check reported <pins(Rk3, K)>`). master도 2행을 다르게 고쳐 같은 방법으로 커밋한다. master에서 `tick; git cherry-pick <Rk3 커밋>` → `tests/long.sh`와 `.ait/<K>`·`.ait/<O>`·`.ait/<D>`가 충돌한다. long.sh를 합쳐 쓰고 레코드는 `--ours`로 정리한 뒤 `git add -A; tick; git cherry-pick --continue` → 성공.
+    - 메시지의 `Ait-Request`는 Rk3이 아닌 새 RID다.
+    - K는 합친 long.sh로 다시 고정되어 고정이 current인 출발 판 어느 것과도 다르므로 확인이 아니다. hook이 K를 되돌리고 확인 행을 지운다: stderr에 `warning: '<K>' is reopened in this merge: its pins changed without a check`가 있고 `rec(K)`의 state는 future다.
 15. **밀려난 판은 prev에 들지 않는다**(7.1.3-5, 7.1.5): 준비를 다시 하고 Hbase에서 브랜치 p1과 p2를 만든다. p1에서 `tick; ait future amend O src/stock.c:1-5 -`(Rp1), p2에서 `tick; ait future amend O src/stock.c:6-9 -`(Rp2). master에서 `tick; git merge -s ours --no-ff --no-commit p1 p2`(octopus. O의 출발 판은 HEAD 판 A, p1 판 B, p2 판 C이고, A는 B·C의 prev DAG에 있다) 뒤 `tick; git commit --no-edit` → 성공.
     - `rec(O)`는 prev를 빼면 A와 같다(provider `src/stock.c <blob>`). prev는 B·C 판의 blob 두 행(OID 순)이다. A는 밀려났고, 남은 극대 판 B·C는 뜻이 다르므로 충돌 해결이다(index가 어느 극대 판과도 같지 않아도 그렇다). `rec(D)`의 prev는 그대로 한 행이다(세 출발 판이 같다).
     - 메시지에 새 `Ait-Request`가 있다.
@@ -976,7 +976,7 @@ W가 아래를 차례로 실행하고, 매번 `settle`한다. S6은 listener가 
    - **내보낼 미확인이 있으면 git push 앞에 알린다**(5.8 `E_EMPTY`): r에서 `tick; ait offer src/order.c:1-5 p as k5 -r pass; ait contract push origin`. 이어서 order.c 3행을 바꾸는 일반 커밋 → `ait contract push origin` → `err E_EMPTY`. hint는 H7 `check '<K5>' again: run 'ait amend <K5> -m <why>' …`이 `push it with git` 앞에 있다(내보낼 커밋에 K5의 새 미확인이 있고 H에서도 미확인이다, 7.10.1-4). 끝나면 이 항목 전의 커밋으로 되돌린다(`git reset -q --hard <그 커밋>`).
 6. **섞여 있으면 통째로 올린다**: r에서 일반 커밋 하나와 계약 커밋 하나(`ait future offer src/order.c p`) 뒤 `ait contract push origin` → `pushed origin master`. 두 커밋이 모두 원격에 있다.
 7. **미확인 상태는 막는다**: r에서 `tick; ait offer src/stock.c:1-10 p as k -r pass`(Rk) 뒤 stock.c 3행을 바꾸는 일반 커밋(K는 미확인). `ait contract push origin` → `err E_STATE`, origin은 그대로다. stderr 첫 행은 `error: not allowed: unverified current contract(s) '<K>'`로 시작하고, hint는 H7(`ait amend <K> -m <why>`)과 `or, if it is trivial, take responsibility: 'ait contract push origin --force -m <why>'`다(K의 provider를 찾을 수 있다. REMOTE는 이 push의 remote다, 5.8).
-   - `tick; ait contract push origin --force -m 사소함` → `ok`. git push 전에 r의 master에 요청 커밋 Rf가 하나 공개된다(7.10.1-4): 제목 `[CONTRACT] 사소함`, 기록줄 `Ait-Request: <Rf>`·`Ait-Agent: agent-a`·`Ait-Session: <A>`·`Ait-Check: <K> forced <pins(Rf, K)>`. `rec(K)`의 provider는 지금 stock.c로 다시 고정되고(1.5e), 확인 행은 `check forced <pins(Rf, K)>`이며(PINS가 바뀌었다, 2.2.2), r에서 K는 더 미확인이 아니다.
+   - `tick; ait contract push origin --force -m 사소함` → `ok`. git push 전에 r의 master에 요청 커밋 Rf가 하나 공개된다(7.10.1-4): 제목 `[CONTRACT] 사소함`, 기록줄 `Ait-Request: <Rf>`·`Ait-Agent: agent-a`·`Ait-Session: <A>`. `rec(K)`의 provider는 지금 stock.c로 다시 고정되고(1.5e), 확인 행은 `check forced <pins(Rf, K)>`이며(PINS가 바뀌었다, 2.2.2), r에서 K는 더 미확인이 아니다.
    - stdout은 `pushed origin master`, 새로 공개된 요청마다 `request` 행(`request <Rk>`와 `request <Rf>`), `check <K> forced` 순서다. origin의 master는 Rf다.
    - c2의 listener가 미확인을 만든 커밋의 `change` 사건(`unverified <K>`)을 받는다. Rf의 사건은 받지 않는다(다시 고정과 확인 행만 바뀌었으므로 R이 비었다, 9.2).
 8. **두 번째 push는 noop**: 성공한 `ait contract push origin` 직후 같은 명령을 다시 하면 `noop`, exit 0(내보낼 커밋이 없다).
@@ -1155,7 +1155,7 @@ cleanup:
 2. 바뀐 것이 없으면 `ait commit -m x` → `noop`, `불변`.
 3. **걸린 계약이 있으면 함께 확인**: stock.c 5행을 바꿔 stage → `ait commit -m "재고 정리"` → `err E_NEEDS_RESULTS`, `불변`. 보고는 차례로 `provider <K> src/stock.c:1-10 ?changed`, `touch <K>`, 빈 행(7.7.6의 틀), `task <K>:specs/nobroken.yaml exec`, `check-request …`, `check-result …`, `ready yes`이고 `id` 행이 없다.
    - `tick; ait commit -m "재고 정리" -r pass` → `request <R>`, `check <K> reported`.
-   - 커밋에는 stock.c와 `.ait/<K>`가 함께 바뀌어 있다. 제목은 `재고 정리`(접두어 없음)이고, 결과와 기록줄(`Ait-Check: <K> reported <pins(HEAD, K)>`)이 있다. `rec(K)`의 확인 행은 `check reported <pins(HEAD, K)>`다(PINS가 바뀌었다).
+   - 커밋에는 stock.c와 `.ait/<K>`가 함께 바뀌어 있다. 제목은 `재고 정리`(접두어 없음)이고, 결과와 기록줄이 있다. `rec(K)`의 확인 행은 `check reported <pins(HEAD, K)>`다(PINS가 바뀌었다).
    - K는 다시 고정되어 `?`가 없다. `ait peek <K>`의 마지막 event는 `event <R> agent-a verified check reported`다.
 4. **하찮으면 `--force`**: stock.c 6행을 바꿔 stage → `tick; ait commit -m 오타 --force` → `check <K> forced`. 결과 문단은 없고 K는 다시 고정된다. `ait peek <K>`의 마지막 event는 `… verified check forced`다.
 5. 명세 파일을 stage하면 `ait commit` → `err E_MIXED`(계약 변경은 `contract commit`으로). 보고에 `mixed <PATH>`와 `ready no`가 있다. 끝나면 되돌린다.

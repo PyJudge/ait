@@ -375,12 +375,11 @@ tip OID REFNAME           (listener가 마지막으로 다 처리한 ref 스냅�
 Ait-Request: RID
 Ait-Agent: NAME
 Ait-Session: SID
-Ait-Check: ID reported|forced PINS   (이 커밋에서 확인한 계약마다 한 행, ID 오름차순. 읽는 사람을 위한 사본이고 판정에는 쓰지 않는다. 판정은 레코드의 확인 행(1.5a)으로 한다)
 ```
 
-  - **PINS**는 그 레코드의 `provider ` 행들과 `file ` 행들을 레코드에 적힌 순서대로, 행마다 LF로 끝내 이은 바이트열을 그 저장소의 `git hash-object --stdin`에 넣은 값이다. 확인 행(2.2.2)과 `Ait-Check`가 쓴다. `reported`는 낸 결과로 통과했다는 뜻이고 결과는 본문에 있다(8.4). `forced`는 결과 대신 판단으로 넘겼다는 뜻이다.
-
-  - 기록줄은 git이 기록줄로 읽는 블록만 본다. 모든 곳에서 같은 파서(`%(trailers:key=…,valueonly)`)로 읽고 값을 정확히 비교한다. 이력과 확인 판정은 필요한 이력의 기록줄을 이 파서로 한꺼번에 읽는다(13.4). `Ait-Request`·`Ait-Agent`·`Ait-Session` 중 하나라도 없거나 값이 둘 이상이면 그 커밋은 요청 커밋이 아니다. `Ait-Check`는 여러 행일 수 있다.
+  - 확인은 기록줄에 남기지 않는다. 확인한 사실은 레코드의 확인 행(1.5a, 2.2.2)에, 확인 결과는 메시지 본문(8.4)에 있다.
+  - **PINS**는 그 레코드의 `provider ` 행들과 `file ` 행들을 레코드에 적힌 순서대로, 행마다 LF로 끝내 이은 바이트열을 그 저장소의 `git hash-object --stdin`에 넣은 값이다. 확인 행(2.2.2)이 쓴다. `reported`는 낸 결과로 통과했다는 뜻이고 결과는 본문에 있다(8.4). `forced`는 결과 대신 판단으로 넘겼다는 뜻이다.
+  - 기록줄은 git이 기록줄로 읽는 블록만 본다. 모든 곳에서 같은 파서(`%(trailers:key=…,valueonly)`)로 읽고 값을 정확히 비교한다. 이력과 되돌린 쪽 판정은 필요한 이력의 기록줄을 이 파서로 한꺼번에 읽는다(13.4). `Ait-Request`·`Ait-Agent`·`Ait-Session` 중 하나라도 없거나 값이 둘 이상이면 그 커밋은 요청 커밋이 아니다.
   - 기록줄은 누가 요청했는지(되돌린 쪽 1.5d, 알림의 발신과 받는 쪽 9.3)를 찾는 데만 쓴다. 계약의 상태와 확인, 받았는지는 레코드의 판으로 판정한다(규칙 1, 2.2.4).
 - 5.5 **공개**:
   1. 명령을 시작할 때(후보를 만들기 전) `git symbolic-ref HEAD`로 얻은 ref R(`refs/heads/B`, B는 브랜치 이름)과 HEAD OID H를 끝까지 그대로 쓴다. 후보를 만들 때 읽은 index의 판도 적어 둔다.
@@ -542,7 +541,7 @@ Ait-Check: ID reported|forced PINS   (이 커밋에서 확인한 계약마다 �
 - 6.5 **확인 결과**(규칙 4): 관문의 확인 집합(1.5b, A→B는 H→T)은 이 요청에서 확인한다. 곧 `-r FILE`로 낸 확인 결과가 필요하다(8장). 과제는 그 계약들의 명세 정의 전부다. 그래서 provider가 이 요청이 바꾼 명세 파일인 current 계약도 걸린 계약으로 확인 집합에 든다(1.5b).
   - **빈 amend**: 바꿀 필드 없이(인자를 생략하거나 모두 `-`로) `amend`한 current D·O는 다시 확인한다. 미확인이던 계약은 다시 고정으로 레코드가 바뀌어 커밋된다(H7). 같은 내용을 같은 방법으로 다시 확인하면 확인 행까지 그대로이므로 레코드가 같다(6.6의 `noop`).
 
-  확인 집합의 provider를 T에서 찾을 수 없는 계약이 있으면 결과를 보기 전에 `E_CODE_REQUIRED`다(1.5b, 5.13-7). 결과가 없거나 확인 입력이 다르면 `E_NEEDS_RESULTS`, fail·unknown이 있으면 `E_CHECK_FAILED`다. 결과 때문에 거절할 때 stdout에 과제마다 `task CONTRACT:PATH exec|prompt` 행과 `check-request PATH`·`check-result PATH` 행을 쓴다(7.7.6과 같다). 확인할 코드가 없어 거절하면 이 행들을 쓰지 않는다(8.4). `--force`면 결과 없이 통과한다(5.14). 통과하면 확인 집합의 provider를 T로 다시 고정하고(7.7.4와 같은 방식), 계약마다 확인 행을 2.2.2의 규칙으로 쓰고 `Ait-Check` 기록줄을 남기고, 결과 파일을 메시지 본문에 덧붙인다(8.4).
+  확인 집합의 provider를 T에서 찾을 수 없는 계약이 있으면 결과를 보기 전에 `E_CODE_REQUIRED`다(1.5b, 5.13-7). 결과가 없거나 확인 입력이 다르면 `E_NEEDS_RESULTS`, fail·unknown이 있으면 `E_CHECK_FAILED`다. 결과 때문에 거절할 때 stdout에 과제마다 `task CONTRACT:PATH exec|prompt` 행과 `check-request PATH`·`check-result PATH` 행을 쓴다(7.7.6과 같다). 확인할 코드가 없어 거절하면 이 행들을 쓰지 않는다(8.4). `--force`면 결과 없이 통과한다(5.14). 통과하면 확인 집합의 provider를 T로 다시 고정하고(7.7.4와 같은 방식), 계약마다 확인 행을 2.2.2의 규칙으로 쓰고, 결과 파일을 메시지 본문에 덧붙인다(8.4).
 - 6.6 통과하면 공개(5.5)한다. T가 H tree와 같으면 `noop`을 쓰고 exit 0으로 끝낸다(contract commit은 이어서 7.6.1의 `unstaged` 행을 쓴다)(레코드가 아닌 `.ait/` 경로를 지우는 것도 바뀐 것이다, 5.10).
 - 6.7 출력. 같은 종류 안에서는 ID 오름차순이다. 도우미의 `new`만 만든 순서를 따른다.
 
@@ -626,7 +625,7 @@ check ID reported|forced
 - 7.1.4 **`pre-merge-commit`**(충돌 없는 자동 병합. `-s ours` 같은 전략도 여기로 온다): 이 hook이 도는 동안에는 MERGE_HEAD가 아직 없어 출발 판을 알 수 없다. 그래서 `validate`만 실행한다. HEAD에 이미 있던 오류는 7.1.3-7처럼 경고만 하고, 그 밖의 오류가 있으면 그 오류로 끝나고(7.1.7), git은 merge를 끝내지 않은 채 남긴다. hint는 `fix it in this merge and run 'CMD'; the records and spec files are pinned and validated again then`이다(CMD는 마치는 커밋. 그때 7.1.3이 돈다). 7.1.3의 정리를 건너뛰지 않았는지는 commit-msg가 본다(7.1.5).
 - 7.1.5 **`commit-msg`**: 통합 상태가 아니면 아무것도 하지 않는다. 통합 상태(자동 병합도 이때는 MERGE_HEAD가 있다)에서는 다음을 한다.
   - **정리 확인**: 먼저 7.1.3을 읽기만 하며(쓰지도 경고하지도 않고) 돌린다. 1·4·7에 막히거나 2·3·5가 index를 바꿔야 하면, pre-commit을 거치지 않은 자동 병합이다. 그 오류로 끝나고(7.1.7) git은 merge를 끝내지 않은 채 남긴다. 막힌 오류가 있으면 그 오류(5.8)와 그 hint(7.1.3-7의 복원 명령이면 `then run 'CMD'`로 끝난다)를, index만 바꿔야 하면 `error: not allowed: this merge needs its records pinned and validated again`(`E_STATE`)과 `finish it with 'CMD' (its pre-commit hook must run 'ait hook pre-commit')`(CMD는 마치는 커밋. 탐지(7.1.1-1)가 놓친 hook이어도 무엇을 고칠지 알게 한다)을 쓴다. 이 clone의 pre-commit에 ait hook이 없으면(7.1.1-1) 그 커밋도 같은 까닭으로 막히므로 그 앞에 H12를 쓴다. 그래서 자동 병합으로 레코드를 버리거나 정리를 건너뛰지 않는다. 7.1.3은 같은 index에 다시 돌려도 바꿀 것이 없으므로, pre-commit을 거친 커밋은 여기를 지난다.
-  - **기록줄**: index의 레코드 중 어느 출발 판과도 다른 것(prev까지 비교한다)이 있으면, 기록줄 블록의 `Ait-Request`·`Ait-Agent`·`Ait-Session` 행을 지우고 다음 행을 붙인다. 출발 판의 prev를 그대로 물려받은 레코드는 새 사실이 아니다. `Ait-Check` 행은 그대로 둔다(판정에 쓰지 않는 사본이다, 5.4). 기록줄 블록은 git의 기록줄 파서가 읽는 블록이다(5.4). 없으면 빈 행 하나 뒤에 새 문단으로 붙인다.
+  - **기록줄**: index의 레코드 중 어느 출발 판과도 다른 것(prev까지 비교한다)이 있으면, 기록줄 블록의 `Ait-Request`·`Ait-Agent`·`Ait-Session` 행을 지우고 다음 행을 붙인다. 출발 판의 prev를 그대로 물려받은 레코드는 새 사실이 아니다. 기록줄 블록은 git의 기록줄 파서가 읽는 블록이다(5.4). 없으면 빈 행 하나 뒤에 새 문단으로 붙인다.
     - 새 `Ait-Request`
     - `Ait-Agent`·`Ait-Session`: 유효한 session의 값. 없으면 `unknown`과 `-`
   - **경고**(규칙 6·7): 이 커밋에서 새 미확인이 되는 계약(index를 C로, 7.1.3의 부모로 본 9.1)마다 `warning: 'ID' is unverified after this merge`를 쓴다. 이 커밋이 만든 미확인이기 때문이다. index에서 미확인이고 HEAD에서는 아니던 계약 중 현재 session의 약속·요구·구독(9.3)인 것마다 `warning: 'ID' comes in unverified`를 쓴다. 이 커밋이 그 계약의 되돌린 커밋(1.5d)이 되는 D·O마다 `warning: 'ID' is reopened in this merge`를 쓴다. 부모는 7.1.3의 부모이고 이 커밋의 판은 index 판이므로 pre-commit이 이미 되돌렸어도 같다. 이유를 알 수 있으면 그 행 끝에 처음 맞는 것 하나를 붙인다: prev를 뺀 내용이 future인 출발 판과 같으면 `: it keeps the future version over the current one`, 고정이 current인 출발 판 어느 것과도 다르면(7.1.3-3) `: its pins changed without a check`, 떠맡은 D가 이 커밋에서 되돌려진 O면 `: it undertakes reopened 'D'`. 이어서 그 계약이 이 커밋 뒤 H10의 대상이면(되돌린 쪽은 1.5d로 정한다) H10을 쓴다. 미확인 경고에는 이어서 H7·H8을 쓴다.
@@ -752,7 +751,7 @@ inputs: []                    # files pinned with the contract, such as test dat
   - 확인 집합의 나머지 D·O는 provider를 T0로 다시 고정한다. `PATH BLOB`은 T0의 blob으로, `PATH:S-E BLOB`은 3.7로 T0에 사상한 행과 T0의 blob으로 바꾼다.
   - current가 되는 계약의 `new:PATH`(consumer 포함)는 T0에 있으면 `PATH BLOB`으로 바꾼다.
   - 바뀐 레코드의 prev는 HEAD 판이다.
-  - 확인 집합의 계약마다 확인 행을 2.2.2의 규칙으로 쓰고(PINS는 다시 고정한 뒤의 고정, 5.4) `Ait-Check` 기록줄을 남긴다. withdrawn이 되는 target은 current가 아니므로 확인 행을 지운다. 받은 결과 파일을 메시지 본문에 덧붙인다(8.4).
+  - 확인 집합의 계약마다 확인 행을 2.2.2의 규칙으로 쓴다(PINS는 다시 고정한 뒤의 고정, 5.4). withdrawn이 되는 target은 current가 아니므로 확인 행을 지운다. 받은 결과 파일을 메시지 본문에 덧붙인다(8.4).
 - 7.7.5 출력: `request RID`, `fulfilled ID [via O…]`(current·fulfilled가 된 레코드마다 ID 순. D를 떠맡은 offer 중 이 커밋에서 함께 current가 된 것이 있으면 `via`로 붙인다), `withdrawn ID`, `check ID reported|forced`. 경고는 6.7a와 같다.
 - 7.7.6 **이행 준비 보고**: `-r`도 `--force`도 없이 실행했는데 과제가 있거나, 조건에 막히면, 커밋하지 않고 무엇이 모자라고 무엇을 확인해야 하는지 쓴다. 다음 순서로 쓴다.
 
@@ -888,7 +887,7 @@ git은 커밋을 보낼 때 조상을 모두 함께 보내므로 보내는 쪽�
   1. `git fetch REMOTE '+refs/heads/*:refs/remotes/REMOTE/*'`로 원격의 모든 브랜치를 받는다(실패하면 `E_GIT`). 이어서 `git ls-remote --heads REMOTE`가 알린 OID 중 이 저장소에 있는 것을 **원격 끝**이라 한다. 원격에서 지워진 브랜치의 추적 ref는 원격 끝이 아니다. **내보낼 커밋**은 `git rev-list H --not 원격 끝…`이다. 비었으면 확인할 것이 없다: 원격의 R이 H면 `noop`, 아니면 5로 간다.
   2. 내보낼 커밋 중 계약 커밋이 하나도 없으면 `E_EMPTY`.
   3. H의 상태를 `validate`한다. H의 사고 판과 고정과 다른 명세 파일도 5.10의 오류다.
-  4. 내보낼 커밋 중 어느 것에서 새 미확인이 된(9.1) current 계약이 H에서도 미확인이면(**내보낼 미확인**) `E_STATE`(`error: not allowed: unverified current contract(s) 'K'…`)다. `contract push`로는 확인된 계약을 보낸다(규칙 4·8). 그래서 원격에 아직 없는 새 미확인은 내보내는 쪽이 확인하고 보낸다. `--force`면 그 계약들의 provider를 H에서 모두 찾을 수 있을 때만, 그 계약들을 H로 다시 고정하고(1.5e) 확인 행을 2.2.2대로 쓰는(`--force`의 확인이다) 요청 커밋 하나를 만들어 공개하고(5.5. 메시지는 MSG에 5.3의 `[CONTRACT] ` 접두어, 기록줄은 `Ait-Request`·`Ait-Agent`·`Ait-Session`과 `Ait-Check`), 그 커밋을 H로 삼는다. 찾을 수 없는 계약이 있으면 `--force`여도 `E_CODE_REQUIRED`이고 hint는 계약마다 H8이다(5.14).
+  4. 내보낼 커밋 중 어느 것에서 새 미확인이 된(9.1) current 계약이 H에서도 미확인이면(**내보낼 미확인**) `E_STATE`(`error: not allowed: unverified current contract(s) 'K'…`)다. `contract push`로는 확인된 계약을 보낸다(규칙 4·8). 그래서 원격에 아직 없는 새 미확인은 내보내는 쪽이 확인하고 보낸다. `--force`면 그 계약들의 provider를 H에서 모두 찾을 수 있을 때만, 그 계약들을 H로 다시 고정하고(1.5e) 확인 행을 2.2.2대로 쓰는(`--force`의 확인이다) 요청 커밋 하나를 만들어 공개하고(5.5. 메시지는 MSG에 5.3의 `[CONTRACT] ` 접두어, 기록줄은 `Ait-Request`·`Ait-Agent`·`Ait-Session`), 그 커밋을 H로 삼는다. 찾을 수 없는 계약이 있으면 `--force`여도 `E_CODE_REQUIRED`이고 hint는 계약마다 H8이다(5.14).
   5. `git push REMOTE H:R`. 계약 커밋이 아닌 커밋이 섞여 있어도 통째로 올린다.
   - 출력: `pushed REMOTE B`, 새로 공개된 요청마다 `request RID`(4에서 만든 커밋도. 위상 순, 오래된 것부터), 그리고 4에서 넘긴 계약마다 `check ID forced`.
 
@@ -1195,7 +1194,7 @@ hint: …                       (5.9a. 일어난 일은 C로, 관계와 할 일�
 <git show --no-color --no-ext-diff --no-textconv --no-show-signature --diff-merges=first-parent --src-prefix=a/ --dst-prefix=b/ --format=fuller --stat --patch C>
 ```
 
-  - payload에는 **누가**(Author, Ait-Agent·Ait-Session), **무엇을 왜**(메시지와 diff), **어떻게**(diff의 확인 행, Ait-Check)가 모두 들어 있다.
+  - payload에는 **누가**(Author, Ait-Agent·Ait-Session), **무엇을 왜**(메시지와 diff), **어떻게**(diff의 확인 행과 메시지의 확인 결과)가 모두 들어 있다.
   - hint는 5.9a의 H1~H8, H14, H15 중 받는 쪽에 맞는 것이다. 명령이 다룰 것이 받는 쪽 HEAD에 없으면 들이는 명령을 앞에 붙인다(5.9a의 들이기). 들인 뒤의 hint는 `contract pull`이 쓴다(7.12.5·7.12.6).
 
 ## 10. 협업 흐름 (전제와 규칙에서 나오는 일하는 법)
