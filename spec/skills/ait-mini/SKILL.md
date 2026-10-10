@@ -42,8 +42,8 @@ description: ait-mini(완성판 ait의 부분집합)로 여러 에이전트가 �
 | 없는 것 | 대신 |
 | --- | --- |
 | `ait peek` | 계약 하나는 `ait todo <ID>`, 범위의 future·미확인 계약은 `ait todo <범위>`. 범위의 current 계약은 레코드를 직접 본다(아래 "current 계약의 코드를 고친다") |
-| `ait listen` · `sub` · `unsub` (알림) | 없다. 다른 브랜치를 들인 뒤(`git fetch`·`git merge`) `ait todo`로 본다 |
-| `ait contract pull` · `push` | `git merge <브랜치>` · `git push`. merge 커밋은 hook이 레코드를 검증한다 |
+| `ait listen` · `sub` · `unsub` (알림) | 없다. 남의 계약 커밋을 찾아 보고 들인다(아래 "남의 계약을 들인다") |
+| `ait contract pull` · `push` | 한 clone의 worktree들은 브랜치를 함께 보므로 push가 필요 없다. 받기는 계약 커밋을 `git merge`(아래 "남의 계약을 들인다"). 다른 clone과는 `git fetch`·`git push` |
 | `ait contract new` · `add` · `commit` | 명세 정의 파일은 직접 쓴다(아래 "명세 정의"). 레코드는 도우미 명령으로만 고친다 |
 | `ait future drop` (current 계약 철회) | 먼저 되돌리고(`ait future amend K -m …`), 다음 요청으로 거둔다(`ait future cancel K -m …`) |
 | 행 범위 `a.c:10-40` | 파일 범위 `a.c`, 디렉터리 `src/`, 전체 `/`를 쓴다 |
@@ -118,7 +118,7 @@ current를 만들거나 다시 확인하는 명령(`fulfill`, `ait commit`, `fut
 - `ait todo`로 내 약속(future)과, 내 요구 중 확인 없이 바뀐 것을 본다. 블록마다 hint가 다음 할 일을 준다.
 
 **착수한다** (코드에 손대기 직전)
-1. 최신 판을 들인다: 함께 일하는 브랜치를 `git merge <브랜치>`(원격이면 먼저 `git fetch`). 충돌은 아래 "합칠 때".
+1. 남의 계약 커밋을 보고, 받을 것을 들인다(아래 "남의 계약을 들인다").
 2. `ait todo <작업할 범위>`로 그 범위의 계약을 본다. 아무도 맡지 않은 future demand(`undertaken-by` 행이 없는 것)는 내가 떠맡을 것이다. 이미 맡은 쪽이 있으면 그 약속을 기준으로 개발한다.
 3. 떠맡는다. 여럿이면 한 명령으로:
    `ait future offer <구현할 범위> <명세 정의> as o undertake D1… o undertake D2… o -m "착수"`
@@ -130,7 +130,7 @@ current를 만들거나 다시 확인하는 명령(`fulfill`, `ait commit`, `fut
 **개발 중**
 - 남의 약속(future)을 기준으로 개발한다. 아직 구현되지 않았어도 그 조건대로 있다고 보고 쓴다.
 - 커밋은 `git add` 뒤 `ait commit -m "…"`으로 한다. 걸린 계약이 없으면 `git commit`과 같은 커밋이고, 있으면 그 자리에서 과제를 준다. ait commit은 git의 커밋 hook(lint 등)을 거치지 않으니 따로 돌린다.
-- 기대는 계약이 바뀌었는지는 다른 브랜치를 들인 뒤 `ait todo <그 ID>`로 본다.
+- 기대는 계약이 바뀌었는지는 계약 커밋을 보고(아래 "남의 계약을 들인다") 들인 뒤 `ait todo <그 ID>`로 본다.
 
 **코드를 쓰다 "이건 지켜져야 해"라고 판단했다**
 - 그 조건을 명세 정의로 쓴다(위 "명세 정의").
@@ -144,7 +144,7 @@ current를 만들거나 다시 확인하는 명령(`fulfill`, `ait commit`, `fut
 - 고치면 걸릴 계약은 provider가 그 파일을 덮는 current 계약이다. `ait todo <파일>`은 future·미확인만 보여 주므로, current는 레코드에서 본다: `grep -l '^state current' .ait/[DO]* | xargs grep -H '^provider'`(provider가 그 파일, 그 파일을 품은 디렉터리 `DIR/`, 전체 `/`인 것). 자세히는 `ait todo <ID>`.
 - **한 커밋으로 끝나면**: `git add` 뒤 `ait commit -m "…"`. 걸린 계약이 있으면 과제를 준다(`touch` 행). 확인해 `-r`로 낸다. 코드를 지우거나 옮겨 계약의 코드를 찾을 수 없으면 커밋되지 않고(`code-required`), hint가 그 계약을 새 위치로 옮기는 명령(`ait commit K…=<새 범위> …`)을 준다.
 - **여러 커밋에 걸치면**: 아래 "리팩터링".
-- `git commit`으로 커밋해 `warning: this commit leaves N current contract(s) unverified`가 나오면 사고다. hint대로 다시 확인하거나 되돌린다.
+- `git commit`으로 커밋해 `warning: this commit leaves N current contract(s) unverified`가 나오면 사고다. 경고에 나온 계약 **모두**를 hint대로 다시 확인하거나 되돌린다. 하나만 하면 나머지는 미확인으로 남는다. 여럿은 한 요청에 절로 이어도 된다(`ait amend D… amend O… -m …`). 다시 확인하는 명령이 결과를 요구하면, 정말 사소한 변경일 때 그 hint대로 `--force`를 붙인다.
 - 내 변경이 남의 계약 조건을 일부러 바꾸는 것이면 확인은 실패한다. 그때는 그 계약을 약속으로 되돌리며 새 조건을 건다(`ait future amend K - - <새 명세 정의> -m "왜"`, offer면 `K - <새 명세 정의>`).
 
 **리팩터링** (확정된 코드를 여러 커밋에 걸쳐 바꾼다)
@@ -158,13 +158,13 @@ ait fulfill O…=<옮긴 곳> D…=<옮긴 곳> -r <check-result> -m "옮김"
 - 되돌리지 않은 계약이 걸리면 `ait commit`이 그 자리에서 확인을 요구하고, `git commit`이면 사고가 된다. 그래서 첫 줄로 빠짐없이 본다.
 
 **이행한다**
-1. 최신 판을 들인다(`git merge`).
+1. 남의 계약 커밋을 보고, 받을 것을 들인다.
 2. 구현을 stage한 뒤 `ait fulfill O… -m "무엇을 했나"`. 보고와 hint를 따른다.
    - `ready no`면 보고의 `mixed`(명세 파일이 섞였다), `invalid`, `code-required`를 hint대로 고친다.
    - `ready yes`면 위의 "확인 결과를 내는 법"대로 확인해 `-r`로 다시 실행한다.
    - `touch` 행은 내 변경에 걸린 계약이고, 과제에 들어 있다.
 3. 추상 계약은 구현한 코드로 좁혀 이행한다(`ait fulfill O…=src/runner.c,src/cli.c D…=src/runner.c -r <결과> -m "…"`).
-4. 내 브랜치를 함께 일하는 브랜치에 넣는다(`git merge`, 원격이면 `git push`). pre-push hook이 보내는 커밋의 레코드를 검증한다.
+4. 다 된 일은 저장소의 통합 브랜치(master 등)에 합친다. 다른 clone으로 보낼 때는 `git push`이고, pre-push hook이 보내는 커밋의 레코드를 검증한다.
 
 **그만둔다**
 - 떠맡은 offer를 거둔다(`ait future cancel O… -m "중단: 남은 일, 부분 구현이 있는 브랜치"`). 요구는 그대로 남아 누구든 다시 떠맡는다.
@@ -172,6 +172,21 @@ ait fulfill O…=<옮긴 곳> D…=<옮긴 곳> -r <check-result> -m "옮김"
 - 리팩터링을 그만두면 되돌린 계약은 내 약속으로 남는다. 코드가 확인한 그대로면 다시 이행해 두고 떠난다.
 - 내가 건 요구가 더는 필요 없으면: future면 `ait future cancel D… -m "이유"`. current면 먼저 `ait future amend D… -m "이유"`, 다음 요청으로 `ait future cancel D… -m "이유"`.
 - 이 worktree에서 일을 완전히 끝내면 `ait session close`.
+
+## 남의 계약을 들인다
+
+한 clone의 worktree들은 브랜치를 함께 본다. 남이 자기 브랜치에 계약을 커밋하면 push 없이 내 worktree에서도 보인다. 착수 전, 이행 전, 손이 빌 때 본다.
+
+```sh
+git log --branches --format='%h %D %s' -- .ait/   # 모든 브랜치의 계약 커밋([CONTRACT] …). 다른 clone이면 git fetch 뒤 --branches --remotes
+git log --oneline HEAD..<계약 커밋>                 # 들이면 함께 들어올 커밋들
+git merge <계약 커밋>                               # 그 커밋과 조상째로 들인다
+ait todo <ID>
+```
+
+- 계약은 그것을 담은 커밋째로 들인다. 내용만 복사하거나 cherry-pick하지 않는다. 같은 변경이 두 커밋으로 갈라져 나중에 충돌한다.
+- 들어올 커밋에 `[CONTRACT]`가 아닌 것이 있으면 남의 작업 중 코드가 섞인 것이다. 그 코드까지 받을 일인지 판단한다. 받을 일이 아니면 들이지 않고, `ait todo <ID>`나 `git show <계약 커밋>:.ait/<ID>`로 본 계약을 기준으로 개발한다.
+- 그래서 내 계약 커밋은 코드 커밋보다 먼저 한다. 그러면 남이 내 코드 없이 계약만 들인다.
 
 ## 합칠 때
 
