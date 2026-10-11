@@ -115,23 +115,23 @@ static const char *introduction(struct pull *p, const char *id, struct version *
 	return best;
 }
 
-/* 5.11: the refs, each short name with its commit in ->util; for-each-ref's percent-hex is a literal byte */
+/*
+ * 5.11: the refs, each by the short name git gives it, which stays apart from
+ * every other ref's (a branch "origin/x" beside the remote one), with its
+ * commit in ->util; for-each-ref's percent-hex is a literal byte
+ */
 void ref_list(struct string_list *refs)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
-	string_list_split(&lines, git("for-each-ref --format=%(refname)%20%(objectname)%20%(symref) refs/heads refs/remotes"), "\n", -1);
+	string_list_split(&lines, git("for-each-ref --format=%(objectname)%20%(refname:short)%20%(symref) refs/heads refs/remotes"), "\n", -1);
 	for_each_string_list_item(item, &lines) {
-		char ref[4096], oid[48], sym[4096];
+		char oid[48], name[4096], sym[4096];
 
 		/* a symbolic ref has a third word and is left out */
-		if (sscanf(item->string, "%4095s %47s %4095s", ref, oid, sym) == 2) {
-			const char *name = ref;
-
-			skip_prefix(ref, "refs/heads/", &name) || skip_prefix(ref, "refs/remotes/", &name);
+		if (sscanf(item->string, "%47s %4095s %4095s", oid, name, sym) == 2)
 			string_list_insert(refs, name)->util = xstrdup(oid);
-		}
 	}
 	string_list_clear(&lines, 0);
 }
@@ -1333,7 +1333,7 @@ static struct string_list integration_sides(struct pull *p)
 	} else if (rev && strcmp(rev, "MERGE_HEAD")) {
 		p->picked = line1(git("rev-parse %s", rev));
 		/* a revert starts from I's first parent */
-		string_list_insert(&sources, strcmp(rev, "REVERT_HEAD") ? p->picked : line1(git("rev-parse %s^", p->picked)));
+		string_list_insert(&sources, strcmp(rev, "REVERT_HEAD") ? p->picked : line1(git("rev-parse %s", xstrfmt("%s^", p->picked))));
 	}
 	string_list_sort(&sources);
 	string_list_remove(&sources, "", 0);
@@ -1797,6 +1797,7 @@ void changes_not_in_head(struct string_list *ids)
 	trial = snapshot_copy(&p);
 	for_each_string_list_item(item, &p.selections) {
 		struct selection *s = item->util;
+		int warned = 0;
 
 		for_each_string_list_item(l, &s->latest) {
 			struct version *w = l->util;
@@ -1806,8 +1807,11 @@ void changes_not_in_head(struct string_list *ids)
 				continue;
 			c = introduction(&p, s->id, w);
 			warning("'%s' has changes not in HEAD: '%s' on '%s'", s->id, c, first_ref(c));
-			copy_selection(&p, &trial, s->id);
+			warned = 1;
 		}
+		/* the pull takes each contract once, however many latest versions it has */
+		if (warned)
+			copy_selection(&p, &trial, s->id);
 	}
 	if (!trial.selections.nr)
 		return;

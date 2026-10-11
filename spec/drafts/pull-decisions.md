@@ -631,7 +631,7 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
 158. **미확인은 1.5a의 조건 하나다.** 확인 행이 맞고 provider 코드가 고정 이후 바뀐 current D·O다. 확인 행이 없거나 PINS가 맞지 않으면 사고 판이고, 명세 파일이 고정과 다르면 묶음 무결성 위반이다(mini는 셋을 미확인으로 섞었다).
 159. **"HEAD에 이미 있던 오류"는 레코드로 판정한다.** 7.1.3-7의 정의(오류가 가리키는 레코드를 HEAD의 구조 오류도 가리킨다)를 관문의 전이 hint 1(5.9a)에도 쓴다. 관문이 새로 만든 연결의 오류는 HEAD의 것이 아니다(t08), 손으로 넣은 연결은 HEAD의 것이다(t86).
 160. **5.10 hint의 조합.** 복원과 지우기가 함께면 `restore 'A' as in 'G', remove 'C', then 'ait contract commit -m <why>'`로 한 행에 잇는다. HEAD에 없는 레코드 경로가 아닌 파일은 `remove 'PATH'`만 쓴다(T11-i). t86의 기대(D·O·연결을 모두 복원)는 mini의 문구였으므로 5.10대로 연결만 지우는 hint로 고쳤다.
-161. **`ait contract new`(7.4)도 넣었다.** 결정 40의 contract commit이 주는 전이 hint(5.9a 3·10)가 `ait contract new ROLE`을 가리키므로, 없는 명령을 가리키지 않게 틀을 쓰는 명령을 함께 넣었다. drop은 만들 수 없다(검수 뒤 고침): `future drop`이 없어 drop을 이행할 수도 고칠 수도 없으므로, `contract new drop`과 contract commit의 새 drop은 `not supported`이고, 다른 clone에서 들어온 X의 fulfill·amend도 `not supported`다. 들어온 X는 todo가 `target`·`scope` 행으로 보여 주고(7.8.2), 범위 인자는 target의 범위로 고른다(7.8.1).
+161. **`ait contract new`(7.4)도 넣었다.** 결정 40의 contract commit이 주는 전이 hint(5.9a 3·10)가 `ait contract new ROLE`을 가리키므로, 없는 명령을 가리키지 않게 틀을 쓰는 명령을 함께 넣었다. drop은 `future drop`이 없어 이행도 수정도 할 수 없으므로(검수 뒤 고침), drop에 대한 판정은 전이 판정 한 곳에서 한다: 살아 있는 X는 cancelled로만 갈 수 있고, 새 X·target 변경·이행은 어느 입구(도우미, fulfill, contract new·commit)로든 `not supported: 'drop'`이다. 끝난 X는 hint 3(`'X' is closed`)이다. 다른 clone에서 들어온 X는 todo가 `target`·`scope` 행으로 보여 주고(7.8.2), 범위 인자는 target의 범위로 고른다(7.8.1).
 162. **drop이 없어서 쓰지 않는 hint.** H8과 contract commit 전이 hint 5의 철회 hint, H2의 X 형, H10의 drop 형, 전이 hint 3의 X 형(`to withdraw 'T', make a new drop`)은 쓰지 않는다. 가리킬 명령(`future drop`)이 없기 때문이다. 끝난 X는 `'X' is closed`만 쓴다.
 163. **E_BUSY의 첫 행은 조작 이름을 쓴다**(`cannot run now: a git rebase is in progress`). OP는 5.8 E_BUSY의 판정이고, 여러 커밋을 고르는 중이면 `sequencer/todo`의 첫 낱말로 정한다.
 164. **5.9a의 `first finish or abort the git OP in progress` 앞말은 모든 hint의 ait 쓰기 명령 앞에 한 번 쓴다.** hook 안에서는 그 커밋 뒤에도 이어지는 조작(rebase, 남은 고르기)만 센다. merge와 한 번의 고르기는 그 커밋으로 끝난다(5.9a "hook의 hint는 그 커밋 뒤의 상태").
@@ -663,14 +663,21 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
 186. **pre-push는 커밋을 만들지 않으므로 진행 중인 조작을 그대로 센다**(5.9a "hook의 hint는 그 커밋 뒤의 상태"는 커밋 hook의 것이다). merge 중의 push가 준 `ait contract commit` hint 앞에 조작 안내를 쓴다.
 187. **7.1.8의 옛 판 hint는 전 HEAD의 판이 current인 D·O일 때만 쓴다**(명세 문장도 고쳤다. 사용자 확인 필요). 되돌리기가 새 판을 남기는 것은 current에서뿐이다(7.3.2): future면 `noop`이고, 연결과 끝난 계약에는 되돌리기가 없다. 실제로 따라 해 확인했다.
 188. **모든 요청이 쓰는 레코드를 기준 판으로 판정한다**(5.10 "관문은 얽힌 레코드에 대해 GOOD의 판을 기준 판으로"). 전에는 contract commit만 그랬다. 그래서 도우미·fulfill·commit도 HEAD의 사고 판 위가 아니라 GOOD 판 위에서 전이를 판정하고 prev를 쓴다. prev를 뺀 뜻이 기준 판과 같으면 전이가 없다(끝난 GOOD 판으로 복원하는 contract commit이 된다).
-189. **끝난 D·O의 file 행은 기준 판의 것이다**(6.2 "끝난 D·O는 다시 펼치지도 고정하지도 않는다", 2.2.3 "적힌 BLOB·MODE는 무시"). 작성형이 기준 판과 같은 정의를 적으면 기준 판의 행을 쓴다. 정의를 바꾸면 끝난 계약의 변경이므로 hint 3으로 거절된다.
+189. **끝난 D·O의 file 행은 기준 판의 것이다**(6.2 "끝난 D·O는 다시 펼치지도 고정하지도 않는다", 2.2.3 "적힌 BLOB·MODE는 무시"). 기준 판과 같은 정의를 가지면 기준 판의 행을 쓴다. 모든 요청이 기준 판을 정한 직후 한 곳에서 한다(검수 뒤 고침: 전에는 contract commit만 그랬다). 정의를 바꾸면 끝난 계약의 변경이므로 hint 3으로 거절된다.
 190. **이행 전 상태의 검증 실패는 모두 보고의 `invalid` 행이다**(7.7.6, 5.13-6). 형식 오류·HEAD의 사고 판·상태 검증 실패를 한 함수로 거절과 보고에 넣으므로 그때 `ready no`다.
 191. **contract commit의 새 레코드 과제는 그 ID로 부른다**(8.1의 순번은 도우미가 이 요청에서 ID를 만드는 레코드의 것이다). 메시지와 결과 파일은 메시지를 만드는 첫 단계에서 읽는다(`-F`, 없는 `-r` 파일의 E_READ가 contract commit에도 같다).
-192. **작업 폴더에 없는 명세 정의는 아무것도 선언하지 않는다**(펼치기에서). 관문은 그 전에 E_INCOMPLETE로 거르고, contract add·commit은 7.5.2의 `missing` 행과 5.8 hint로 알린다. 그래서 채우지 않은 다른 틀이 관계없는 contract add를 막지 않는다.
+192. **작업 폴더에 없는 명세 정의는 아무것도 선언하지 않는다**(7.5.2 "그 정의들의 작업 폴더 내용"). 펼치는 tree W는 작업 폴더의 삭제도 반영한다(검수 뒤 고침: 지운 정의가 HEAD 내용으로 옛 inputs를 선언했다). 관문은 그 전에 E_INCOMPLETE로 거르고, contract add·commit은 `missing` 행과 5.8 hint로 알린다.
 193. **H4는 다른 ref의 연결도 본다**(5.11). HEAD에 포함되지 않은 다른 ref의 연결은 그 커밋의 author 시각이 내 요청의 것보다 이르면(같으면 O ID가 작으면) 먼저다. ref 목록은 pull과 같은 함수다.
 194. **`check ID WORD`는 레코드의 확인 행 낱말이다**(7.7.5, 2.2.2). 같은 PINS를 reported로 확인한 계약은 `--force`로 다시 확인해도 reported다.
 195. **todo의 범위 인자는 3.9로 고른다.** 인자의 행 범위는 T0의 번호이고 레코드의 범위는 T0로 사상한다(사상하지 못하면 파일 전체).
 196. **E_SCOPE의 hint(5.8).** 경로가 tree에 없으면 `new:`가 설 자리면 `if it does not exist yet, run '<그 범위를 new:PATH로 바꾼 같은 명령>'`, current가 될 계약이면 작업 폴더에 있을 때 관문은 코드 먼저·fulfill과 commit은 `stage 'PATH', then rerun this command`, 없을 때 관문은 `if it does not exist yet, make it future: '<그 절을 future로, 범위를 new:로 바꾼 명령>'`. contract commit의 레코드 행에 맞는 형은 정해지지 않았으므로 hint를 쓰지 않는다.
 197. **E_NEEDS_RESULTS에는 약속으로 하기 hint를 쓰지 않는다**(5.8 표는 되돌리기 hint만 둔다. 약속으로 하기는 E_CODE_REQUIRED·E_CHECK_FAILED의 것이다).
 198. **같은 판단을 한 곳으로**(Review C): HEAD 오류의 수집(`commit_errors`), 출발 판이 될 수 없는 판(`wrong_version`), 통합의 부모 집합(`pull_parents`), 통합 중인가와 그 출발 쪽(`integration_head`), ref 목록(`ref_list`), 끝난 계약의 hint 3(`closed_hint`). 호출되는 함수를 부르는 함수 앞에 두었다(전방 선언 둘을 없앴다).
-199. **기준 판으로 판정하는 레코드는 기준 판의 creator를 갖는다**(2.2.5, 6.2의 "생략하면 H 값"). 손으로 creator를 바꾼 사고 판 위에서 도우미가 쓰면 GOOD 판의 creator로 쓰므로, ait가 쓴 판이 다시 사고 판이 되지 않는다(2.3.3).
+199. **기준 판으로 판정하는 레코드는 기준 판의 creator를 갖고, 기준 판이 없으면 새 레코드로 이 session의 것이다**(2.2.5, 6.2). 손으로 creator를 바꾼 사고 판 위에서 도우미가 써도 ait가 쓴 판이 사고 판이 되지 않는다(2.3.3).
+200. **ref는 git이 줄인 이름(`refname:short`)으로 부른다**(5.11). 손으로 `refs/heads/`·`refs/remotes/`를 떼면 브랜치 `origin/x`와 원격 ref `origin/x`가 하나가 되었다. git은 겹치면 `heads/origin/x`처럼 구별해 준다.
+201. **명령이 커밋하면 그 hint(H9)는 그 커밋으로 판정한다**(5.9a 판정 시점 "커밋하면 그 커밋"). 거절되면 HEAD로 판정해 오류 행 앞에 쓴다(git이 경고를 먼저 쓰듯이, 결정 167). 이를 위해 명령이 끝날 때 정해지는 경고를 거절 직전에 쓰는 자리(`before_error`) 하나를 두었다.
+202. **약속으로 하기·되돌리기 hint는 모두 `reopen_set`의 집합(K와 5.9 d의 current O…)으로, 도우미 형은 `again()`으로 그린다.** E_SCOPE의 같은 명령도 해석된 절에서 그리고(인자 낱말에서 동사를 다시 찾지 않는다), 아직 적용하지 않은 뒤의 `undertake` 절이 current O에 떠맡기는 D면 그 O도 함께 약속으로 한다. 7.1.8의 옛 판 hint도 전 HEAD 상태에서 같은 함수로 만든다.
+203. **거절되는 레코드가 HEAD의 사고 판이면 5.9a 전이 hint 1(5.10 복원, 이어서 다시 실행)이 먼저다**(결정 159·183의 "HEAD의 오류"를 사고 판에도). 끝난 계약 hint 3·이미 current·전이 hint보다 앞선다. 열린 일: 7.7.3-1의 이행 대상 선택("HEAD에서 future")이 HEAD의 사고 판을 읽는지 기준 판을 읽는지 명세가 정하지 않았다(지금은 HEAD의 판).
+204. **hint 속의 범위는 한 함수(`input_scope`)로 지금 tree의 새 입력으로 바꾼다**(5.9a 인자): 있는 `new:PATH`는 `PATH`, 범위는 지금 tree의 행으로 사상, 찾을 수 없으면 `<scope>`(인용하지 않는다). E_SCOPE의 `new:`는 파일 전체다(3.2). todo H5, 5.9 d 구조 hint, hint 3, hint 10, contract commit의 LINES가 같은 함수를 쓴다.
+205. **E_GUARD에서 막힌 경로만 커밋하려 했으면 git이 준 index와 상관없이 `commit them through ait: …`다**(5.8 "막힌 경로만 stage됐으면"). 명세는 임시 index이면서 코드가 없는 경우를 정하지 않았다(사용자 확인 필요). `-a` 형은 코드가 있을 때만이다.
+206. **HEAD에서 current인 계약의 깨진 묶음을 고치는 contract commit hint에는 `to get the tasks`를 붙인다**(5.9a 기록: 관문이 다시 고정하면서 확인한다).

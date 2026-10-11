@@ -769,165 +769,6 @@ void state_load(struct state *s, struct tree *t)
 	}
 }
 
-/*
- * The paths of KEY joined by ',' as one helper argument, quoted for the shell
- * when it would read them (5.9a, git v2.53.0 quote.c sq_quote_buf_pretty());
- * DEFS_ONLY keeps only the definitions of FILES.
- */
-static char *join_arg(struct record *r, enum key k, int defs_only)
-{
-	struct strbuf sb = STRBUF_INIT, arg = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, &r->f[k])
-		if (!defs_only || is_def(item->string))
-			strbuf_addf(&sb, "%s%.*s", sb.len ? "," : "", (int)strcspn(item->string, " "), item->string);
-	sq_quote_buf_pretty(&arg, sb.buf);
-	strbuf_release(&sb);
-	return strbuf_detach(&arg, NULL);
-}
-
-char *scope_args(struct record *r, enum key k)
-{
-	return r->f[k].nr ? join_arg(r, k, 0) : xstrdup("");
-}
-
-char *def_paths(struct record *r)
-{
-	return join_arg(r, FILES, 1);
-}
-
-/* validate(state) of spec 5.9 a-d for record R of S, no parents involved; 0 when it holds */
-static int record_error(struct state *s, struct record *r, struct verdict *v)
-{
-	struct record *d, *o;
-	char *why;
-	size_t j;
-
-	if (r->bad)
-		return bad_record(v, r, r->bad);
-	if (!strcmp(r->id, "init"))
-		return 0;
-	if ((why = record_check(r)))
-		return bad_record(v, r, why);
-	/* 2.2.2: only a current contract has a check line; the version still reads, so the integration hook drops it (7.1.3-2) */
-	if (r->f[CHECK].nr && !is_current(r))
-		return bad_record(v, r, "check on a contract that is not current");
-	if (*r->id == 'X') {
-		struct record *target = state_get(s, val(r, TARGET));
-
-		if (!target || (*target->id != 'D' && *target->id != 'O'))
-			return bad_record(v, r, "its target does not exist");
-		if (in_state(r, "fulfilled") && !in_state(target, "withdrawn")) {
-			fail_with(v, 1, "state", NULL, xstrfmt("not allowed: fulfilled '%s' targets '%s' which is not withdrawn", r->id, target->id));
-			v->k = target;
-			v->o = r;
-			return 1;
-		}
-	}
-	if (in_state(r, "withdrawn")) {
-		for (j = 0; j < s->nr; j++)
-			if (*s->r[j]->id == 'X' && in_state(s->r[j], "fulfilled") && !strcmp(val(s->r[j], TARGET), r->id))
-				break;
-		if (j == s->nr) {
-			fail_with(v, 1, "state", NULL, xstrfmt("not allowed: '%s' is withdrawn without a drop", r->id));
-			v->k = r;
-			return 1;
-		}
-	}
-	if (*r->id != 'u')
-		return 0;
-	d = link_end(s, r, 0);
-	o = link_end(s, r, 1);
-	if (!in_state(r, "undertaken") || !is_current(o) || !in_state(d, "future"))
-		return 0;
-	fail_with(v, 1, "state", was_current(d) ?
-		  xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: "
-			  "'ait future amend %s future amend %s -m <why>'", d->id, o->id, d->id, o->id) :
-		  xstrfmt("undertake it with a future offer: 'ait future offer %s %s as o undertake %s o -m <why>'",
-			  scope_args(d, PROVIDER), def_paths(d), d->id),
-		  xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
-	v->k = d;
-	v->o = o;
-	return 1;
-}
-
-/* validate(state) of spec 5.9 a-d: the first record of S with an error; 0 when there is none */
-int check_records(struct state *s, struct verdict *v)
-{
-	size_t i;
-
-	for (i = 0; i < s->nr; i++)
-		if (record_error(s, s->r[i], v))
-			return v->code;
-	return 0;
-}
-
-/* why R cannot be shown from T: malformed, or a definition it declares is not a text file in T (NULL when it can) */
-const char *unusable(struct record *r, struct tree *t)
-{
-	struct string_list_item *item;
-
-	if (r->bad)
-		return r->bad;
-	if (!is_live(r))
-		return NULL;
-	for_each_string_list_item(item, &r->f[FILES]) {
-		const char *oid = blob_at(t, scope_path(item->string));
-
-		if (is_def(item->string) && (!oid || !blob_text(oid)))
-			return xstrfmt("its definition '%s' is not there", scope_path(item->string));
-	}
-	return NULL;
-}
-
-/* the first malformed record of S, as a verdict (5.10) */
-int malformed(struct state *s, struct verdict *v)
-{
-	size_t i;
-
-	for (i = 0; i < s->nr; i++)
-		if (s->r[i]->bad)
-			return bad_record(v, s->r[i], s->r[i]->bad);
-	return 0;
-}
-
-/*
- * spec 3.1-3.2: the shape of a scope argument, judged before any tree is read
- * (5.13-1); new:PATH names a file, and '/' and 'DIR/' name none
- */
-void scope_shape(const char *arg)
-{
-	const char *p = arg;
-	int is_new = skip_prefix(arg, "new:", &p), start, end, range = range_of(arg, &start, &end);
-
-	if (range < 0 || (range && is_new))
-		reject(128, NULL, "bad scope: '%s'", arg);
-	if (range)
-		p = scope_path(arg);
-	if ((is_new && ends_with(p, "/")) ||
-	    (strcmp(p, "/") && !path_ok(ends_with(p, "/") ? xstrndup(p, strlen(p) - 1) : p)))
-		reject(128, NULL, "bad scope: '%s'", arg);
-}
-
-/*
- * the path of T that PATH names on a case-insensitive filesystem
- * (core.ignorecase) without being it, or NULL: git add stages nothing for
- * such a path, and git's history would get both
- */
-const char *case_twin(struct tree *t, const char *path)
-{
-	static int ignorecase = -1;
-	size_t i;
-
-	if (ignorecase < 0)
-		ignorecase = config_true("core.ignorecase");
-	for (i = 0; ignorecase && i < t->nr; i++)
-		if (!strcasecmp(t->e[i].path, path) && strcmp(t->e[i].path, path))
-			return t->e[i].path;
-	return NULL;
-}
-
 static void hunk_part(const char *text, int *start, int *length)
 {
 	char *next;
@@ -1012,6 +853,200 @@ static struct scope_location locate_scope(const char *scope, struct tree *t)
 	return place;
 }
 
+static char *location_arg(struct scope_location *place)
+{
+	return place->range ? xstrfmt("%s:%d-%d", place->path, place->start, place->end) : xstrdup(place->path);
+}
+
+/*
+ * The paths of KEY joined by ',' as one helper argument, quoted for the shell
+ * when it would read them (5.9a, git v2.53.0 quote.c sq_quote_buf_pretty());
+ * DEFS_ONLY keeps only the definitions of FILES.
+ */
+static char *join_arg(struct record *r, enum key k, int defs_only)
+{
+	struct strbuf sb = STRBUF_INIT, arg = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &r->f[k])
+		if (!defs_only || is_def(item->string))
+			strbuf_addf(&sb, "%s%.*s", sb.len ? "," : "", (int)strcspn(item->string, " "), item->string);
+	sq_quote_buf_pretty(&arg, sb.buf);
+	strbuf_release(&sb);
+	return strbuf_detach(&arg, NULL);
+}
+
+/*
+ * 5.9a: the scope VALUE as a hint's command takes it at T, where it runs: a
+ * new file T has is its path, a range the lines it maps to there, and one T
+ * cannot find "<scope>", as its old line numbers would pin other lines (3.3)
+ */
+char *input_scope(const char *value, struct tree *t)
+{
+	struct scope_location place = locate_scope(value, t);
+
+	if (ends_with(place.path, "/"))
+		return place.path;
+	if (starts_with(value, "new:"))
+		return place.oid ? place.path : xstrfmt("new:%s", place.path);
+	return place.status ? xstrdup("<scope>") : location_arg(&place);
+}
+
+/* R's scopes of KEY as one argument at T (5.9a), each quoted for the shell when it would read it; "<scope>" stays as it is */
+char *input_scopes(struct record *r, enum key k, struct tree *t)
+{
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &r->f[k]) {
+		char *in = input_scope(item->string, t);
+
+		if (sb.len)
+			strbuf_addch(&sb, ',');
+		if (!strcmp(in, "<scope>"))
+			strbuf_addstr(&sb, in);
+		else
+			sq_quote_buf_pretty(&sb, in);
+	}
+	return strbuf_detach(&sb, NULL);
+}
+
+char *def_paths(struct record *r)
+{
+	return join_arg(r, FILES, 1);
+}
+
+/* validate(state) of spec 5.9 a-d for record R of S, no parents involved; 0 when it holds */
+static int record_error(struct state *s, struct record *r, struct verdict *v)
+{
+	struct record *d, *o;
+	char *why;
+	size_t j;
+
+	if (r->bad)
+		return bad_record(v, r, r->bad);
+	if (!strcmp(r->id, "init"))
+		return 0;
+	if ((why = record_check(r)))
+		return bad_record(v, r, why);
+	/* 2.2.2: only a current contract has a check line; the version still reads, so the integration hook drops it (7.1.3-2) */
+	if (r->f[CHECK].nr && !is_current(r))
+		return bad_record(v, r, "check on a contract that is not current");
+	if (*r->id == 'X') {
+		struct record *target = state_get(s, val(r, TARGET));
+
+		if (!target || (*target->id != 'D' && *target->id != 'O'))
+			return bad_record(v, r, "its target does not exist");
+		if (in_state(r, "fulfilled") && !in_state(target, "withdrawn")) {
+			fail_with(v, 1, "state", NULL, xstrfmt("not allowed: fulfilled '%s' targets '%s' which is not withdrawn", r->id, target->id));
+			v->k = target;
+			v->o = r;
+			return 1;
+		}
+	}
+	if (in_state(r, "withdrawn")) {
+		for (j = 0; j < s->nr; j++)
+			if (*s->r[j]->id == 'X' && in_state(s->r[j], "fulfilled") && !strcmp(val(s->r[j], TARGET), r->id))
+				break;
+		if (j == s->nr) {
+			fail_with(v, 1, "state", NULL, xstrfmt("not allowed: '%s' is withdrawn without a drop", r->id));
+			v->k = r;
+			return 1;
+		}
+	}
+	if (*r->id != 'u')
+		return 0;
+	d = link_end(s, r, 0);
+	o = link_end(s, r, 1);
+	if (!in_state(r, "undertaken") || !is_current(o) || !in_state(d, "future"))
+		return 0;
+	fail_with(v, 1, "state", was_current(d) ?
+		  xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: "
+			  "'ait future amend %s future amend %s -m <why>'", d->id, o->id, d->id, o->id) :
+		  xstrfmt("undertake it with a future offer: 'ait future offer %s %s as o undertake %s o -m <why>'",
+			  input_scopes(d, PROVIDER, head_tree()), def_paths(d), d->id),
+		  xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
+	v->k = d;
+	v->o = o;
+	return 1;
+}
+
+/* validate(state) of spec 5.9 a-d: the first record of S with an error; 0 when there is none */
+int check_records(struct state *s, struct verdict *v)
+{
+	size_t i;
+
+	for (i = 0; i < s->nr; i++)
+		if (record_error(s, s->r[i], v))
+			return v->code;
+	return 0;
+}
+
+/* why R cannot be shown from T: malformed, or a definition it declares is not a text file in T (NULL when it can) */
+const char *unusable(struct record *r, struct tree *t)
+{
+	struct string_list_item *item;
+
+	if (r->bad)
+		return r->bad;
+	if (!is_live(r))
+		return NULL;
+	for_each_string_list_item(item, &r->f[FILES]) {
+		const char *oid = blob_at(t, scope_path(item->string));
+
+		if (is_def(item->string) && (!oid || !blob_text(oid)))
+			return xstrfmt("its definition '%s' is not there", scope_path(item->string));
+	}
+	return NULL;
+}
+
+/* the first malformed record of S, as a verdict (5.10) */
+int malformed(struct state *s, struct verdict *v)
+{
+	size_t i;
+
+	for (i = 0; i < s->nr; i++)
+		if (s->r[i]->bad)
+			return bad_record(v, s->r[i], s->r[i]->bad);
+	return 0;
+}
+
+/*
+ * spec 3.1-3.2: the shape of a scope argument, judged before any tree is read
+ * (5.13-1); new:PATH names a file, and '/' and 'DIR/' name none
+ */
+void scope_shape(const char *arg)
+{
+	const char *p = arg;
+	int is_new = skip_prefix(arg, "new:", &p), start, end, range = range_of(arg, &start, &end);
+
+	if (range < 0 || (range && is_new))
+		reject(128, NULL, "bad scope: '%s'", arg);
+	if (range)
+		p = scope_path(arg);
+	if ((is_new && ends_with(p, "/")) ||
+	    (strcmp(p, "/") && !path_ok(ends_with(p, "/") ? xstrndup(p, strlen(p) - 1) : p)))
+		reject(128, NULL, "bad scope: '%s'", arg);
+}
+
+/*
+ * the path of T that PATH names on a case-insensitive filesystem
+ * (core.ignorecase) without being it, or NULL: git add stages nothing for
+ * such a path, and git's history would get both
+ */
+const char *case_twin(struct tree *t, const char *path)
+{
+	static int ignorecase = -1;
+	size_t i;
+
+	if (ignorecase < 0)
+		ignorecase = config_true("core.ignorecase");
+	for (i = 0; ignorecase && i < t->nr; i++)
+		if (!strcasecmp(t->e[i].path, path) && strcmp(t->e[i].path, path))
+			return t->e[i].path;
+	return NULL;
+}
+
 /*
  * spec 3.9: the argument scope ARG, read at T, overlaps scope R, which is
  * mapped to T; a range R cannot map there is its whole file
@@ -1032,11 +1067,6 @@ int overlap(const char *arg, const char *r, struct tree *t)
 	if (range_of(arg, &start, &end) != 1 || !place.range || place.status != SCOPE_FOUND)
 		return 1;
 	return start <= place.end && place.start <= end;
-}
-
-static char *location_arg(struct scope_location *place)
-{
-	return place->range ? xstrfmt("%s:%d-%d", place->path, place->start, place->end) : xstrdup(place->path);
 }
 
 int scope_changed(const char *scope, struct tree *t)

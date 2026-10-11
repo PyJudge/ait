@@ -124,6 +124,7 @@ tick; git commit -qam revive --no-verify
 echo x >> src/stock.c; git add src/stock.c
 tick; run ait fulfill "$O" --force -m f
 check "fulfill of a contract revived by hand: E_STATE from GOOD's cancelled version" fails 1 "error: not allowed: '$O' cannot go from cancelled to current"
+check "hint 1: HEAD's accident is restored first, then the fulfill is run again" err_has "hint: restore '.ait/$O' as in '$G', unstage 'src/stock.c' first, then 'ait contract commit -m <why>', stage 'src/stock.c' again, then rerun this command"
 git reset -q src/stock.c; git checkout -q src/stock.c
 git checkout "$G" -- .ait/$O
 tick; run ait contract commit -m fix
@@ -176,16 +177,18 @@ run ait contract add .ait/$D
 check "the frame itself: its missing definition is a missing line" grep -qx "missing PATH" "$T/out"
 check "with 5.8's hint" err_has "hint: create 'PATH', or stop declaring it in '.ait/$D'"
 
-# H9: a pull that picks nothing is no choice, so the hint includes the changes
+# H9 is judged on the commit a command makes, and before a refusal's error on HEAD (5.9a)
 prep
 tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
 git branch b
-tick; ait amend "$O" src/stock.c:1-5 - -m a >/dev/null 2>&1
+tick; ait amend "$O" src/stock.c:1-5 - -m a >/dev/null 2>&1; M=$(git rev-parse HEAD)
 git switch -q b
+tick; run ait fulfill "$O" -m f
+check "a refusal: H9 on HEAD, which master's version includes" err_has "hint: to include them, run 'ait contract pull $O'"
+check "before the error" err_before "has changes not in HEAD" "error:"
 tick; run ait amend "$O" src/stock.c:6-9 - -m b
-check "H9 warns" err_has "warning: '$O' has changes not in HEAD:"
-check "H9 hint: to include them" err_has "hint: to include them, run 'ait contract pull $O'"
-check "no pick one" not err_has "pick one"
+check "a commit: H9 on it, where the versions have diverged" sh -c "grep -q '^hint: pick one: ' '$T/err' && grep -qF \"'ait contract pull $O=$M -m <why>'\" '$T/err' && grep -qF \"'ait contract pull $O=HEAD -m <why>'\" '$T/err'"
+tick; expect_ok "the pick the hint gives runs" ait contract pull "$O=$M" -m pick
 
 # H4: another ref's link to the same demand came first, so mine is told (5.11)
 prep
@@ -259,4 +262,157 @@ tick; run ait future amend "$O" -m r
 check "the helper writes GOOD's creator" sh -c "[ $rc = 0 ] && git show HEAD:.ait/$O | grep -q '^creator a '"
 run ait todo
 check "and no accident" not err_has "changed outside ait's rules"
+
+# 5.11: refs are named as git shortens them, so a branch named like a remote ref stays a ref of its own
+prep
+git switch -q -c origin/hidden
+tick; ait future offer src/order.c specs/w.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+git switch -q master; git update-ref refs/remotes/origin/hidden HEAD
+tick; run ait contract pull "$O"
+check "the branch's contract is found and pulled" sh -c "[ $rc = 0 ] && git cat-file -e HEAD:.ait/$O"
+
+# H4: links one request makes share its commit, so the smaller O came first and is not told
+prep
+tick; ait future demand src/order.c src/stock.c specs/w.yaml -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O1=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+B=$(ait session open --agent b 2>/dev/null)
+tick; AIT_SESSION="$B" ait future offer src/stock.c specs/low.yaml -m o2 >"$T/out" 2>&1; O2=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; run ait undertake "$D" "$O1" undertake "$D" "$O2" -m both
+if [ "$O1" \< "$O2" ]; then
+	check "my offer, the smaller, is not told" not err_has "is also undertaken"
+else
+	check "my offer, the larger, is told" err_has "warning: '$D' is also undertaken by '$O2'"
+fi
+
+# 5.9 d: every promise or reopen hint takes along the current offers that undertake the demand, and runs as given
+hinted() { sed -n "s/^hint: .*$1: '\(ait .*\)'\$/\1/p" "$T/err" | head -1 | sed 's/<why>/x/'; }
+prep
+tick; ait future demand src/order.c src/stock.c specs/w.yaml -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future offer src/stock.c specs/p.yaml as o undertake "$D" o -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \(O[^ ]*\) o$/\1/p' "$T/out")
+echo x >> src/stock.c; git add src/stock.c; tick; ait fulfill "$O" --force -m f >/dev/null 2>&1
+H=$(git rev-parse HEAD)
+tick; run ait amend "$D" - src/nope.c - -m a
+CMD=$(hinted "make it future")
+check "E_SCOPE's promise reopens O too" sh -c "echo \"$CMD\" | grep -q 'future amend $O'"
+tick; expect_ok "and runs" sh -c "$CMD"
+git reset -q --hard "$H"
+tick; ait amend "$D" src/order.c:1-3 - - --force -m a >/dev/null 2>&1
+tick; run git revert --no-edit HEAD
+CMD=$(sed -n "s/^hint: to take it back for others too, reopen it with ait once this commit is reverted: '\(.*\)'\$/\1/p" "$T/err" | sed 's/<why>/x/')
+check "7.1.8's reopen takes O along" sh -c "echo \"$CMD\" | grep -q 'future amend $O'"
+tick; git revert --no-edit HEAD >/dev/null 2>&1
+tick; expect_ok "and runs once the revert is reverted" sh -c "$CMD"
+git reset -q --hard "$H"
+tick; run ait demand src/order.c src/nope.c specs/w.yaml as d undertake d "$O" --force -m d
+CMD=$(hinted "make it future")
+check "a new demand's promise takes along the current offer a later clause gives it to" sh -c "echo \"$CMD\" | grep -q 'future amend $O'"
+tick; expect_ok "and runs" sh -c "$CMD"
+
+# choice 161: a drop from elsewhere is only cancelled here; making, moving and fulfilling one come with future drop
+prep
+tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait offer src/order.c specs/w.yaml --force -m o2 >"$T/out" 2>&1; O2=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+X=Xaaaaaaaaaaaa
+printf 'role drop\nstate future\ntarget %s\ncreator a %s\nprev -\n' "$O" "$A" > .ait/$X
+git add .ait/$X; tick; git commit -qm drop --no-verify
+sed "s/^target .*/target $O2/" .ait/$X > "$T/rec" && cat "$T/rec" > .ait/$X; ait contract add .ait/$X >/dev/null
+tick; run ait contract commit -m move
+check "contract commit moving a drop: not supported" fails 128 "fatal: not supported: 'drop'"
+git checkout -q HEAD -- .ait/$X
+sed "s/^state .*/state fulfilled/" .ait/$X > "$T/rec" && cat "$T/rec" > .ait/$X; ait contract add .ait/$X >/dev/null
+tick; run ait contract commit -m fulfil
+check "contract commit fulfilling a drop: not supported, with no hint to fulfill it" sh -c "[ $rc = 128 ] && ! grep -q 'ait fulfill' '$T/err'"
+git checkout -q HEAD -- .ait/$X
+tick; run ait fulfill "$X" -m f
+check "fulfill of a drop: not supported" fails 128 "fatal: not supported: 'drop'"
+tick; expect_ok "future cancel of a drop" ait future cancel "$X" -m c
+
+# 5.9a hint 1: a record made current by hand is HEAD's accident; its repair comes before 'already current'
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out"); G=$(git rev-parse HEAD)
+sed 's/^state future/state current/' .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O
+tick; git commit -qam hand --no-verify
+echo x >> src/stock.c; git add src/stock.c
+tick; run ait fulfill "$O" --force -m f
+check "the restore, not the amend that E_ACCIDENT would refuse" sh -c "grep -qF \"hint: restore '.ait/$O' as in '$G'\" '$T/err' && ! grep -q 'ait amend $O' '$T/err'"
+
+# 5.9a: a hint's scopes are input valid where its command runs: new:PATH is a whole file, and old ranges are mapped
+prep
+run ait future offer src/nope.c:1-5 specs/p.yaml -m o
+CMD=$(sed -n "s/^hint: if it does not exist yet, run '\\(.*\\)'\$/\\1/p" "$T/err" | sed 's/<why>/x/')
+check "E_SCOPE on a range: new: names the file" test "$CMD" = "ait future offer new:src/nope.c specs/p.yaml -m x"
+tick; expect_ok "and runs" sh -c "$CMD"
+tick; ait future offer new:src/x.c,src/stock.c:20-30 specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future cancel "$O" -m c >/dev/null 2>&1
+echo new > src/x.c; awk 'NR>15' src/stock.c > "$T/s" && cat "$T/s" > src/stock.c
+git add -A; tick; git commit -qm code
+tick; run ait amend "$O" - specs/low.yaml -m a
+CMD=$(hinted "to need it again, make a new contract")
+check "hint 3 maps the range and names the new file as it is now" test "$CMD" = "ait future offer src/stock.c:5-15,src/x.c specs/p.yaml -m x"
+tick; expect_ok "and runs" sh -c "$CMD"
+
+# 5.8 E_GUARD: with only contract paths in the commit, it goes through ait whatever index git gave the hook
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >/dev/null 2>&1
+echo 'body: changed' > specs/p.yaml
+tick; run git commit -qam a
+check "-a with only a contract path: through ait, no empty code list" sh -c "grep -qF \"hint: commit them through ait: 'ait contract add specs/p.yaml' and 'ait contract commit -m <why>'\" '$T/err' && ! grep -q 'stage the code ()' '$T/err'"
+
+# 5.9a: the gate checks a current contract it pins again, so the repair of its broken bundle gets the tasks
+prep
+tick; ait offer src/stock.c specs/p.yaml --force -m o >/dev/null 2>&1
+echo 'body: changed' > specs/p.yaml
+tick; git commit -qam raw --no-verify; run ait hook post-commit
+check "a current one's repair: to get the tasks" err_has "hint: run 'ait contract commit -m <why>' to get the tasks"
+
+# 7.1.3: a revert starts from I's first parent, named as a revision of its own (the words of a git call are whole)
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+git switch -q -c side; tick; ait future amend "$O" src/stock.c:1-5 - -m side >/dev/null 2>&1; IN=$(git rev-parse HEAD)
+git switch -q master; tick; ait future amend "$O" src/stock.c:10-15 - -m ours >/dev/null 2>&1
+tick; git revert --no-edit "$IN" >/dev/null 2>&1
+git checkout -q --ours .ait/$O; git add .ait/$O
+tick; expect_ok "the revert's finishing commit" git commit -q --allow-empty --no-edit --cleanup=strip
+
+# 6.2: a record a helper writes without a base version is new, made by this session
+prep
+B=$(ait session open --agent b 2>/dev/null)
+printf 'role offer\nstate current\nprovider src/stock.c %s\nfile specs/p.yaml 100644 %s def\ncreator b %s\nprev -\n' "$(git rev-parse HEAD:src/stock.c)" "$(git rev-parse HEAD:specs/p.yaml)" "$B" > .ait/O111111111111
+git add .ait/O111111111111; tick; git commit -qm raw --no-verify
+tick; run ait future amend O111111111111 -m reopen
+check "the helper's new record is the session's" sh -c "[ $rc = 0 ] && git show HEAD:.ait/O111111111111 | grep -q '^creator a '"
+
+# H9: two latest versions of one contract elsewhere are one contract to pull, and do not refuse the command
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+git branch side1; git branch side2
+git switch -q side1; tick; ait future amend "$O" src/stock.c:1-5 - -m s1 >/dev/null 2>&1
+git switch -q side2; tick; ait future amend "$O" src/stock.c:10-15 - -m s2 >/dev/null 2>&1
+git switch -q master
+tick; run ait future amend "$O" src/stock.c:20-25 - -m m
+check "the amend runs with H9's warnings" sh -c "[ $rc = 0 ] && [ \$(grep -c 'has changes not in HEAD' '$T/err') = 2 ]"
+
+# 6.2: a helper returning an ended contract to GOOD's version takes GOOD's file lines, so there is no transition
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future cancel "$O" -m c >/dev/null 2>&1; CB=$(git rev-parse HEAD:.ait/$O)
+sed -e 's/^state cancelled/state future/' -e "s/^prev .*/prev $CB/" -e "s#^file specs/p.yaml .*#file specs/p.yaml 100644 $(git rev-parse HEAD:specs/w.yaml) def#" .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O
+tick; git commit -qam revive --no-verify
+tick; expect_ok "future cancel puts it back" ait future cancel "$O" -m c
+check "with GOOD's file line" test "$(git show HEAD:.ait/$O | grep '^file ')" = "$(git show "$CB" | grep '^file ')"
+
+# 7.5.2: a definition gone from the work tree declares nothing there
+prep
+printf 'body: test\ninputs: [specs/data]\n' > specs/p.yaml; echo input > specs/data; git add -A; tick; git commit -qm data --no-verify
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+rm specs/p.yaml specs/data
+run ait contract add .ait/$O
+check "only the definition is missing, not its old input" sh -c "grep -qx 'missing specs/p.yaml' '$T/out' && ! grep -q 'specs/data' '$T/out'"
+
+# 5.8 E_SCOPE: the hint is drawn from the parsed clauses, so a consumer file named like a verb stays a consumer
+prep
+cp src/order.c amend; git add amend; tick; git commit -qm amend --no-verify
+run ait demand amend src/nope.c specs/p.yaml --force -m d
+CMD=$(hinted "make it future")
+check "the verb is where the clause has it" test "$CMD" = "ait future demand amend new:src/nope.c specs/p.yaml -m x"
 done_testing

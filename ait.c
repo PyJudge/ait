@@ -99,12 +99,19 @@ void suggest(const char *fmt, ...)
 }
 
 /* git's error()/die() routines and a hint, with the exit code of spec 5.7 */
+/* warnings a command decided before it ends, written before its error when it refuses, as git writes warnings first */
+void (*before_error)(void);
+
 void reject(int code, const char *hint, const char *fmt, ...)
 {
 	struct strbuf msg = STRBUF_INIT;
+	void (*warn)(void) = before_error;
 	va_list ap;
 	size_t i;
 
+	before_error = NULL;
+	if (warn)
+		warn();
 	va_start(ap, fmt);
 	strbuf_vaddf(&msg, fmt, ap);
 	va_end(ap);
@@ -924,7 +931,7 @@ void fulfill_hint(struct state *s, struct record *p, struct tree *t)
  */
 static int post_hook(const char *before)
 {
-	struct state now = { 0 };
+	struct state now = { 0 }, was = { 0 };
 	struct string_list errors = STRING_LIST_INIT_DUP, old = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	size_t i;
@@ -933,8 +940,10 @@ static int post_hook(const char *before)
 		return 0;
 	state_load(&now, head_tree());
 	commit_errors(head, &errors);
-	if (before)
+	if (before) {
+		state_load(&was, tree_load(before));
 		commit_errors(before, &old);
+	}
 	for_each_string_list_item(item, &errors) {
 		if (string_list_has_string(&old, item->string))
 			continue;
@@ -947,10 +956,13 @@ static int post_hook(const char *before)
 		if (!then || !v_now || then == v_now || !contains(then, v_now))
 			continue;
 		warning("this commit put '%s' back to an older version; only this branch has it", now.r[i]->id);
-		/* reopening leaves a new version only from a current one (7.3.2); other versions have no such command */
+		/*
+		 * reopening leaves a new version only from a current one (7.3.2), with the
+		 * offers of 5.9 d as the state before has them; other versions have no such command
+		 */
 		if (is_current(then->r))
-			suggest("to take it back for others too, reopen it with ait once this commit is reverted: "
-				"'ait future amend %s -m <why>'", now.r[i]->id);
+			suggest("to take it back for others too, reopen it with ait once this commit is reverted: 'ait %s -m <why>'",
+				reopen_clauses(&was, state_get(&was, now.r[i]->id), NULL));
 	}
 	return 0;
 }
@@ -1019,7 +1031,8 @@ static void guard(struct state *hs, struct string_list *paths)
 	through = xstrfmt("commit them through ait: %s", through_ait(&blocked));
 	/* a plain commit runs its hooks on this worktree's index, -a, -i and paths on another (git v2.53.0 builtin/commit.c:476) */
 	index = realpath(line1(git("rev-parse --path-format=absolute --git-path index")), NULL);
-	if (!hook_index || (index && !strcmp(hook_index, index)))
+	/* with only contract paths in it, the commit goes through ait whatever index it took (5.8) */
+	if (!code.nr || !hook_index || (index && !strcmp(hook_index, index)))
 		reject(1, code.nr ? xstrfmt("unstage %s and commit the rest; then %s", quoted_paths(&blocked), through) : through,
 		       "contract files cannot be changed by a plain commit: %s", quoted_paths(&blocked));
 	/* 5.9a, local changes: contract paths this worktree's index has staged go out of the way first */
@@ -1209,7 +1222,7 @@ static void todo_hints(struct state *s, struct state *hs, struct record *r, stru
 	}
 	if (made && *r->id == 'D' && !by->nr && !undertaken_future(s, hs, r))
 		suggest("if you need it now, undertake it yourself: 'ait future offer %s %s as o undertake %s o -m <why>'",
-			scope_args(r, PROVIDER), def_paths(r), r->id);
+			input_scopes(r, PROVIDER, head_tree()), def_paths(r), r->id);
 	if (string_list_has_string(by, me) || (made && !by->nr && *r->id == 'O'))
 		fulfill_hint(s, r, t);
 	else if (made && by->nr)

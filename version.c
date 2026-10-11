@@ -548,6 +548,7 @@ char *head_repair(struct verdict *v, struct string_list *code, int rerun)
 {
 	struct strbuf hint = STRBUF_INIT;
 	const char *commit = "'ait contract commit -m <why>'";
+	struct version *at;
 
 	if (v->k && v->k->mend) {
 		/* what is no record goes; it is committed only when HEAD has it */
@@ -559,8 +560,10 @@ char *head_repair(struct verdict *v, struct string_list *code, int rerun)
 		strbuf_addstr(&hint, "rewrite '.ait/init' as the single line 'version 2' with mode 100644");
 		commit = through_ait(single(".ait/init"));
 	} else if (strcmp(v->word, "incomplete")) {
-		/* a broken bundle (5.8 E_INCOMPLETE) needs no restore: the gate pins it again (6.2) */
 		entangled_restore(v, &hint);
+	} else if (v->k && (at = version_in(head, v->k->id)) && !at->r->bad && is_current(at->r)) {
+		/* a broken bundle (5.8 E_INCOMPLETE) needs no restore: the gate pins it again (6.2), checking HEAD's current one */
+		commit = "'ait contract commit -m <why>' to get the tasks";
 	}
 	if (commit && code && code->nr)
 		strbuf_addf(&hint, "%sunstage %s first", hint.len ? ", " : "", quoted_paths(code));
@@ -654,9 +657,11 @@ void base_versions(struct state *s, struct string_list *written)
 		r->base = blob;
 		r->base_at = good;
 		r->rebased = 1;
-		/* 2.2.5, 6.2: the creator never changes, so what a helper writes keeps its base's */
+		/* 2.2.5, 6.2: the creator never changes, so a record keeps its base's; without a base it is new, made by this session */
 		if (then)
 			r->f[CREATOR] = then->f[CREATOR];
+		else
+			put(r, CREATOR, xstrfmt("%s %s", agent, sid));
 	}
 }
 
