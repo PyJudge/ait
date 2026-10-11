@@ -30,8 +30,9 @@ libyaml/%.o: libyaml/%.c libyaml/yaml.h libyaml/yaml_private.h
 
 test: ait
 	@sh t/run.sh
+	@sh t/pull/run.sh
 
-# the pull criteria tests stay out of `test` until pull is implemented (t/pull/run.sh)
+# Run the pull criteria separately during implementation
 test-pull: ait
 	@sh t/pull/run.sh
 
@@ -41,16 +42,19 @@ install: ait
 	install -d $(prefix)/bin
 	install ait $(prefix)/bin/ait
 
-# the experiment bundle: ait, the ait-mini skill and bundle/'s scripts, as dist/ait-mini.tar.gz
-bundle: ait
+# The version 1 experiment keeps its own executable and skill bundle.
+ait-mini: $(SRC) $(wildcard *.h) $(YAML)
+	$(CC) $(CFLAGS) -DAIT_MINI -Ilibyaml -o $@ $(SRC) $(YAML) $(LDLIBS)
+
+bundle: ait-mini
 	rm -rf dist/ait-mini
 	mkdir -p dist/ait-mini/bin dist/ait-mini/skills
-	cp ait dist/ait-mini/bin/
+	cp ait-mini dist/ait-mini/bin/ait
 	cp -R spec/skills/ait-mini dist/ait-mini/skills/
 	cp bundle/README.md bundle/install.sh bundle/try.sh dist/ait-mini/
 	tar -czf dist/ait-mini.tar.gz -C dist ait-mini
 
 clean:
-	rm -f ait $(YAML)
+	rm -f ait ait-mini $(YAML)
 
 .PHONY: test test-pull install bundle clean

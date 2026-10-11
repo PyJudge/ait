@@ -38,7 +38,7 @@ OID=$(git rev-parse HEAD)
 check "1: stdout is exactly 'init created <new HEAD>'" out_is "init created $OID"
 check "1: the new commit's parent is base" test "$(git rev-parse HEAD^)" = "$BASE"
 check "1: the commit adds only .ait/init" test "$(git diff-tree -r --no-commit-id --name-status HEAD)" = "A	.ait/init"
-check "1: .ait/init is 'version 1\\n'" test "$(git cat-file blob HEAD:.ait/init | od -c | head -1)" = "$(printf 'version 1\n' | od -c | head -1)"
+check "1: .ait/init is 'version 2\\n'" test "$(git cat-file blob HEAD:.ait/init | od -c | head -1)" = "$(printf 'version 2\n' | od -c | head -1)"
 check "1: .ait/init mode 100644" sh -c "git ls-tree HEAD .ait/init | grep -q '^100644 '"
 check "1: subject is [CONTRACT] ait init" test "$(git log -1 --format=%s)" = "[CONTRACT] ait init"
 check "1: no trailers (message is the subject only)" test "$(git log -1 --format=%B | git stripspace)" = "[CONTRACT] ait init"
@@ -95,7 +95,7 @@ tick; run git commit -qm code
 check "3: plain code commit ok" test "$rc" = 0
 check "3: legacy ran" err_has legacy
 # ait rejects (.ait/ in a plain commit): the hook ends with ait's exit code
-echo 'version 2' > .ait/init; git add .ait/init
+echo 'version 3' > .ait/init; git add .ait/init
 B=$(git rev-parse HEAD)
 tick; run git commit -qm bad
 check "3: ait's E_GUARD stops the commit" sh -c "[ $rc = 1 ] && grep -qF 'error: contract files cannot be changed by a plain commit:' '$T/err'"

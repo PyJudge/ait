@@ -44,7 +44,7 @@ DSTATE=current pbase
 d0=$(recat HEAD D); h0=$(git rev-parse HEAD)
 fact "HC1: D is current and its check is reported" test "$(state_of "$d0")" = current -a "$(git cat-file -p "$d0" | sed -n 's/^check //p' | cut -d ' ' -f 1)" = reported
 want "HC1: the check request leaves the repository unchanged" pull_unchanged "$D" amend "$D" -m why
-want "HC1: a current empty amend requires a check" test "$rc" = 1 -a "$(head -1 "$T/err" | cut -c 1-29)" = 'error: check results required:'
+want "HC1: a current empty amend requires a check" test "$rc" = 1 -a "$(head -1 "$T/err" | cut -c 1-30)" = 'error: check results required:'
 want "HC1: a task and check files are printed" test -n "$(grep "^task $D:specs/d.yaml prompt$" "$T/out")" -a -n "$(grep '^check-request /' "$T/out")" -a -n "$(grep '^check-result /' "$T/out")"
 want "HC1: the hint adds force" grep -qF "ait contract pull $D amend $D --force -m <why>" "$T/err"
 want "HC1: no unusable -r hint" not grep -q -- '-r ' "$T/err"

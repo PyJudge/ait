@@ -177,7 +177,7 @@ want "E1b: 'pull D Q' stops, nothing changed" pull_unchanged "$D" "$Q"
 want "E1b: diverged error" stops_with 1 "error: '$D' has diverged between "
 want "E1b: hint offers D=HEAD with Q" hint_cmd "ait contract pull $D=HEAD $Q -m <why>"
 want "E1b: hint offers D=<commit> with Q" pick_re "'ait contract pull $D=[^ ']+ $Q -m <why>'"
-want "E1b: ... the commit is b1, D@B's introducing commit (record 116)" eval 'cn=$(sed -n "s/.*'"'"'ait contract pull $D=\([^ '"'"']*\) $Q -m <why>'"'"'.*/\1/p" "$T/err" | grep -v "^HEAD$" | head -1); [ -n "$cn" ] && [ "$(git rev-parse -q --verify "$cn^{commit}")" = "$B1" ]'
+want "E1b: ... the commit is b1, D@B's introducing commit (record 116)" eval 'cn=$(grep -oE "$D=[0-9a-f]{40}" "$T/err" | head -1 | cut -d= -f2); [ -n "$cn" ] && [ "$(git rev-parse -q --verify "$cn^{commit}")" = "$B1" ]'
 pull "$D=$B2" "$Q" -m why
 want "E1b: 'pull D=b2 Q' is not refused (b2's version remains)" test "$rc" = 0
 want "E1b: takes b2 in a commit on HEAD" parents_are "$E1" "$B2"
@@ -194,7 +194,7 @@ fact "K8: neither undertake record is in HEAD" test -z "$(link_at HEAD D O1)" -a
 fact "K8: c1 has D-O1, d1 has D2-O1, 1 new commit each" test "$(link_at c D O1)" = "$L1" -a "$(link_at d D2 O1)" = "$L2" -a "$(newc "$C1")" = 1 -a "$(newc "$DD1")" = 1
 fact "K8: O1, the other end of D-O1, is also an end of D2-O1" eval 'test -n "$(at d ".ait/undertake/$D2-$O1")" && test -n "$(at c ".ait/undertake/$D-$O1")"'
 want "K8: 'pull D' stops, nothing changed" pull_unchanged "$D"
-want "K8: the stop of 3: two commits, two names in ID order (record 116)" err_re "^error: taking '[^']+' and '[^']+' also changes contracts you did not name: '$D2', '$O1'\$"
+want "K8: the stop of 3: two commits, two names in ID order (record 116)" err_re "^error: taking '[^']+' and '[^']+' also changes contracts you did not name: '$D2' \\(undertake '$D2-$O1'\\), '$O1' \\(undertake '$D-$O1'\\)\$"
 want "K8: exit 1" test "$rc" = 1
 want "K8: one hint names D, O1 and D2" named_hint "$D" "$O1" "$D2"
 want "K8: ... in contract-ID order (record 116)" err_line "hint: name them too: 'ait contract pull $D $D2 $O1'"

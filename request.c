@@ -25,6 +25,9 @@ struct request {
 	const char *result, *file;	/* -r and -F */
 	int has_msg;			/* -m or -F was given */
 	struct strbuf msg;
+	const char *pull_hint;
+	const char **pull_tree;
+	struct strbuf *pull_out;
 	struct string_list files;	/* spec files given to the helpers */
 	struct string_list declared;	/* an input -> a definition of this request that declares it */
 	struct string_list results;	/* the result file taken, as yaml_parse() read it */
@@ -50,29 +53,6 @@ struct request {
 	.selected = STRING_LIST_INIT_DUP, .check_set = STRING_LIST_INIT_DUP, .missing = STRING_LIST_INIT_DUP, \
 	.tasks = STRING_LIST_INIT_DUP, .hints = STRING_LIST_INIT_DUP, .carried = STRING_LIST_INIT_DUP, \
 	.mixed = STRING_LIST_INIT_DUP, .args = STRVEC_INIT }
-
-/* spec 2.3: the allowed transitions of a demand or offer ('x') and of a link ('u'), and who makes them */
-static const struct move {
-	char kind;
-	const char *from, *to;
-	unsigned gate : 1, fulfill : 1;
-} moves[] = {
-	{ 'x', "-", "future", 1, 0 }, { 'x', "-", "current", 1, 0 }, { 'x', "future", "future", 1, 0 },
-	{ 'x', "future", "cancelled", 1, 0 }, { 'x', "future", "current", 0, 1 }, { 'x', "current", "current", 1, 1 },
-	{ 'x', "current", "future", 1, 0 }, { 'u', "-", "undertaken", 1, 0 }, { 'u', "released", "undertaken", 1, 0 },
-	{ 'u', "undertaken", "released", 1, 0 },
-};
-
-static int allowed(struct request *q, struct record *r, const char *from, const char *to)
-{
-	size_t i;
-
-	for (i = 0; i < ARRAY_SIZE(moves); i++)
-		if (moves[i].kind == (*r->id == 'u' ? 'u' : 'x') && !strcmp(moves[i].from, from) &&
-		    !strcmp(moves[i].to, to))
-			return q->gate ? moves[i].gate : moves[i].fulfill;
-	return 0;
-}
 
 /*
  * spec 5.2-2: an integration (7.1.3), or a rebase, am or sequencer that has
@@ -170,27 +150,31 @@ static char *index_before(struct tree *h, struct tree *t, struct tree *index, st
 
 /*
  * spec 5.5-4/5 by git's own commands, after C is published; each step only
- * reports its failure. git read-tree -i -m O C moves the index from O to C
+ * reports its failure. Pull uses git read-tree -m -u H C, retaining Git's
+ * index and work tree protection; other requests update only .ait/ in the
+ * work tree. git read-tree -i -m O C moves the index from O to C
  * under git's index lock in one step, taking C's entry only where the index
  * still has O's and refusing everything when one was staged otherwise (git
  * v2.53.0 unpack-trees.c twoway_merge). Then .ait/ follows in the work
  * tree, apart from skip-worktree entries, git refreshes what it wrote, and a
  * sparse worktree gets its patterns back. What is not done is warned about.
  */
-static void follow(struct string_list *paths, const char *o, struct tree *ct, const char *c)
+static int follow(struct string_list *paths, const char *o, struct tree *ct, const char *c, int code, int held)
 {
 	struct string_list ait = STRING_LIST_INIT_DUP, rest = STRING_LIST_INIT_DUP;
 	struct string_list skipped = STRING_LIST_INIT_DUP, left = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	int fd = lock_worktree(top), rc = fd < 0 || !at(c), failed;
+	int fd = held >= 0 ? held : lock_worktree(top), rc = fd < 0 || !at(c), failed;
 
 	for_each_string_list_item(item, paths)
 		string_list_append(starts_with(item->string, ".ait/") ? &ait : &rest, item->string);
 	if (!rc && o)
-		git_run(NULL, NULL, &rc, "read-tree -i -m %s %s", o, c);
-	if (!rc && ait.nr)
+		git_run(NULL, NULL, &rc, code ? "read-tree -m -u %s %s" : "read-tree -i -m %s %s", o, ct->oid);
+	if (!rc && !code && ait.nr)
 		string_list_split(&skipped, git_run(NULL, NULL, &failed, "ls-files -t -- .ait"), "\n", -1);
 	for_each_string_list_item(item, &ait) {
+		if (code)
+			break;
 		if (rc)
 			break;
 		if (unsorted_string_list_has_string(&skipped, xstrfmt("S %s", item->string)))
@@ -203,12 +187,12 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
 			string_list_append(&left, item->string);
 	}
 	/* read-tree and checkout-index leave the entries without the files' stat data */
-	if (!rc && o) {
+	if (!rc && !code && o) {
 		git_run(NULL, NULL, &rc, "update-index --refresh");
 		rc = rc && rc != 1;
 	}
 	/* the sparse patterns back over .ait/; when that fails, those files are left as they are */
-	if (!rc && ait.nr && sparse()) {
+	if (!rc && !code && ait.nr && sparse()) {
 		git_run(NULL, NULL, &failed, "sparse-checkout reapply");
 		for_each_string_list_item(item, &ait)
 			if (failed && !unsorted_string_list_has_string(&left, item->string))
@@ -216,22 +200,23 @@ static void follow(struct string_list *paths, const char *o, struct tree *ct, co
 	}
 	if (!at(c))
 		rc = 1;
-	if (fd >= 0)
+	if (fd >= 0 && held < 0)
 		close(fd);
 	if (!rc && !left.nr)
-		return;
+		return 0;
 	if (rc)
 		warning("committed '%s' to '%s', but the index and work tree were not updated", c, headref);
 	else
 		warning("committed '%s' to '%s', but %s were not updated", c, headref, quoted_paths(&left));
 	if (!at(c))
-		return;
+		return 1;
 	if (rc && ait.nr)
 		suggest("bring %s to '%s' in the index and work tree", quoted_paths(&ait), c);
 	else if (left.nr)
 		suggest("bring %s to '%s' in the work tree", quoted_paths(&left), c);
 	if (rc && rest.nr)
-		suggest("bring %s to '%s' in the index", quoted_paths(&rest), c);
+		suggest("bring %s to '%s' in the %s", quoted_paths(&rest), c, code ? "index and work tree" : "index");
+	return 1;
 }
 
 /* the commit the last publish() put on the branch (init prints it) */
@@ -251,15 +236,28 @@ static int moved(void)
  * from INDEX, the entries noted when the request began, and what fails there
  * is only warned about. 1 when R moved meanwhile; else C is PUBLISHED.
  */
-int publish(const char *tree, const char *msg, struct tree *index)
+int publish_pull(const char *tree, const char *msg, struct tree *index, struct string_list *ends, int ff)
 {
 	struct tree *t = tree_load(tree);
 	struct string_list paths = STRING_LIST_INIT_DUP;
-	char *o = index_before(head_tree(), t, index, &paths), *c;
+	char *o, *c;
 	int rc;
+	struct strvec args = STRVEC_INIT;
+	struct string_list_item *item;
 
-	c = line1(head ? git_run(msg, NULL, NULL, "commit-tree %s -p %s", tree, head) :
-		  git_run(msg, NULL, NULL, "commit-tree %s", tree));
+	if (ends) {
+		tree_diff(head_tree(), t, &paths);
+		o = head_tree()->oid;
+	} else {
+		o = index_before(head_tree(), t, index, &paths);
+	}
+	strvec_pushl(&args, "commit-tree", tree, NULL);
+	if (head)
+		strvec_pushl(&args, "-p", head, NULL);
+	if (ends)
+		for_each_string_list_item(item, ends)
+			strvec_pushl(&args, "-p", item->string, NULL);
+	c = ff ? ends->items[0].string : line1(git_args(&args, msg, NULL, NULL));
 	git_run(NULL, NULL, &rc, "update-ref %s %s %s", headref, c, head ? head : "0000000000000000000000000000000000000000");
 	if (rc) {
 		char *why = git_failed();
@@ -269,8 +267,41 @@ int publish(const char *tree, const char *msg, struct tree *index)
 		reject(128, NULL, "%s", why);
 	}
 	published = c;
-	follow(&paths, o, t, c);
+	follow(&paths, o, t, c, ends != NULL, -1);
 	return 0;
+}
+
+int publish(const char *tree, const char *msg, struct tree *index)
+{
+	return publish_pull(tree, msg, index, NULL, 0);
+}
+
+/* 7.12.6: the ordinary Git merge files and index, without moving HEAD */
+void pull_conflict(const char *tree, struct string_list *ends, const char *stages, const char *msg)
+{
+	struct string_list paths = STRING_LIST_INIT_DUP;
+	struct tree *t = tree_load(tree);
+	struct strbuf heads = STRBUF_INIT;
+	struct string_list_item *item;
+	char *before;
+	int fd = lock_worktree(top);
+
+	if (fd < 0)
+		reject(128, NULL, "could not lock the working tree");
+	if (moved())
+		reject(1, "rerun this command", "HEAD moved while running; nothing changed");
+	tree_diff(head_tree(), t, &paths);
+	before = head_tree()->oid;
+	if (follow(&paths, before, t, head, 1, fd))
+		reject(1, "restore the index and working tree to HEAD, then rerun this command", "could not prepare the index and working tree for this pull");
+	git_run(stages, NULL, NULL, "update-index --index-info");
+	for_each_string_list_item(item, ends)
+		strbuf_addf(&heads, "%s\n", item->string);
+	write_state(xstrfmt("%s/MERGE_HEAD", gitdir), heads.buf);
+	write_state(xstrfmt("%s/MERGE_MSG", gitdir), msg);
+	write_state(xstrfmt("%s/MERGE_MODE", gitdir), "no-ff");
+	git("update-ref ORIG_HEAD %s", head);
+	close(fd);
 }
 
 /* a file given to ait is read as text (E_READ, or E_FORMAT when it holds a NUL) */
@@ -384,6 +415,23 @@ static void message(struct request *q, const char *prefix)
 		strbuf_addstr(&sb, prefix);
 	strbuf_addstr(&sb, q->msg.buf);
 	q->msg = sb;
+}
+
+char *pull_options(int argc, const char **argv, struct strvec *args, int *force, struct strbuf *msg)
+{
+	struct request q = REQUEST_INIT;
+
+	parse_options(&q, argc, argv);
+	if (q.result)
+		reject(129, NULL, "unknown option '-r'");
+	if (q.has_msg) {
+		read_files(&q);
+		message(&q, "[CONTRACT] ");
+	}
+	*args = q.args;
+	*force = q.force;
+	*msg = q.msg;
+	return q.after_option;
 }
 
 /* the next argument of a clause; options stand only between clauses (7.3.1) */
@@ -621,6 +669,8 @@ static void apply(struct request *q, struct clause *c)
 			reject(129, NULL, "amend '%s' takes A B FILES (a demand) or B FILES (an offer)", c->k[0]);
 		if (c->future)
 			put(r, STATE, "future");
+		if (c->future)
+			string_list_clear(&r->f[CHECK], 0);
 		/* 7.3.2: an amend that keeps everything checks K again */
 		r->recheck = is_current(r) && (!c->b || ((!c->a || keeps(c->a)) && keeps(c->b) && keeps(c->f)));
 		if (c->b) {
@@ -994,7 +1044,7 @@ static char *judged_tree(struct request *q, struct string_list *changed)
 	for (i = 0; i < q->s.nr; i++) {
 		struct record *r = q->s.r[i];
 
-		if (unchanged(r))
+		if (unchanged(r) && (!r->old || !strcmp(val(r, CHECK), val(r->old, CHECK))))
 			continue;
 		put(r, PREV, r->old ? blob_at(q->ht, xstrfmt(".ait/%s", r->id)) : "-");
 		index_line(&info, "100644", line1(git_run(record_text(r, ALL_KEYS), NULL, NULL, "hash-object -w --stdin")),
@@ -1348,7 +1398,7 @@ static void transitions(struct request *q)
 			if (!is_live(end))
 				reject(1, j ? undertake_hint(q, d, end) : NULL, "not allowed: '%s' is %s", end->id, val(end, STATE));
 		}
-		if (!allowed(q, r, from, to))
+		if (!record_step(r->id, from, to, q->gate))
 			reject(1, was_current(r) && *r->id != 'u' ? reopen_first(q, r) : NULL,
 			       "not allowed: '%s' cannot go from %s to %s", r->id, from, to);
 	}
@@ -1415,6 +1465,11 @@ static void code_present(struct request *q)
 			/* 7.3.3: the file came in another case; git add keeps that spelling */
 			if (case_twin(q->v, file))
 				reject(128, xstrfmt("give it as git has it: '%s'", case_twin(q->v, file)), "bad scope: '%s'", sc->string);
+			/* An existing file with an unmappable range needs a scope, not staging. */
+			if (blob_at(q->v, file)) {
+				moved = 1;
+				continue;
+			}
 			if (!written && new)
 				string_list_append(&write, file);
 			if (written || new)
@@ -1513,14 +1568,14 @@ static const char *kind_of(struct request *q, struct record *r)
 	return is_current(r) && in_state(r->old, "future") ? "fulfilled" : "";
 }
 
-static void print_change(struct request *q, struct record *r)
+static char *change_line(struct request *q, struct record *r)
 {
 	if (*r->id == 'u')
-		printf("%s %.13s %s\n", val(r, STATE), r->id + 10, r->id + 24);
+		return xstrfmt("%s %.13s %s\n", val(r, STATE), r->id + 10, r->id + 24);
 	else if (!r->old)
-		printf("new %s%s%s\n", r->id, r->alias ? " " : "", r->alias ? r->alias : "");
+		return xstrfmt("new %s%s%s\n", r->id, r->alias ? " " : "", r->alias ? r->alias : "");
 	else
-		printf("%s %s%s\n", kind_of(q, r), r->id, q->gate ? "" : via(q, r));
+		return xstrfmt("%s %s%s\n", kind_of(q, r), r->id, q->gate ? "" : via(q, r));
 }
 
 /* spec 7.7.4 and 6.5: pin the check set at the judged tree, add what changed to it and commit */
@@ -1532,12 +1587,25 @@ static void commit_request(struct request *q, struct strbuf *results)
 	struct strbuf trailers = STRBUF_INIT;
 	char rid[16], *tree;
 	size_t i;
-	int kind;
+	int kind, full = blob_at(q->ht, ".ait/init") && !strcmp(object(blob_at(q->ht, ".ait/init"), 1, NULL, NULL), "version 2\n");
 
 	newid(rid, 'R');
-	for_each_string_list_item(item, &q->check_set)
-		repin(item->util, PROVIDER, q->v, 0);
+	for_each_string_list_item(item, &q->check_set) {
+		struct record *r = item->util;
+
+		repin(r, PROVIDER, q->v, 0);
+		if (full)
+			put(r, CHECK, xstrfmt("%s %s", !q->force || (r->old && starts_with(val(r->old, CHECK), "reported ") && !strcmp(pins(r), pins(r->old))) ? "reported" : "forced", pins(r)));
+	}
 	tree = judged_tree(q, &changed);
+	if (q->pull_tree) {
+		*q->pull_tree = tree;
+		for_each_string_list_item(item, &changed)
+			strbuf_addstr(q->pull_out, change_line(q, item->util));
+		for_each_string_list_item(item, &q->check_set)
+			strbuf_addf(q->pull_out, "check %s %s\n", item->string, starts_with(val(item->util, CHECK), "reported ") ? "reported" : "forced");
+		return;
+	}
 	if (!strcmp(tree, q->ht->oid) && !q->check_set.nr) {
 		puts("noop");
 		return;
@@ -1550,7 +1618,8 @@ static void commit_request(struct request *q, struct strbuf *results)
 	}
 	strbuf_addf(&trailers, "Ait-Request: %s\nAit-Agent: %s\nAit-Session: %s\n", rid, agent, sid);
 	for_each_string_list_item(item, &q->check_set)
-		strbuf_addf(&trailers, "Ait-Check: %s %s %s\n", item->string, q->force ? "forced" : "reported", pins(item->util));
+		if (!full)
+			strbuf_addf(&trailers, "Ait-Check: %s %s %s\n", item->string, q->force ? "forced" : "reported", pins(item->util));
 	strbuf_addf(&q->msg, "\n%s", trailers.buf);
 	/*
 	 * spec 5.3: the message reads back to exactly these lines with the parser of
@@ -1567,7 +1636,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 	for (kind = 0; kinds[kind]; kind++)
 		for_each_string_list_item(item, kind ? &sorted : &changed)
 			if (!strcmp(kind_of(q, item->util), kinds[kind]))
-				print_change(q, item->util);
+				fputs(change_line(q, item->util), stdout);
 	for_each_string_list_item(item, &q->check_set)
 		printf("check %s %s\n", item->string, q->force ? "forced" : "reported");
 	for_each_string_list_item(item, &changed)
@@ -1598,7 +1667,7 @@ static int finish(struct request *q)
 		return 0;
 	}
 	/* 5.13-6: the state is valid; fulfill and commit judge the records they found (5.10) */
-	if (q->gate && check_state(&q->s, q->v, &v))
+	if (q->gate && (q->pull_tree ? check_records(&q->s, &v) : check_state(&q->s, q->v, &v)))
 		reject(v.code, gate_hint(q, &v), "%s", v.msg);
 	if (!q->gate && malformed(&q->s, &v))
 		block(q, v);
@@ -1621,6 +1690,8 @@ static int finish(struct request *q)
 		report(q, req, res, input && q->tasks.nr);
 		if (q->first.code)
 			reject(q->first.code, q->first.hint, "%s", q->first.msg);
+		if (q->pull_hint)
+			reject(1, q->pull_hint, "check results required: %d task(s)", (int)q->tasks.nr);
 		add_hint(q, xstrfmt("check each task, fill '%s', and rerun with -r %s", res, quoted(res)));
 		add_hint(q, "if it is trivial, add --force instead (recorded as forced)");
 		next_hints(q, &q->check_set);
@@ -1899,12 +1970,44 @@ static struct tree *candidate(struct request *q)
 }
 
 /* spec 7.3: clauses apply in order to the records loaded from HEAD */
+const char *pull_helpers(const char *tree, struct strvec *clauses, char *after_option, int force, struct string_list *conflicts, const char *hint, struct strbuf *out)
+{
+	struct request q = REQUEST_INIT;
+	size_t i;
+
+	q.gate = 1;
+	q.pull_hint = hint;
+	q.pull_tree = &tree;
+	q.pull_out = out;
+	q.force = force;
+	q.ht = q.v = q.noted = q.index = tree_load(tree);
+	state_load(&q.s, q.ht);
+	strvec_pushv(&q.args, clauses->v);
+	q.after_option = after_option;
+	parse_clauses(&q);
+	for (i = 0; i < q.ncl; i++)
+		apply(&q, &q.cl[i]);
+	for (i = 0; i < q.s.nr; i++)
+		if (is_live(q.s.r[i]) && !is_current(q.s.r[i]))
+			expand_files_except(q.s.r[i], q.v, conflicts);
+	finish(&q);
+	return tree;
+}
+
+/* spec 7.3: clauses apply in order to the records loaded from HEAD */
 int cmd_request(int argc, const char **argv)
 {
 	static const char *const direct[] = { "new", "add", "commit", "push", "pull", NULL };
 	struct request q = REQUEST_INIT;
 	size_t k;
 
+	if (argc > 1 && contract_word(argv[0]) && !strcmp(argv[1], "pull")) {
+#ifdef AIT_MINI
+		unsupported("contract pull");
+#else
+		return cmd_pull(argc - 2, argv + 2);
+#endif
+	}
 	q.gate = 1;
 	parse_options(&q, argc, argv);
 	if (q.args.nr > 1 && contract_word(q.args.v[0]) && one_of(q.args.v[1], direct))

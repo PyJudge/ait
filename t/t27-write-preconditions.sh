@@ -43,9 +43,9 @@ tick; expect_unchanged expect_err "$desc" E_BUSY ait future cancel "$O" -m m
 # mini: basic hint only ('a git merge is in progress ...' is not checked)
 desc="2: fulfill during merge"
 tick; expect_unchanged expect_err "$desc" E_BUSY ait fulfill "$O" -m m
-# mini: no contract commit / contract pull
+# mini: no contract commit; pull requires a contract ID
 tick; expect_err "2: contract commit (mini: unsupported)" MINI ait contract commit -m m
-tick; expect_err "2: contract pull (mini: unsupported)" MINI ait contract pull Rdeadbeef0000
+tick; expect_err "2: contract pull needs a contract ID" E_USAGE ait contract pull
 git merge --abort
 
 # 3: detached HEAD

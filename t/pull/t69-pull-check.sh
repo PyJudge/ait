@@ -306,10 +306,11 @@ want "CK7: takes a1" test "$(parents)" = 2 -a "$(git rev-parse HEAD^2 2>/dev/nul
 want "CK7: 'included D from ...'" out_re "^included $D from '.+'\$"
 
 # S5  main's current K6 pins src/stock.c ; a1 changes D and moves src/stock.c to src/inv.c ; 'pull D'
-s5() { cond K6 k0; rec K6 current provider=src/stock.c consumer=src/order.c >/dev/null; }
-pbase s5
+pbase
 git checkout -q -b a; cond D c-A; git mv src/stock.c src/inv.c; VA=$(rec D provider=src/inv.c); A1=$(c "a: D, move stock.c"); git checkout -q master
-K6V=$(recat HEAD K6); M=$(mtree HEAD a)
+cond K6 k0; K6V=$(rec K6 current provider=src/stock.c consumer=src/order.c); c "main: K6 after a branched" >/dev/null
+M=$(mtree HEAD a)
+fact "S5: incoming parent has no K6 already unverified" test -z "$(recat "$A1" K6)"
 fact "S5: K6 is current and provides src/stock.c" test "$(state_of "$K6V")" = current -a -n "$(pin_of "$K6V" src/stock.c)"
 fact "S5: merge-tree HEAD a1 has no conflict" test -z "$(mt HEAD a)"
 fact "S5: the merged tree has no stock.c and has inv.c" eval '! git rev-parse -q --verify "$M:src/stock.c" >/dev/null && git rev-parse -q --verify "$M:src/inv.c" >/dev/null'

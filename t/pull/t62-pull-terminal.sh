@@ -72,7 +72,7 @@ pins_with() { git cat-file -p "$1" | grep -qx "file $2 100644 $3 def"; }
 warnings() { grep -c '^warning:' "$T/err"; }
 no_warning() { ! grep -q '^warning:' "$T/err"; }
 # the choices a 'pick one' hint offers for ID, one per line
-choices() { grep '^hint: pick one:' "$T/err" | grep -oE "'ait contract pull [^']*$1=[^ ']+ -m <why>'"; }
+choices() { grep '^hint: pick one:' "$T/err" | grep -oE "'ait contract pull [^']*$1=[^ ']+[^']* -m <why>'"; }
 two_choices_no_head() { [ "$(choices "$1" | wc -l | tr -d ' ')" = 2 ] && ! choices "$1" | grep -q "$1=HEAD "; }
 overridden_mine() { err_re "^warning: your change to '$D' is overridden: '$D' was $1 in '[^']+'\$"; }
 overridden_other() { err_re "^warning: the change to '$D' in '[^']+' is overridden: '$D' was $1 in '[^']+'\$"; }

@@ -26,6 +26,9 @@ setup() {
 	for i in $(seq 1 50); do echo "s$i"; done > src/stock.c
 	tick; git add -A && git commit -qm base
 	tick; ait init >/dev/null
+	# These fixtures retain the frozen ait-mini version 1 contract.
+	printf "version 1\n" > .ait/init
+	git add .ait/init; git -c core.hooksPath=/dev/null commit -q --amend --no-edit
 	git push -q origin master
 }
 tick() { N=$((N+60)); export GIT_COMMITTER_DATE="@$((1700000000+N)) +0000" GIT_AUTHOR_DATE="@$((1700000000+N)) +0000"; }

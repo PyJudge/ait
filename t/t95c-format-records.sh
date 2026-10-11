@@ -27,7 +27,7 @@ done
 rec_bad '' "printf '\\n' >> .ait/$O" "a blank line"
 rec_bad '' "printf 'x' >> .ait/$O" "a last line without LF"
 rec_bad '' "sed -i.bak 's/\$/\r/' .ait/$O && rm .ait/$O.bak" "a CR"
-rec_bad '' "echo 'version 2' > .ait/init" "an init file of another version"
+rec_bad '' "echo 'version 3' > .ait/init" "an init file of another version"
 rec_bad '' "echo x > .ait/notes" "a path under .ait/ that is no record"
 rec_bad '' "mkdir -p .ait/undertake && printf 'state bogus\nprev -\n' > .ait/undertake/D000000000000-$O" "a link to a demand that is not there"
 git reset -q --hard "$R"

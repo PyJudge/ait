@@ -1,8 +1,8 @@
 # Helpers for the pull criteria (spec/drafts/pull-criteria.md, revision 9). A pull test sources this.
 # Each row has two kinds of checks:
 #   fact  - the history the row describes, as git and the record data show it ("git에서 확인한 것").
-#           These pass now; a failing fact means the fixture is wrong.
-#   want  - what `ait contract pull` must do ("기대"). These fail until pull is implemented.
+#           A failing fact means the fixture is wrong.
+#   want  - what `ait contract pull` must do ("기대"). Both kinds must pass.
 # Notifications (decision 16, 18) are left out for now.
 . "$(dirname "$0")/../lib.sh"
 AIT_DIR=$(cd "$(dirname "$0")/../.." && pwd)
@@ -33,6 +33,7 @@ pbase() {
 	ds=${DSTATE:-future} dck=${DCHECK:-reported}; unset DSTATE DCHECK
 	[ -n "$T" ] && cd / && rm -rf "$T"
 	setup
+	printf 'version 2\n' > .ait/init
 	MSID=$(ait session open --agent agent-m)
 	printf 'line%s v=0\n' 1 2 3 4 5 6 7 8 9 > src/stock.c
 	echo order > src/order.c
@@ -54,7 +55,8 @@ wblob() { [ -e "$1" ] && git hash-object -w "$1"; }
 # decision 17, and print its blob. Keys: role spec provider consumer inputs creator check prev target.
 # prev defaults to the record now in the work tree (or '-'); check defaults to reported for a current D/O.
 rec() {
-	name=$1 state=${2:-future}; shift; [ $# -gt 0 ] && shift
+	name=$1 state=future; shift
+	case ${1-} in ''|*=*) ;; *) state=$1; shift ;; esac
 	role=demand spec=$(spec_of "$name") provider=src/stock.c consumer=src/order.c inputs= creator=$SA check=reported prev= target=
 	case $name in O*) role=offer ;; X*) role=drop ;; esac
 	for kv; do eval "${kv%%=*}=\"\${kv#*=}\""; done

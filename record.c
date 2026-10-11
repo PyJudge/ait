@@ -188,10 +188,32 @@ void tree_diff(struct tree *a, struct tree *b, struct string_list *paths)
  * a file value is "PATH MODE OID def|input". Both start with their path;
  * scope_oid() gives what follows it, "MODE OID def|input" for a file value.
  */
+static int range_of(const char *value, int *start, int *end)
+{
+	const char *colon;
+	char *next;
+	long a, b;
+
+	skip_prefix(value, "new:", &value);
+	colon = strchr(value, ':');
+	if (!colon || colon > value + strcspn(value, " "))
+		return 0;
+	a = strtol(colon + 1, &next, 10);
+	if (*next++ != '-')
+		return -1;
+	b = strtol(next, &next, 10);
+	if (a < 1 || b < a || b > INT_MAX || (*next && *next != ' ') ||
+	    strcmp(xstrndup(colon + 1, next - colon - 1), xstrfmt("%ld-%ld", a, b)))
+		return -1;
+	*start = a;
+	*end = b;
+	return 1;
+}
+
 char *scope_path(const char *v)
 {
 	skip_prefix(v, "new:", &v);
-	return xstrndup(v, strcspn(v, " "));
+	return xstrndup(v, strcspn(v, " :"));
 }
 
 static const char *scope_oid(const char *v)
@@ -223,7 +245,7 @@ int is_def(const char *file)
 }
 
 /* the canonical key order of spec 2.2.2 */
-static const char *keys[NKEYS] = { "role", "state", "consumer", "provider", "target", "file", "creator", "prev" };
+static const char *keys[NKEYS] = { "role", "state", "consumer", "provider", "target", "file", "check", "creator", "prev" };
 
 const char *val(struct record *r, enum key k)
 {
@@ -274,15 +296,50 @@ int was_current(struct record *r)
 	return r->old && is_current(r->old);
 }
 
-/* within a key, values sort bytewise with "new:PATH" as PATH (spec 3.2a) */
 static int cmp_value(const void *a, const void *b)
 {
 	const char *x = ((const struct string_list_item *)a)->string;
 	const char *y = ((const struct string_list_item *)b)->string;
 
-	skip_prefix(x, "new:", &x);
-	skip_prefix(y, "new:", &y);
 	return strcmp(x, y);
+}
+
+/* spec 3.2a: path bytes, whole file, then numeric start and end */
+static int cmp_scope(const void *a, const void *b)
+{
+	const char *x = ((const struct string_list_item *)a)->string;
+	const char *y = ((const struct string_list_item *)b)->string;
+	char *xp = scope_path(x), *yp = scope_path(y);
+	int xs = 0, xe = 0, ys = 0, ye = 0;
+	int order = strcmp(xp, yp);
+	int xr = range_of(x, &xs, &xe), yr = range_of(y, &ys, &ye);
+
+	free(xp);
+	free(yp);
+	if (order)
+		return order;
+	if (xr != yr)
+		return xr < yr ? -1 : 1;
+	if (xs != ys)
+		return xs < ys ? -1 : 1;
+	if (xe != ye)
+		return xe < ye ? -1 : 1;
+	return strcmp(x, y);
+}
+
+/* Mapping can collapse scopes; both repins and moved hints use the same list (3.2a). */
+static void normalize_scopes(struct string_list *scopes)
+{
+	size_t src, dst = 0;
+
+	QSORT(scopes->items, scopes->nr, cmp_scope);
+	for (src = 0; src < scopes->nr; src++) {
+		if (dst && !strcmp(scopes->items[dst - 1].string, scopes->items[src].string))
+			free(scopes->items[src].string);
+		else
+			scopes->items[dst++] = scopes->items[src];
+	}
+	scopes->nr = dst;
 }
 
 static void record_sort(struct record *r)
@@ -290,7 +347,7 @@ static void record_sort(struct record *r)
 	int k;
 
 	for (k = 0; k < NKEYS; k++)
-		QSORT(r->f[k].items, r->f[k].nr, cmp_value);
+		QSORT(r->f[k].items, r->f[k].nr, k == CONSUMER || k == PROVIDER ? cmp_scope : cmp_value);
 }
 
 /* the canonical lines of R (2.2.1) for the keys in KEYS_WANTED, a bit per enum key; R's values are sorted first */
@@ -407,7 +464,7 @@ static int id_ok(const char *id)
 	regex_t re;
 	int ok;
 
-	regcomp(&re, "^([DO][0-9a-f]{12}|undertake/D[0-9a-f]{12}-O[0-9a-f]{12})$", REG_EXTENDED | REG_NOSUB);
+	regcomp(&re, "^([DOX][0-9a-f]{12}|undertake/D[0-9a-f]{12}-O[0-9a-f]{12})$", REG_EXTENDED | REG_NOSUB);
 	ok = !regexec(&re, id, 0, NULL, 0);
 	regfree(&re);
 	return ok;
@@ -415,36 +472,52 @@ static int id_ok(const char *id)
 
 static char *record_check(struct record *r);
 
+/* Entry validity belongs to the tree, not the blob's version cache (2.1). */
+struct record *record_from_entry(struct entry *e, const char *id, int full)
+{
+	struct record *r = record_new(id);
+	const char *text = strcmp(e->mode, "100644") ? NULL : blob_text(e->oid);
+
+	if (!strcmp(id, "init")) {
+		r->bad = text && !strcmp(text, full ? "version 2\n" : "version 1\n") ? NULL :
+			xstrdup("must be the single line 'version 2'");
+	} else if (strcmp(e->mode, "100644") || !id_ok(id)) {
+		/* 7.12: malformed entries still declare changes that must be excluded. */
+		if (full && id_ok(id))
+			*r = *record_decode(id, e->oid);
+		r->bad = xstrdup("not a record path");
+		r->mend = xstrfmt("remove '.ait/%s'", id);
+	} else if (!text) {
+		r->bad = xstrdup("not a text file");
+	} else if (full) {
+		*r = *record_decode(id, e->oid);
+	} else {
+		record_parse(r, text);
+		if (!r->bad)
+			r->bad = record_check(r);
+	}
+	return r;
+}
+
 /* the records of T; a malformed one carries why in ->bad (spec 5.9 a-c, 5.10) */
 void state_load(struct state *s, struct tree *t)
 {
 	size_t i;
+	const char *init = blob_at(t, ".ait/init");
+	const char *marker = init ? blob_text(init) : NULL;
+	int full = marker && !strcmp(marker, "version 2\n");
 
 	for (i = 0; i < t->nr; i++) {
 		struct entry *e = &t->e[i];
-		const char *id, *text;
+		const char *id;
 		struct record *r;
 
 		if (!skip_prefix(e->path, ".ait/", &id) || !strcmp(e->mode, "040000"))
 			continue;
-		if (*id == 'X')
+		if (*id == 'X' && !full)
 			unsupported("drop record");
-		text = strcmp(e->mode, "100644") ? NULL : blob_text(e->oid);
 		r = state_add(s, id);
-		/* 2.1.2a: the init file is no record; only its one line is checked, and it stays as T has it */
-		if (!strcmp(id, "init")) {
-			r->bad = text && !strcmp(text, "version 1\n") ? NULL : xstrdup("must be the single line 'version 1'");
-		} else if (strcmp(e->mode, "100644") || !id_ok(id)) {
-			/* 2.1.3: no record was ever there to restore */
-			r->bad = xstrdup("not a record path");
-			r->mend = xstrfmt("remove '.ait/%s'", id);
-		} else if (!text) {
-			r->bad = xstrdup("not a text file");
-		} else {
-			record_parse(r, text);
-			if (!r->bad)
-				r->bad = record_check(r);
-		}
+		*r = *record_from_entry(e, id, full);
 		r->old = record_copy(r);
 	}
 	for (i = 0; i < s->nr; i++) {
@@ -495,11 +568,21 @@ int path_ok(const char *p)
 	return ok;
 }
 
+static int version_two(void)
+{
+	const char *init = object("HEAD:.ait/init", 1, NULL, NULL);
+
+	return init && !strcmp(init, "version 2\n");
+}
+
 /* a stored scope value of spec 2.2.2; abstract and new scopes only where the caller allows them */
 static int scope_ok(const char *v, int allow_new, int allow_abs)
 {
 	char *path = scope_path(v);
+	int start, end, range = range_of(v, &start, &end);
 
+	if (range < 0 || (range && (!version_two() || starts_with(v, "new:"))))
+		return 0;
 	if (starts_with(v, "new:"))
 		return allow_new && path_ok(path) && !scope_oid(v);
 	if (!oid_ok(scope_oid(v)))
@@ -534,6 +617,11 @@ static int value_ok(struct record *r, enum key k, const char *v)
 		return n == 2 && !strcmp(v, xstrfmt("%s %s", a, b)) && (!strcmp(v, "unknown -") || (agent_ok(a) && sid_ok(b)));
 	case PREV:
 		return !strcmp(v, "-") || oid_ok(v);
+	case TARGET:
+		return id_like(v, "DO");
+	case CHECK:
+		return n == 2 && (!strcmp(a, "reported") || !strcmp(a, "forced")) && oid_ok(b) &&
+		       !strcmp(v, xstrfmt("%s %s", a, b));
 	default:
 		return 1;
 	}
@@ -556,6 +644,7 @@ static int bad_record(struct verdict *v, struct record *r, const char *why)
 
 static const char *const contract_states[] = { "future", "current", "cancelled", "withdrawn", NULL };
 static const char *const link_states[] = { "undertaken", "released", NULL };
+static const char *const drop_states[] = { "future", "cancelled", "fulfilled", NULL };
 
 /* R means what its HEAD version means: the request did not change it (prev aside, 6.2) */
 int as_in_head(struct record *r)
@@ -568,17 +657,18 @@ static char *record_check(struct record *r)
 {
 	/* per kind: how many values each key takes ('1' one, '+' one or more, '0' none), its role and its states */
 	static const struct kind { const char *counts, *role; const char *const *states; } kinds[] = {
-		{ "11++0+1+", "demand", contract_states },
-		{ "110+0+1+", "offer", contract_states },
-		{ "01000001", "", link_states },
+		{ "11++0+?1+", "demand", contract_states },
+		{ "110+0+?1+", "offer", contract_states },
+		{ "010000001", "", link_states },
+		{ "11001001+", "drop", drop_states },
 	};
-	const struct kind *kind = &kinds[*r->id == 'D' ? 0 : *r->id == 'O' ? 1 : 2];
+	const struct kind *kind = &kinds[*r->id == 'D' ? 0 : *r->id == 'O' ? 1 : *r->id == 'X' ? 3 : 2];
 	const char *c = kind->counts;
 	struct string_list_item *item;
 	int k;
 
 	for (k = 0; k < NKEYS; k++) {
-		if (c[k] == '+' ? !r->f[k].nr : r->f[k].nr != (size_t)(c[k] - '0'))
+		if (c[k] == '?' ? r->f[k].nr > 1 : c[k] == '+' ? !r->f[k].nr : r->f[k].nr != (size_t)(c[k] - '0'))
 			return xstrfmt("wrong number of '%s' lines", keys[k]);
 		for_each_string_list_item(item, &r->f[k])
 			if (!value_ok(r, k, item->string))
@@ -586,13 +676,69 @@ static char *record_check(struct record *r)
 	}
 	if (strcmp(val(r, ROLE), kind->role) || !one_of(val(r, STATE), kind->states))
 		return xstrdup("role or state does not fit the record");
-	if (*r->id != 'u' && !strstr(record_text(r, 1u << FILES), " def\n"))
+	if ((*r->id == 'D' || *r->id == 'O') && !strstr(record_text(r, 1u << FILES), " def\n"))
 		return xstrdup("no spec definition");
 	return NULL;
 }
 
+/* spec 2.3: the allowed transitions of a demand or offer ('x') and of a link ('u'), and who makes them */
+static const struct move {
+	char kind;
+	const char *from, *to;
+	unsigned gate : 1, fulfill : 1;
+} moves[] = {
+	{ 'x', "-", "future", 1, 0 }, { 'x', "-", "current", 1, 0 }, { 'x', "future", "future", 1, 0 },
+	{ 'x', "future", "cancelled", 1, 0 }, { 'x', "future", "current", 0, 1 }, { 'x', "current", "current", 1, 1 },
+	{ 'x', "current", "future", 1, 0 }, { 'u', "-", "undertaken", 1, 0 }, { 'u', "released", "undertaken", 1, 0 },
+	{ 'u', "undertaken", "released", 1, 0 }, { 'x', "current", "withdrawn", 0, 1 },
+	{ 'd', "-", "future", 1, 0 }, { 'd', "future", "future", 1, 0 },
+	{ 'd', "future", "cancelled", 1, 0 }, { 'd', "future", "fulfilled", 0, 1 },
+};
+
+int record_step(const char *id, const char *from, const char *to, int gate)
+{
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(moves); i++)
+		if (moves[i].kind == (*id == 'u' ? 'u' : *id == 'X' ? 'd' : 'x') && !strcmp(moves[i].from, from) &&
+		    !strcmp(moves[i].to, to))
+			return gate < 0 ? moves[i].gate || moves[i].fulfill : gate ? moves[i].gate : moves[i].fulfill;
+	return 0;
+}
+
+
+/* 2.2: historical versions use the same canonical parser as stored records */
+struct record *record_decode(const char *id, const char *oid)
+{
+	struct record *r = record_new(id);
+	const char *text = blob_text(oid), *line, *next;
+
+	if (!text) {
+		r->bad = xstrdup("not a text file");
+		return r;
+	}
+	record_parse(r, text);
+	if (r->bad) {
+		/* 7.12: a malformed record still declares its raw file rows */
+		for (line = text; line && *line; line = next ? next + 1 : NULL) {
+			char path[4096], mode[8], blob[48];
+
+			next = strchr(line, '\n');
+			if (sscanf(next ? xstrndup(line, next - line) : line, " file %4095s %7s %47s", path, mode, blob) == 3)
+				string_list_append(&r->f[FILES], xstrfmt("%s %s %s input", path, mode, blob));
+		}
+		return r;
+	}
+	r->bad = record_check(r);
+	if (r->f[CHECK].nr && !is_current(r))
+		r->bad = xstrdup("check on a contract that is not current");
+	if (r->f[PREV].nr > 1 && string_list_has_string(&r->f[PREV], "-"))
+		r->bad = xstrdup("initial prev mixed with versions");
+	return r;
+}
+
 /* validate(state) of spec 5.9 a-e: invariants of one state, no parents involved; 0 when it holds */
-int check_state(struct state *s, struct tree *t, struct verdict *v)
+int check_records(struct state *s, struct verdict *v)
 {
 	size_t i;
 
@@ -606,8 +752,26 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 			continue;
 		if ((why = record_check(r)))
 			return bad_record(v, r, why);
-		if (in_state(r, "withdrawn"))
-			return fail_with(v, 1, "state", NULL, xstrfmt("not allowed: '%s' is withdrawn without a drop", r->id));
+		if (*r->id == 'X') {
+			struct record *target = state_get(s, val(r, TARGET));
+
+			if (!target || (*target->id != 'D' && *target->id != 'O'))
+				return bad_record(v, r, "its target does not exist");
+			if (in_state(r, "fulfilled") && !in_state(target, "withdrawn")) {
+				fail_with(v, 1, "state", NULL, xstrfmt("not allowed: fulfilled '%s' targets '%s' which is not withdrawn", r->id, target->id));
+				v->k = target;
+				return 1;
+			}
+		}
+		if (in_state(r, "withdrawn")) {
+			size_t j;
+
+			for (j = 0; j < s->nr; j++)
+				if (*s->r[j]->id == 'X' && in_state(s->r[j], "fulfilled") && !strcmp(val(s->r[j], TARGET), r->id))
+					break;
+			if (j == s->nr)
+				return fail_with(v, 1, "state", NULL, xstrfmt("not allowed: '%s' is withdrawn without a drop", r->id));
+		}
 		if (*r->id != 'u')
 			continue;
 		d = link_end(s, r, 0);
@@ -631,15 +795,6 @@ int check_state(struct state *s, struct tree *t, struct verdict *v)
 		v->o = o;
 		return 1;
 	}
-	for (i = 0; i < s->nr; i++)
-		if (is_live(s->r[i]) && !files_match(s->r[i], t)) {
-			fail_with(v, 1, "incomplete", xstrfmt("make the spec files of '%s' match it, or reopen it "
-							       "with them: 'ait %s -m <why>'",
-							       s->r[i]->id, reopen_clauses(s, s->r[i], NULL)),
-				  xstrfmt("spec files do not match the contract: '%s'", s->r[i]->id));
-			v->k = s->r[i];
-			return 1;
-		}
 	return 0;
 }
 
@@ -701,6 +856,7 @@ void validate_at(struct tree *t)
 	validate(&s, t);
 }
 
+/* 7.1.3: Git owns conflict resolution; the resolved tree supplies spec pins */
 /*
  * The paths of KEY joined by ',' as one helper argument, quoted for the shell
  * when it would read them (5.9a, git v2.53.0 quote.c sq_quote_buf_pretty());
@@ -753,7 +909,16 @@ void scope_shape(const char *arg)
 	const char *p = arg;
 	int is_new = skip_prefix(arg, "new:", &p);
 
-	no_range(arg);
+	if (!version_two())
+		no_range(arg);
+	else {
+		int start, end, range = range_of(arg, &start, &end);
+
+		if (range < 0 || (range && is_new))
+			reject(128, NULL, "bad scope: '%s'", arg);
+		if (range)
+			p = scope_path(arg);
+	}
 	if ((is_new && ends_with(p, "/")) ||
 	    (strcmp(p, "/") && !path_ok(ends_with(p, "/") ? xstrndup(p, strlen(p) - 1) : p)))
 		reject(128, NULL, "bad scope: '%s'", arg);
@@ -777,10 +942,106 @@ const char *case_twin(struct tree *t, const char *path)
 	return NULL;
 }
 
+static void hunk_part(const char *text, int *start, int *length)
+{
+	char *next;
+
+	*start = strtol(text, &next, 10);
+	*length = *next == ',' ? strtol(next + 1, NULL, 10) : 1;
+}
+
+enum scope_status {
+	SCOPE_FOUND,
+	SCOPE_NOBASE,
+	SCOPE_MISSING,
+	SCOPE_DELETED,
+};
+
+static enum scope_status map_range(const char *scope, struct tree *t, int *start, int *end, int *changed)
+{
+	const char *base = scope_oid(scope), *now = blob_at(t, scope_path(scope));
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	struct string_list_item *line;
+	int a, b, ma = -1, mb = -1, offset = 0;
+
+	range_of(scope, &a, &b);
+	*changed = 0;
+	if (!now)
+		return SCOPE_MISSING;
+	if (!base || !object(base, 0, NULL, NULL))
+		return SCOPE_NOBASE;
+	string_list_split(&lines, git("diff -U0 --no-color --no-ext-diff --no-textconv --text --inter-hunk-context=0 --diff-algorithm=myers --no-indent-heuristic %s %s", base, now), "\n", -1);
+	for_each_string_list_item(line, &lines) {
+		int os, ol, ns, nl;
+		const char *new_part;
+
+		if (!starts_with(line->string, "@@ -") || !(new_part = strstr(line->string, " +")))
+			continue;
+		hunk_part(line->string + 4, &os, &ol);
+		hunk_part(new_part + 2, &ns, &nl);
+		*changed |= a <= os + (ol ? ol - 1 : 1) && b >= os;
+		if (ma < 0) {
+			if (ol ? a < os : a <= os)
+				ma = a + offset;
+			else if (ol && a < os + ol)
+				ma = nl ? ns : ns + 1;
+		}
+		if (mb < 0) {
+			if (ol ? b < os : b <= os)
+				mb = b + offset;
+			else if (ol && b < os + ol)
+				mb = nl ? ns + nl - 1 : ns;
+		}
+		offset += nl - ol;
+	}
+	*start = ma < 0 ? a + offset : ma;
+	*end = mb < 0 ? b + offset : mb;
+	return *start > *end ? SCOPE_DELETED : SCOPE_FOUND;
+}
+
+/* A file's presence is not a range's presence (spec 1.5c, 3.7). */
+struct scope_location {
+	char *path;
+	const char *oid;
+	int range;
+	int start;
+	int end;
+	int changed;
+	enum scope_status status;
+};
+
+static struct scope_location locate_scope(const char *scope, struct tree *t)
+{
+	struct scope_location place = { .path = scope_path(scope) };
+
+	place.oid = blob_at(t, place.path);
+	place.range = range_of(scope, &place.start, &place.end) == 1;
+	if (place.range)
+		place.status = map_range(scope, t, &place.start, &place.end, &place.changed);
+	else if (!ends_with(place.path, "/")) {
+		place.status = place.oid ? SCOPE_FOUND : SCOPE_MISSING;
+		place.changed = !place.oid || !scope_oid(scope) || strcmp(place.oid, scope_oid(scope));
+	} else
+		place.changed = 1;
+	return place;
+}
+
+static char *location_arg(struct scope_location *place)
+{
+	return place->range ? xstrfmt("%s:%d-%d", place->path, place->start, place->end) : xstrdup(place->path);
+}
+
+int scope_changed(const char *scope, struct tree *t)
+{
+	struct scope_location place = locate_scope(scope, t);
+
+	return place.status || place.changed;
+}
+
 /* spec 3.3-3.4: fix a scope argument at tree T */
 char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 {
-	char *dir = ends_with(arg, "/") ? xstrndup(arg, strlen(arg) - 1) : xstrdup(arg);
+	char *dir = ends_with(arg, "/") ? xstrndup(arg, strlen(arg) - 1) : scope_path(arg);
 	const char *path = dir;
 	int is_new = skip_prefix(arg, "new:", &path);
 	struct entry *e;
@@ -793,8 +1054,22 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 	e = tree_get(t, dir);
 	if (e && ends_with(arg, "/") && allow_abs && !strcmp(e->mode, "040000"))
 		return xstrfmt("%s %s", arg, e->oid);
-	if (e && !ends_with(arg, "/") && blob_at(t, arg))
+	if (!is_new && e && !ends_with(arg, "/") && blob_at(t, dir)) {
+		int start, end, lines = 0;
+		const char *text, *p;
+
+		if (range_of(arg, &start, &end)) {
+			text = blob_text(e->oid);
+			if (!text)
+				reject(128, NULL, "bad scope: '%s'", arg);
+			for (p = text; *p; p++)
+				lines += *p == '\n';
+			lines += p > text && p[-1] != '\n';
+			if (end > lines)
+				reject(128, NULL, "bad scope: '%s'", arg);
+		}
 		return xstrfmt("%s %s", arg, e->oid);
+	}
 	if (case_twin(t, path))
 		reject(128, xstrfmt("give it as git has it: '%s'", case_twin(t, path)), "bad scope: '%s'", arg);
 	/* only a file can be new (scope_shape) */
@@ -805,16 +1080,20 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 /* spec 3.8: where a scope is in T; "?changed" only for the provider of a current contract */
 char *show(const char *scope, struct tree *t, int current)
 {
-	char *path = scope_path(scope);
-	const char *now = blob_at(t, path);
+	struct scope_location place = locate_scope(scope, t);
 
+	if (place.range) {
+		if (place.status)
+			return xstrfmt("%.*s ?%s", (int)strcspn(scope, " "), scope, place.status == SCOPE_NOBASE ? "nobase" : place.status == SCOPE_MISSING ? "missing" : "deleted");
+		return xstrfmt("%s%s", location_arg(&place), current && place.changed ? " ?changed" : "");
+	}
 	if (starts_with(scope, "new:"))
-		return xstrfmt("%s%s", scope, now ? " ?exists" : "");
-	if (ends_with(path, "/"))
-		return path;
-	if (!now)
-		return xstrfmt("%s ?missing", path);
-	return current && strcmp(now, scope_oid(scope)) ? xstrfmt("%s ?changed", path) : path;
+		return xstrfmt("%s%s", scope, place.oid ? " ?exists" : "");
+	if (ends_with(place.path, "/"))
+		return place.path;
+	if (place.status)
+		return xstrfmt("%s ?missing", place.path);
+	return current && place.changed ? xstrfmt("%s ?changed", place.path) : place.path;
 }
 
 char *shows(struct record *r, enum key k, struct tree *t, int current)
@@ -831,11 +1110,18 @@ char *shows(struct record *r, enum key k, struct tree *t, int current)
 char *moved_arg(struct record *r, struct tree *t)
 {
 	struct strbuf kept = STRBUF_INIT, arg = STRBUF_INIT;
+	struct string_list scopes = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
-	for_each_string_list_item(item, &r->f[PROVIDER])
-		if (blob_at(t, scope_path(item->string)))
-			strbuf_addf(&kept, "%s%s", kept.len ? "," : "", scope_path(item->string));
+	for_each_string_list_item(item, &r->f[PROVIDER]) {
+		struct scope_location place = locate_scope(item->string, t);
+
+		if (!place.status && place.oid)
+			string_list_append(&scopes, location_arg(&place));
+	}
+	normalize_scopes(&scopes);
+	for_each_string_list_item(item, &scopes)
+		strbuf_addf(&kept, "%s%s", kept.len ? "," : "", item->string);
 	if (kept.len) {
 		sq_quote_buf_pretty(&arg, kept.buf);
 		strbuf_addch(&arg, ',');
@@ -851,16 +1137,19 @@ char *moved_arg(struct record *r, struct tree *t)
 void reopen_set(struct state *s, struct record *k, struct string_list *out)
 {
 	size_t i;
+	int full = version_two();
 
-	string_list_append(out, k->id)->util = k;
-	if (*k->id != 'D' || !was_current(k))
-		return;
-	for (i = 0; i < s->nr; i++) {
-		struct record *o = partner(s, s->r[i]->old, k);
+	if (!full && !unsorted_string_list_has_string(out, k->id))
+		string_list_append(out, k->id)->util = k;
+	if (*k->id == 'D' && (was_current(k) || (full && is_current(k))))
+		for (i = 0; i < s->nr; i++) {
+			struct record *o = partner(s, full ? s->r[i] : s->r[i]->old, k);
 
-		if (o && was_current(o))
-			string_list_append(out, o->id)->util = o;
-	}
+			if (o && (was_current(o) || (full && is_current(o))) && !unsorted_string_list_has_string(out, o->id))
+				string_list_append(out, o->id)->util = o;
+		}
+	if (!unsorted_string_list_has_string(out, k->id))
+		string_list_append(out, k->id)->util = k;
 }
 
 /* the clause amending K to PROVIDER and FILES, "-" keeping what K has; a demand keeps its consumer (7.3.2) */
@@ -889,14 +1178,17 @@ char *reopen_hint(struct state *s, struct record *k)
 	return xstrfmt("to change '%s' without a check, reopen it: 'ait %s -m <why>'", k->id, reopen_clauses(s, k, NULL));
 }
 
-/* the scopes of R's provider whose file T does not have, "new:PATH" ones too; "DIR/" and "/" are no file (1.5c) */
+/* spec 1.5c: absent files and unmappable ranges cannot be checked */
 void missing_code(struct record *r, struct tree *t, struct string_list *out)
 {
 	struct string_list_item *item;
 
-	for_each_string_list_item(item, &r->f[PROVIDER])
-		if (!ends_with(scope_path(item->string), "/") && !blob_at(t, scope_path(item->string)))
+	for_each_string_list_item(item, &r->f[PROVIDER]) {
+		struct scope_location place = locate_scope(item->string, t);
+
+		if (place.status)
 			string_list_append(out, item->string);
+	}
 }
 
 /* the provider of R can be found in T: each scope that names a file is one there (spec 1.5c, 7.7.3-4) */
@@ -916,9 +1208,11 @@ int touches(struct record *r, struct tree *a, struct tree *b)
 	if (!r || !is_current(r))
 		return 0;
 	for_each_string_list_item(item, &r->f[PROVIDER]) {
-		const char *x = blob_at(a, scope_path(item->string)), *y = blob_at(b, scope_path(item->string));
+		struct scope_location place = locate_scope(item->string, a);
+		const char *now = blob_at(b, place.path);
 
-		if (x && (!y || strcmp(x, y)))
+		if (place.oid && (!now || strcmp(place.oid, now)) &&
+		    (!place.range || place.status || scope_changed(xstrfmt("%s %s", location_arg(&place), place.oid), b)))
 			return 1;
 	}
 	return 0;
@@ -933,11 +1227,16 @@ void repin(struct record *r, enum key k, struct tree *t, int new_only)
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &r->f[k]) {
-		char *path = scope_path(item->string);
+		struct scope_location place = locate_scope(item->string, t);
 
-		if (blob_at(t, path) && starts_with(item->string, "new:") == new_only)
-			item->string = xstrfmt("%s %s", path, blob_at(t, path));
+		if (!place.status && place.oid && starts_with(item->string, "new:") == new_only) {
+			char *pinned = xstrfmt("%s %s", location_arg(&place), place.oid);
+
+			free(item->string);
+			item->string = pinned;
+		}
 	}
+	normalize_scopes(&r->f[k]);
 }
 
 /* the body lines of a definition, each after INDENT */
@@ -1066,9 +1365,7 @@ static int off_pins(struct record *r, struct tree *t)
 			return 1;
 	}
 	for_each_string_list_item(item, &r->f[PROVIDER]) {
-		const char *now = blob_at(t, scope_path(item->string));
-
-		if (!now || !scope_oid(item->string) || strcmp(now, scope_oid(item->string)))
+		if (scope_changed(item->string, t))
 			return 1;
 	}
 	return 0;
@@ -1077,6 +1374,10 @@ static int off_pins(struct record *r, struct tree *t)
 /* spec 1.5a: not confirmed with these pins, or the code or spec files moved since */
 int unverified(struct record *r, struct tree *t)
 {
+	const char *init = blob_at(t, ".ait/init");
+
+	if (init && !strcmp(blob_text(init), "version 2\n"))
+		return !r->f[CHECK].nr || off_pins(r, t);
 	return !string_list_has_string(checks(), xstrfmt("%s %s", r->id, pins(r))) || off_pins(r, t);
 }
 
@@ -1278,12 +1579,71 @@ int expand_files(struct record *r, struct tree *t)
 	return 0;
 }
 
-/* the file lines of R are what its definitions at T declare (spec 2.4) */
-int files_match(struct record *r, struct tree *t)
+/* Conflict definitions have no YAML value; validate their other pinned paths */
+int expand_files_except(struct record *r, struct tree *t, struct string_list *conflicts)
+{
+	struct string_list_item *item;
+
+	if (!conflicts || !conflicts->nr)
+		return expand_files(r, t);
+	for_each_string_list_item(item, &r->f[FILES])
+		if (is_def(item->string) && string_list_has_string(conflicts, scope_path(item->string)))
+			return 0;
+	return expand_files(r, t);
+}
+
+static int files_match_except(struct record *r, struct tree *t, struct string_list *conflicts)
 {
 	struct record *x = record_copy(r);
+	struct string_list_item *item;
+	size_t i;
 
-	return !expand_files(x, t) && !strcmp(record_text(x, 1u << FILES), record_text(r, 1u << FILES));
+	if (expand_files_except(x, t, conflicts))
+		return 0;
+	if (conflicts && conflicts->nr) {
+		for_each_string_list_item(item, &r->f[FILES]) {
+			char path[4096], mode[8], oid[48];
+			struct entry *e;
+
+			if (sscanf(item->string, "%4095s %7s %47s", path, mode, oid) != 3 || string_list_has_string(conflicts, path))
+				continue;
+			e = file_entry(t, path);
+			if (!e || strcmp(mode, e->mode) || strcmp(oid, e->oid))
+				return 0;
+		}
+		for (i = conflicts->nr; i-- > 0; )
+			if (declares(r, conflicts->items[i].string))
+				return 1;
+	}
+	return !strcmp(record_text(x, 1u << FILES), record_text(r, 1u << FILES));
+}
+
+int files_match(struct record *r, struct tree *t)
+{
+	return files_match_except(r, t, NULL);
+}
+
+int check_state_except(struct state *s, struct tree *t, struct verdict *v, struct string_list *conflicts)
+{
+	size_t i;
+
+	if (check_records(s, v))
+		return v->code;
+	for (i = 0; i < s->nr; i++)
+		if (is_live(s->r[i]) && !files_match_except(s->r[i], t, conflicts)) {
+			fail_with(v, 1, "incomplete", xstrfmt("make the spec files of '%s' match it, or reopen it "
+							       "with them: 'ait %s -m <why>'",
+							       s->r[i]->id, reopen_clauses(s, s->r[i], NULL)),
+				  xstrfmt("spec files do not match the contract: '%s'", s->r[i]->id));
+			v->k = s->r[i];
+			return 1;
+		}
+	return 0;
+}
+
+int check_state(struct state *s, struct tree *t, struct verdict *v)
+{
+	return check_state_except(s, t, v, NULL);
 }
 
 /* R is a future or current demand or offer that has PATH as a spec file */

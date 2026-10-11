@@ -152,10 +152,10 @@ fact "X1: a1's tip holds c's Z, b1's tip holds c's Y" test "$(recat a Z) $(recat
 fact "X1: merging a1 then b1 conflicts only in contract and spec files" test "$(mt_seq HEAD "$cA1" "$cB1")" = ".ait/$Y .ait/$Z specs/y.yaml specs/z.yaml"
 want "X1: 'pull D O' stops, nothing changed" pull_unchanged "$D" "$O"
 want "X1: stops at 3: Y and Z not named" eval 'stops_re 1 "^error: taking .* also changes contracts you did not name: " && head -1 "$T/err" | grep -q "'"'$Y'"'" && head -1 "$T/err" | grep -q "'"'$Z'"'"'
-want "X1: hint names Y and Z too" err_re "^hint: name them too: 'ait contract pull $D $O ($Y $Z|$Z $Y)'\$"
+want "X1: hint names Y and Z too" err_re "^hint: name them too: 'ait contract pull $D $Y $Z $O'\$"
 want "X1: 'pull D O Y Z' stops, nothing changed" pull_unchanged "$D" "$O" "$Y" "$Z"
 want "X1: stops to choose Y and Z" stops_re 1 "^error: '($Y|$Z)' has diverged between "
-want "X1: the hint chooses Y and Z once in one command" err_re "^hint: pick one: .*'ait contract pull $D $O $Y=[^ ']+ $Z=[^ ']+ -m <why>'"
+want "X1: the hint chooses Y and Z once in one command" err_re "^hint: pick one: .*'ait contract pull $D $Y=[^ ']+ $Z=[^ ']+ $O -m <why>'"
 # record 115: a change that is not taken is given to git as the result's pin, so b1's merge base c1 sees no change
 OLD=$(git rev-parse HEAD)
 pull "$D" "$O" "$Y=$cA1" "$Z=$cB1" -m "pick a1 and b1"

@@ -17,7 +17,7 @@ char *git_cmd;
 size_t git_out_len;
 char agent[72], sid[16];
 
-/* spec 5.9a: a session that is not this worktree's default prefixes the ait commands it is given */
+/* 5.9a and 7.12.6: execution hints retain a nondefault session. */
 static char *cmd_prefix;
 
 static char *prefixed(const char *hint)
@@ -25,7 +25,12 @@ static char *prefixed(const char *hint)
 	struct strbuf sb = STRBUF_INIT;
 	const char *p, *hit;
 
-	for (p = hint; cmd_prefix && (hit = strstr(p, "'ait ")); p = hit + 1) {
+	for (p = hint; cmd_prefix; p = hit + 1) {
+		const char *ait = strstr(p, "'ait "), *git = strstr(p, "'git commit ");
+
+		hit = ait && git ? (ait < git ? ait : git) : ait ? ait : git;
+		if (!hit)
+			break;
 		strbuf_add(&sb, p, hit + 1 - p);
 		strbuf_addstr(&sb, cmd_prefix);
 	}
@@ -430,15 +435,19 @@ const char *session(int need)
 			unlink(pointer_path(top));
 		close(fd);
 	} else if (env && !wt) {
+		if (need < 0)
+			return NULL;
 		reject(128, "ait session list", "no usable ait session: unknown session '%s'", env);
 	} else if (wt && strcmp(wt, top)) {
 		char *hint = gone(wt) ? xstrfmt("its worktree is gone; close it: 'ait session close %s', then open a session "
 						"with the same name in the worktree of your branch: 'ait session open --agent %s'",
 						env, agent) : xstrfmt("cd %s", quoted(wt));
 
+		if (need < 0)
+			return NULL;
 		reject(128, hint, "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
 	}
-	if (!wt && need)
+	if (!wt && need > 0)
 		reject(128, "find your session with 'ait session list', or open one: 'ait session open --agent <name>'",
 		       "no usable ait session: none for this worktree");
 	if (!wt)
@@ -668,19 +677,20 @@ static int cmd_init(int argc, const char **argv)
 		return 1;
 	t = head_tree();
 	if (blob_at(t, ".ait/init") && !strcmp(tree_get(t, ".ait/init")->mode, "100644") &&
-	    !strcmp(object(blob_at(t, ".ait/init"), 1, NULL, NULL), "version 1\n")) {
+	    (!strcmp(object(blob_at(t, ".ait/init"), 1, NULL, NULL), "version 1\n") ||
+	     !strcmp(object(blob_at(t, ".ait/init"), 1, NULL, NULL), "version 2\n"))) {
 		puts("init exists");
 		return 0;
 	}
 	precondition(1);
-	index_line(&info, "100644", line1(git_run("version 1\n", NULL, NULL, "hash-object -w --stdin")), ".ait/init");
+	index_line(&info, "100644", line1(git_run(xstrfmt("version %d\n", AIT_VERSION), NULL, NULL, "hash-object -w --stdin")), ".ait/init");
 	if (!(tree = tree_with(t->oid, info.buf, NULL)))
 		reject(128, NULL, "%s", git_failed());
 	/* spec 7.1.1-5: if another init won the race, its init file is ours too */
 	if (publish(tree, "[CONTRACT] ait init\n", index_load(tree_load(line1(git("write-tree")))))) {
 		const char *now = object("HEAD:.ait/init", 1, NULL, NULL);
 
-		if (!now || strcmp(now, "version 1\n"))
+		if (!now || strcmp(now, xstrfmt("version %d\n", AIT_VERSION)))
 			reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 		puts("init exists");
 		return 0;
@@ -798,7 +808,7 @@ static void recheck_hint(struct state *s, struct record *r, struct tree *h, int 
 }
 
 /* H10: fulfil my promise P, with a scope for P and each abstract future demand it undertakes, or where its code went */
-static void fulfill_hint(struct state *s, struct record *p, struct tree *t)
+void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 {
 	struct string_list missing = STRING_LIST_INIT_DUP;
 	struct strbuf args = STRBUF_INIT;
@@ -834,12 +844,20 @@ static int cmd_hook(int argc, const char **argv)
 
 	if (argc > 1 && !strcmp(argv[1], "pre-push"))
 		return pre_push();
-	/* commit-msg, and what ait-mini has no hook for: nothing to do (7.1.5) */
+	if (argc > 2 && !strcmp(argv[1], "commit-msg")) {
+		integration_message(argv[2]);
+		return 0;
+	}
+	/* Other hook phases do not write records */
 	if (argc < 2 || (strcmp(argv[1], "pre-commit") && strcmp(argv[1], "pre-merge-commit")))
 		return 0;
 	t = tree_load(line1(git_run(NULL, hook_index, NULL, "write-tree")));
-	if (!strcmp(argv[1], "pre-merge-commit") || integrating()) {
-		validate_at(t);
+	if (!strcmp(argv[1], "pre-merge-commit")) {
+		integration_validate(t);
+		return 0;
+	}
+	if (integrating()) {
+		integrate_at(t);
 		return 0;
 	}
 	ht = head_tree();

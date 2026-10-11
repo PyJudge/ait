@@ -204,13 +204,13 @@ want "CP2 (D current): --force hint" err_line "hint: or, if the change is trivia
 # RN1  a: D cancelled, specs/d.yaml moved to src/moved.c ; main: row15 of the spec edited, D re-pinned ; 'pull D'
 ROW=RN1
 pbase
-rn=0; while [ $rn -lt 30 ]; do echo "row$rn: 0"; rn=$((rn + 1)); done > specs/d.yaml; Ds=$(rec D); c "s: long spec" >/dev/null
+{ echo 'body: |'; rn=0; while [ $rn -lt 30 ]; do echo "  row$rn: 0"; rn=$((rn + 1)); done; } > specs/d.yaml; Ds=$(rec D); c "s: long spec" >/dev/null
 git checkout -q -b a; DC=$(rec D cancelled); git mv specs/d.yaml src/moved.c; a1=$(c "a1: cancel D, move spec")
-git checkout -q master; edit specs/d.yaml 'row15: 0' 'row15: E'; DE=$(rec D); c "e1: spec row15" >/dev/null
+git checkout -q master; edit specs/d.yaml '  row15: 0' '  row15: E'; DE=$(rec D); c "e1: spec row15" >/dev/null
 fact "RN1: a's D is cancelled" test "$(state_of "$DC")" = cancelled
 fact "RN1: both sides changed D since s (both bodies differ from it)" diverged "$DC" "$DE" "$Ds"
 fact "RN1: no path outside .ait/ conflicts in git's merge" test -z "$(codeconf HEAD a)"
-fact "RN1: git's src/moved.c has main's row15" has_line "$(mtree HEAD a)" src/moved.c 'row15: E'
+fact "RN1: git's src/moved.c has main's row15" has_line "$(mtree HEAD a)" src/moved.c '  row15: E'
 fact "RN1: git's merge has no specs/d.yaml" test -z "$(at "$(mtree HEAD a)" specs/d.yaml)"
 h0=$(git rev-parse HEAD)
 pull "$D"

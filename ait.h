@@ -1,4 +1,4 @@
-/* ait-mini: the bootstrap subset of spec/ait-phase1-spec.md v14 (spec/ait-mini.md) */
+/* ait: requests and contract pull, spec/ait-phase1-spec.md v15 */
 #ifndef AIT_H
 #define AIT_H
 #include "git-compat-util.h"
@@ -53,10 +53,10 @@ char *tree_with(const char *base, const char *index_info, struct string_list *pa
 void tree_diff(struct tree *a, struct tree *b, struct string_list *paths);
 
 /* record.c: a record is its values per key (spec 2.2.2); "new:PATH", "PATH OID", "DIR/ OID" for scopes */
-enum key { ROLE, STATE, CONSUMER, PROVIDER, TARGET, FILES, CREATOR, PREV, NKEYS };
+enum key { ROLE, STATE, CONSUMER, PROVIDER, TARGET, FILES, CHECK, CREATOR, PREV, NKEYS };
 #define ALL_KEYS ((1u << NKEYS) - 1)
 #define PIN_KEYS ((1u << PROVIDER) | (1u << FILES))	/* the lines PINS hashes (5.4) */
-#define MEANING_KEYS (ALL_KEYS & ~(1u << PREV))		/* what a change of a record is (6.2) */
+#define MEANING_KEYS (ALL_KEYS & ~((1u << PREV) | (1u << CHECK)))	/* the version body (2.2.4) */
 struct record {
 	char id[48];
 	struct string_list f[NKEYS];
@@ -74,6 +74,9 @@ struct state {
 	struct record **r;
 };
 void state_load(struct state *s, struct tree *t);
+struct record *record_decode(const char *id, const char *oid);
+struct record *record_from_entry(struct entry *e, const char *id, int full);
+int record_step(const char *id, const char *from, const char *to, int gate);
 struct record *state_get(struct state *s, const char *id);
 struct record *state_add(struct state *s, const char *id);
 char *record_text(struct record *r, unsigned keys_wanted);
@@ -99,7 +102,11 @@ struct verdict {
 	struct record *o;
 };
 int check_state(struct state *s, struct tree *t, struct verdict *v);
+int check_records(struct state *s, struct verdict *v);
 void validate_at(struct tree *t);
+void integrate_at(struct tree *t);
+void integration_validate(struct tree *t);
+void integration_message(const char *path);
 struct record *readable(struct record *r);
 int as_in_head(struct record *r);
 int malformed(struct state *s, struct verdict *v);
@@ -160,8 +167,25 @@ int yaml_out(void *sb, unsigned char *buf, size_t n);
 
 /* request.c: the helpers, fulfill and commit share one pipeline */
 int cmd_request(int argc, const char **argv);
+int cmd_pull(int argc, const char **argv);
 int cmd_fulfill(int argc, const char **argv);
 void precondition(int allow_unborn);
 extern const char *published;
 int publish(const char *tree, const char *msg, struct tree *index);
+int publish_pull(const char *tree, const char *msg, struct tree *index, struct string_list *ends, int ff);
+void pull_conflict(const char *tree, struct string_list *ends, const char *stages, const char *msg);
+const char *pull_helpers(const char *tree, struct strvec *clauses, char *after_option, int force, struct string_list *conflicts, const char *hint, struct strbuf *out);
+
+int check_state_except(struct state *s, struct tree *t, struct verdict *v, struct string_list *conflicts);
+int expand_files_except(struct record *r, struct tree *t, struct string_list *conflicts);
+void fulfill_hint(struct state *s, struct record *p, struct tree *t);
+char *pull_options(int argc, const char **argv, struct strvec *args, int *force, struct strbuf *msg);
+
+#ifdef AIT_MINI
+#define AIT_VERSION 1
+#else
+#define AIT_VERSION 2
+#endif
+int scope_changed(const char *scope, struct tree *t);
+
 #endif

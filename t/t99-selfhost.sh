@@ -23,7 +23,7 @@ check "the builder's todo shows the offer" out_has "id $O"
 echo '/* line ranges: see spec 3.2 */' >> record.c && git add record.c
 tick; with_r pass ait fulfill "$O" -m "line ranges"
 check "fulfilled with the demand" out_has "fulfilled $D via $O"
-check "the fulfill commit carries both checks" sh -c "git log -1 --format=%B | grep -q 'Ait-Check: $D reported' && git log -1 --format=%B | grep -q 'Ait-Check: $O reported'"
+check "the fulfill commit carries both check lines" sh -c "git show HEAD:.ait/$D | grep -q '^check reported ' && git show HEAD:.ait/$O | grep -q '^check reported ' && ! git log -1 --format=%B | grep -q '^Ait-Check:'"
 check "the sources still build" make -s ait
 # the maintainer takes the fulfilment and builds on it (10.1b): mini receives with git merge
 cd "$T/r"

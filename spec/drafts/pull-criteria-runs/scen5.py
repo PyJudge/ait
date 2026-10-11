@@ -318,12 +318,12 @@ def CODE():
 
     H("RN1  a cancels D and moves specs/d.yaml to src/moved.c ; main edits the spec and re-pins D")
     r = base("RN1")
-    r.write("specs/d.yaml", "".join(f"row{i}: 0\n" for i in range(30))); r.record("D"); r.commit("long spec", "s")
+    r.write("specs/d.yaml", "body: |\n" + "".join(f"  row{i}: 0\n" for i in range(30))); r.record("D"); r.commit("long spec", "s")
     r.co("a", True); r.record("D", state="cancelled"); r.g("mv", "specs/d.yaml", "src/moved.c"); r.commit("a: cancel D, move spec", "a1")
     r.co("main"); t = r.read("specs/d.yaml").replace("row15: 0", "row15: E"); r.write("specs/d.yaml", t); r.record("D"); r.commit("e: spec row15", "e1")
     tree, rc, conf = merge_tree(r, "a")
     print(f"  merge-tree: exit={rc} conflicts={conf} ; src/moved.c row15 in the merged tree:",
-          [l for l in r.out("cat-file", "-p", tree + ":src/moved.c").splitlines() if l.startswith("row15")])
+          [l for l in r.out("cat-file", "-p", tree + ":src/moved.c").splitlines() if l.lstrip().startswith("row15")])
 
 
 # ------------------------------------------------------------------ several ends (decision 20), working tree

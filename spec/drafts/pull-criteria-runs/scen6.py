@@ -134,11 +134,10 @@ def FILES():
     print(f"  HEAD's D pins: {[l.split()[1] for l in r.cat(r.blob_at('HEAD', '.ait/D')).splitlines() if l.startswith('file ')]}")
 
     H("S5  main's current K6 pins src/stock.c ; a1 changes D and moves src/stock.c to src/inv.c ; 'pull D'")
-    def k6(r):
-        r.record("K6", state="current", provider="src/stock.c", consumer="src/order.c")
-    r = base("S5", extra=[lambda r: (cond(r, "K6", "k0"), k6(r))])
+    r = base("S5")
     r.co("a", True); cond(r, "D", "c-A"); r.g("mv", "src/stock.c", "src/inv.c"); r.record("D", provider="src/inv.c"); a1 = r.commit("a: D, move stock.c", "a1")
-    r.co("main")
+    r.co("main"); cond(r, "K6", "k0"); r.record("K6", state="current", provider="src/stock.c", consumer="src/order.c"); r.commit("main: K6 after a branched", "e1")
+    print(f"  incoming parent has K6? {r.blob_at(a1, '.ait/K6') is not None}")
     tree, rc, conf = merge_tree(r, a1)
     print(f"  merge-tree exit={rc} ; in the result: stock.c? {bool(r.g('rev-parse', '-q', '--verify', tree + ':src/stock.c', check=False).stdout.strip())} inv.c? "
           f"{bool(r.g('rev-parse', '-q', '--verify', tree + ':src/inv.c', check=False).stdout.strip())} ; in HEAD: inv.c? {r.blob_at('HEAD', 'src/inv.c') is not None}")
