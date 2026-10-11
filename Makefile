@@ -32,7 +32,6 @@ test: ait
 	@sh t/run.sh
 	@sh t/pull/run.sh
 
-# Run the pull criteria separately during implementation
 test-pull: ait
 	@sh t/pull/run.sh
 
@@ -42,19 +41,16 @@ install: ait
 	install -d $(prefix)/bin
 	install ait $(prefix)/bin/ait
 
-# The version 1 experiment keeps its own executable and skill bundle.
-ait-mini: $(SRC) $(wildcard *.h) $(YAML)
-	$(CC) $(CFLAGS) -DAIT_MINI -Ilibyaml -o $@ $(SRC) $(YAML) $(LDLIBS)
-
-bundle: ait-mini
-	rm -rf dist/ait-mini
-	mkdir -p dist/ait-mini/bin dist/ait-mini/skills
-	cp ait-mini dist/ait-mini/bin/ait
-	cp -R spec/skills/ait-mini dist/ait-mini/skills/
-	cp bundle/README.md bundle/install.sh bundle/try.sh dist/ait-mini/
-	tar -czf dist/ait-mini.tar.gz -C dist ait-mini
+# ait-mini (records of version 1) stays as its last commit was; its experiment bundle is built from there
+MINI = 190f2d9
+bundle:
+	rm -rf dist/mini && mkdir -p dist/mini
+	git archive $(MINI) | tar -x -C dist/mini
+	$(MAKE) -C dist/mini bundle
+	mv dist/mini/dist/ait-mini.tar.gz dist/
+	rm -rf dist/mini
 
 clean:
-	rm -f ait ait-mini $(YAML)
+	rm -f ait $(YAML)
 
 .PHONY: test test-pull install bundle clean

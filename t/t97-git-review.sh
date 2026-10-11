@@ -38,8 +38,8 @@ check "E_SESSION says the worktree is gone" err_has "its worktree is gone; close
 run ait session open --agent w
 check "and so does a session open with the same name" err_has "its worktree is gone; close it: 'ait session close $W'"
 
-# object IDs are SHA-1 in ait-mini; another format is refused plainly
+# object IDs are SHA-1 in ait; another format is refused plainly
 S=$(mktemp -d) && git init -q --object-format=sha256 "$S/r"
 (cd "$S/r" && ait init >/dev/null 2>"$T/err"; echo $? > "$T/rc")
-check "a SHA-256 repository is not supported" sh -c "[ \$(cat '$T/rc') = 128 ] && grep -q 'not supported in ait-mini' '$T/err'"
+check "a SHA-256 repository is not supported" sh -c "[ \$(cat '$T/rc') = 128 ] && grep -q 'fatal: not supported:' '$T/err'"
 done_testing

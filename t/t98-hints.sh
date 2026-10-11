@@ -14,7 +14,7 @@ W=$(git rev-parse --git-path ait/check-result.yaml)
 tick; run ait offer src/stock.c specs/pass.yaml as n future offer src/order.c specs/p.yaml -m m
 fill "$W" fail
 tick; run ait offer src/stock.c specs/pass.yaml as n future offer src/order.c specs/p.yaml -m m -r "$W"
-check "the promise keeps the other clause" err_has "make it a promise: 'ait future offer src/stock.c specs/pass.yaml as n future offer src/order.c specs/p.yaml -m <why>'"
+check "the promise keeps the other clause" err_has "make it future: 'ait future offer src/stock.c specs/pass.yaml as n future offer src/order.c specs/p.yaml -m <why>'"
 tick; expect_ok "and runs" ait future offer src/stock.c specs/pass.yaml as n future offer src/order.c specs/p.yaml -m m
 git reset -q --hard "$H"
 

@@ -208,7 +208,7 @@ fact "S4: merged stock.c differs from K6's pin g0" test "$(git rev-parse "$M:src
 want "S4: stops, nothing changed" pull_unchanged "$D"
 want "S4: exit 1" test "$rc" = 1
 want "S4: 'taking ... changes what contract K6 checked: src/stock.c'" err_re "^error: taking $SCOPE changes what contract '$K6' checked: 'src/stock.c'\$"
-want "S4: the first hint's clauses are 'future amend O6 future amend K6'" first_hint_re "'ait contract pull $D future amend $O6 future amend $K6 -m <why>'\$"
+want "S4: the first hint's clauses are 'future amend K6 future amend O6' (5.9a: the demand, then the offers undertaking it)" first_hint_re "'ait contract pull $D future amend $K6 future amend $O6 -m <why>'\$"
 want "S4: hint: or --force" hint_re "'ait contract pull $D --force -m <why>'\$"
 pull "$D" future amend "$O6" future amend "$K6" -m why
 want "S4 follow: succeeds" test "$rc" = 0
@@ -226,7 +226,7 @@ fact "IND1: merge-tree HEAD a1 conflicts on .ait/D only" test "$(mt HEAD a)" = "
 fact "IND1: merged stock.c differs from a1's pin" test "$(git rev-parse "$M:src/stock.c")" != "$(pin_of "$VA" src/stock.c)"
 want "IND1: 'pull D=a1' stops at 5, nothing changed" pull_unchanged "$D=$A1" -m why
 want "IND1: exit 1, error:" eval 'test "$rc" = 1 && err_re "^error: "'
-want "IND1: the first hint's clauses are 'future amend O future amend D'" first_hint_re "'ait contract pull $D=[^ ]+ future amend $O future amend $D -m <why>'\$"
+want "IND1: the first hint's clauses are 'future amend D future amend O' (5.9a)" first_hint_re "'ait contract pull $D=[^ ]+ future amend $D future amend $O -m <why>'\$"
 want "IND1: hint: or --force (no code conflict)" hint_re "'ait contract pull $D=[^ ]+ --force -m <why>'\$"
 pull "$D=$A1" future amend "$O" future amend "$D" -m why
 want "IND1 follow: succeeds" test "$rc" = 0

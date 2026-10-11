@@ -1,5 +1,5 @@
 #!/bin/sh
-# 7.12.0: Git protects the index and work tree; ait also rejects dirty write paths.
+# 7.12.0: Git protects the index and work tree; ait also rejects dirty write paths. Ignored files are Git's to overwrite.
 . "$(dirname "$0")/lib.sh"
 
 absent_in_index() { ! git rev-parse --verify ":$1" >/dev/null 2>&1; }
@@ -44,9 +44,10 @@ want 'untracked directory data is preserved' test "$(cat src/new.c/draft)" = val
 
 incoming
 echo src/new.c > .git/info/exclude
-echo valuable > src/new.c
-want 'ignored untracked data also follows the strict write-path rule' protected
-want 'ignored contents are preserved' test "$(cat src/new.c)" = valuable
+echo expendable > src/new.c
+pull "$D"
+want 'an ignored file on a write path is overwritten, as git merge does (user decision 38)' test "$rc" = 0 -a "$(git rev-parse HEAD)" = "$A1"
+want 'the ignored file now has the incoming content' test "$(cat src/new.c)" = incoming
 
 incoming
 cond D draft

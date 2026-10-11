@@ -10,15 +10,10 @@ exec_def guard
 echo o51 >> src/order.c; git add src/order.c; echo s51 >> src/stock.c; H0=$(git rev-parse HEAD)
 
 # FILES tests/guard.sh means the exec definition specs/guard.yaml (0.2).
-# mini: line ranges (src/order.c:10-40) are not supported; the scenario's command must say so
-# and change nothing. The rest of T04 is checked with the file scope src/order.c (spec/ait-mini.md).
-tick
-expect_unchanged expect_err "line-range consumer is not supported" MINI \
-	ait future demand src/order.c:10-40 new:src/stock_v2.c specs/p.yaml,specs/guard.yaml as d -m "요구 등록"
-
+# T04-1: the consumer is the line range src/order.c:10-40
 tick
 expect_ok "future demand registers" \
-	ait future demand src/order.c new:src/stock_v2.c specs/p.yaml,specs/guard.yaml as d -m "요구 등록"
+	ait future demand src/order.c:10-40 new:src/stock_v2.c specs/p.yaml,specs/guard.yaml as d -m "요구 등록"
 D=$(new_id)
 RID=$(out_value request)
 check "stdout is exactly request + new D d" \
@@ -30,7 +25,7 @@ check "name-status is the four added paths" [ "$ns" = "$(printf 'A\t.ait/%s\nA\t
 want=$(cat <<EOF
 role demand
 state future
-consumer src/order.c $(blob "$H0:src/order.c")
+consumer src/order.c:10-40 $(blob "$H0:src/order.c")
 provider new:src/stock_v2.c
 file specs/guard.yaml 100644 $(blob HEAD:specs/guard.yaml) def
 file specs/p.yaml 100644 $(blob HEAD:specs/p.yaml) def

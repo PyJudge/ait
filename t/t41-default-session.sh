@@ -62,13 +62,13 @@ expect_ok "5: session list in wa" ait session list
 check "5: B block: agent agent-b" test "$(field "$B" agent)" = agent-b
 check "5: B block: worktree wb" test "$(field "$B" worktree)" = "$WB"
 check "5: B block: default yes" test "$(field "$B" default)" = yes
-expect_err "5: peek with B in wa (mini: unsupported)" MINI env AIT_SESSION=$B ait peek
-# mini: todo takes the place of peek (5.1 treats them the same)
+expect_err "5: peek with B in wa (not yet: unsupported)" UNSUPPORTED env AIT_SESSION=$B ait peek
+# not yet: todo takes the place of peek (5.1 treats them the same)
 expect_err "5: todo with B in wa" E_SESSION env AIT_SESSION=$B ait todo
 check "5: hint has cd '<wb>'" err_has "cd '$WB'"
 cd "$T/wb"
-expect_err "5: peek in wb (mini: unsupported)" MINI ait peek
-# mini: the peek header (`session <B>` on its second line) has no todo counterpart; check todo runs with wb's default
+expect_err "5: peek in wb (not yet: unsupported)" UNSUPPORTED ait peek
+# not yet: the peek header (`session <B>` on its second line) has no todo counterpart; check todo runs with wb's default
 expect_ok "5: todo in wb" ait todo
 
 done_testing

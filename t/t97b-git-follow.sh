@@ -117,5 +117,5 @@ b" -b nl
 (cd "$T/a
 b" && ait todo >/dev/null 2>"$T/err"; echo $? > "$T/rc")
 check "a path with a line feed is refused plainly" sh -c "[ \$(cat '$T/rc') = 128 ]"
-check "as not supported" err_has "not supported in ait-mini: 'a repository path with a line feed'"
+check "as not supported" err_has "not supported: 'a repository path with a line feed'"
 done_testing

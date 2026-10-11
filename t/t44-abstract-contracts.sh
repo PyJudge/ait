@@ -1,8 +1,7 @@
 #!/bin/sh
 # T44 추상 계약과 범위 목록 (1.5c, 3.2a, 3.4, 7.7.1)
 #
-# mini: no line ranges and no peek. `src/cli.c:1-10` becomes `src/cli.c`; `ait peek` is
-# replaced by `ait todo ID` and rec(ID). Steps whose point is a line range are left out.
+# not yet: `ait peek` is replaced by `ait todo ID` and rec(ID).
 . "$(dirname "$0")/lib.sh"
 
 id_of() { sed -n "s/^new \([^ ]*\) $1\$/\1/p" "$T/out"; }
@@ -23,7 +22,7 @@ tick; run ait future offer / specs/test-a.yaml as o -m "코드베이스가 테�
 check "1: ok" test $rc = 0
 O=$(id_of o)
 check "1: rec(O) provider is / with HEAD^'s root tree" test "$(rec $O | grep '^provider ')" = "provider / $(git rev-parse HEAD^^{tree})"
-# mini: `ait peek O` -> `ait todo O`
+# not yet: `ait peek O` -> `ait todo O`
 expect_ok "1: todo O" ait todo $O
 check "1: provider /" out_has "provider /"
 
@@ -43,19 +42,26 @@ expect_err "3: fulfill O without a scope" E_SCOPE ait fulfill $O -m m
 check "3: unchanged" test "$(snapshot)" = "$before"
 check "3: hint: ait fulfill <O>=<scope> -m <why>" err_has "ait fulfill $O=<scope> -m <why>"
 
-# 4. narrowed fulfill (mini: src/cli.c:1-10 -> src/cli.c)
-tick; with_r pass ait fulfill $O=src/runner.c,src/cli.c -m m
+# 4. narrowed fulfill (T44 step 4: O=src/runner.c,src/cli.c:1-10)
+tick; with_r pass ait fulfill $O=src/runner.c,src/cli.c:1-10 -m m
 check "4: ok" test $rc = 0
 check "4: fulfilled O" out_has "fulfilled $O"
-check "4: two provider rows in PATH order" test "$(rec $O | grep '^provider ')" = "$(printf 'provider src/cli.c %s\nprovider src/runner.c %s' "$(blob HEAD:src/cli.c)" "$(blob HEAD:src/runner.c)")"
-# mini: the `peek now src/cli.c:5-5` / `src/cli.c:15-15` checks need line ranges and peek
+check "4: two provider rows in PATH order" test "$(rec $O | grep '^provider ')" = "$(printf 'provider src/cli.c:1-10 %s\nprovider src/runner.c %s' "$(blob HEAD:src/cli.c)" "$(blob HEAD:src/runner.c)")"
+# not yet: the `peek now src/cli.c:5-5` (shows O) / `src/cli.c:15-15` (does not) checks need peek
 
-# 6. the decision on a scope list (mini: cli.c line 15 is in the whole-file scope, so that part is left out)
+# 6. the decision on a scope list (T44 step 6: cli.c line 15 is outside src/cli.c:1-10)
+setl src/cli.c 15 c15x; git add src/cli.c
+tick; run git commit -qm cli15
+check "6: a cli.c line 15 commit does not touch O (no warning)" test ! -s "$T/err"
+# not yet: `ait peek now <O>` -> `ait todo <O>`
+expect_ok "6: todo O after cli.c line 15" ait todo $O
+check "6: no ? on O" test "$(grep '^provider ' "$T/out")" = "$(printf 'provider src/cli.c:1-10\nprovider src/runner.c')"
+check "6: O is not unverified" not grep -q unverified "$T/out"
 setl src/runner.c 6 r6x; git add src/runner.c
 tick; run git commit -qm runner
 check "6: a runner.c commit touches O (warning)" err_has "warning: this commit leaves 1 current contract(s) unverified"
 expect_ok "6: todo O" ait todo $O
-check "6: only the runner.c row is ?changed" test "$(grep '^provider ' "$T/out")" = "$(printf 'provider src/cli.c\nprovider src/runner.c ?changed')"
+check "6: only the runner.c row is ?changed" test "$(grep '^provider ' "$T/out")" = "$(printf 'provider src/cli.c:1-10\nprovider src/runner.c ?changed')"
 
 # 5. narrowing out of the abstract scope is refused
 tick; run ait future offer src/ specs/p.yaml as o2 -m m
@@ -76,6 +82,6 @@ check "7: ok" test $rc = 0
 D=$(id_of d)
 check "7: consumer rows in PATH order" test "$(rec $D | grep '^consumer ')" = "$(printf 'consumer src/cli.c %s\nconsumer src/order.c %s' "$(blob HEAD:src/cli.c)" "$(blob HEAD:src/order.c)")"
 
-# 8. mini: notifications (sub, listen)
+# 8. not yet: notifications (sub, listen)
 
 done_testing

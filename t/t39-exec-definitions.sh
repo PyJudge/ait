@@ -1,8 +1,8 @@
 #!/bin/sh
 # T39 확인 요청에 실리는 exec 정의와 환경 (1.2, 2.5, 8.2)
 #
-# mini: no `environment` in a spec definition. Steps that use the environment `e` are run
-# once to see that they stop with "not supported in ait-mini"; their other expectations
+# not yet: no `environment` in a spec definition. Steps that use the environment `e` are run
+# once to see that they stop with "not supported"; their other expectations
 # are checked on a definition without `environment` where the point survives.
 . "$(dirname "$0")/lib.sh"
 
@@ -30,9 +30,9 @@ EOF
 echo conf >sub/conf.txt; git add sub/conf.txt; tick; git commit -qm conf
 printf 'body: envt\nengine: exec\ncommand: [sh, -c, "test -f prepared && test -f conf.txt"]\nenvironment: e\n' >specs/envt.yaml
 
-# 1-2 with environment: mini
+# 1-2 with environment: not supported yet
 before=$(snapshot)
-expect_err "1: a definition with environment" MINI ait offer src/stock.c specs/envt.yaml -m m
+expect_err "1: a definition with environment" UNSUPPORTED ait offer src/stock.c specs/envt.yaml -m m
 check "1: unchanged" test "$(snapshot)" = "$before"
 rm -rf specs/environments specs/envt.yaml
 
@@ -60,7 +60,7 @@ check "2: file rows are the def and its input" test "$(rec $O | grep '^file ')" 
 mkdir -p specs/environments
 printf 'cwd: sub\nfoo: 1\n' >specs/environments/e2.yaml
 printf 'body: e2\nengine: exec\ncommand: [./tests/pass.sh]\nenvironment: e2\n' >specs/e2.yaml
-expect_err "3: an environment with an unknown key" MINI ait future offer src/stock.c specs/e2.yaml -m m
+expect_err "3: an environment with an unknown key" UNSUPPORTED ait future offer src/stock.c specs/e2.yaml -m m
 rm -rf specs/environments specs/e2.yaml
 printf 'body: pc\ncommand: [./tests/pass.sh]\n' >specs/pc.yaml
 before=$(snapshot)
@@ -71,7 +71,7 @@ expect_err "3: engine judge" E_FORMAT ait future offer src/stock.c specs/j.yaml 
 rm -f specs/pc.yaml specs/j.yaml
 
 # 4. a project file commits; a spec file is guarded
-# mini: the environment file of the scenario is replaced by the exec definition's input
+# not yet: the environment file of the scenario is replaced by the exec definition's input
 echo conf2 >sub/conf.txt; git add sub/conf.txt
 tick; expect_ok "4: a plain commit of a project file" git commit -qm conf2
 echo '# x' >>tests/pass.sh; git add tests/pass.sh
@@ -95,6 +95,6 @@ check "5: the only file row is specs/u.yaml" test "$(rec $U | grep '^file ' | cu
 tick; run ait future offer src/stock.c specs/pass.yaml -m m
 check "6: shorthand definition: ok" test $rc = 0
 check "6: no 'is not pinned' warning" not err_has "is not pinned"
-# mini: the `specs/cw.yaml` part reads the argument in the environment's cwd
+# not yet: the `specs/cw.yaml` part reads the argument in the environment's cwd
 
 done_testing

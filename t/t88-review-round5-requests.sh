@@ -17,7 +17,7 @@ git reset -q --hard "$H"
 
 # 5.9 d in the gate: a new current offer is made a promise with the rest of the request kept
 tick; run ait future demand src/order.c src/stock.c specs/p.yaml as d offer src/stock.c specs/pass.yaml as o undertake d o -m m
-check "the new offer becomes a promise" err_has "make it a promise: 'ait future demand src/order.c src/stock.c specs/p.yaml as d future offer src/stock.c specs/pass.yaml as o undertake d o -m <why>'"
+check "the new offer becomes future" err_has "make it future: 'ait future demand src/order.c src/stock.c specs/p.yaml as d future offer src/stock.c specs/pass.yaml as o undertake d o -m <why>'"
 git reset -q --hard "$H"
 
 # 5.9a: a rerun leaves out the ID=SCOPES of every contract the reopen takes out of the check set

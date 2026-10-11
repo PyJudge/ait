@@ -32,12 +32,13 @@ tick; run ait future offer src/order.c specs/p.yaml -m m
 check "a path that is no record is to be removed" err_has "remove '.ait/foo'"
 git reset -q --hard "$H"
 
-# 5.9a transition hint 1: an error HEAD already had is mended as 5.10 says, not with a hint for this request
+# 5.9a transition hint 1: an error HEAD already had is mended as 5.10 says, not with a hint for this request;
+# D and O are as in GOOD (the commit before), so only the link GOOD lacks goes
 tick; ait future demand src/order.c src/stock.c specs/p.yaml -m d >"$T/out"; D=$(new_id)
 tick; ait offer src/stock.c specs/pass.yaml --force -m o >"$T/out"; O=$(new_id)
 mkdir -p .ait/undertake && printf 'state undertaken\nprev -\n' > .ait/undertake/$D-$O && git add .ait && tick && git commit -q --no-verify -m bad
 tick; run ait future offer src/order.c specs/w.yaml -m m
-check "HEAD's error gets the restore" err_has "restore '.ait/$D' '.ait/$O' '.ait/undertake/$D-$O'"
+check "HEAD's error gets the restore" err_has "remove '.ait/undertake/$D-$O', then 'ait contract commit -m <why>'"
 git reset -q --hard "$H"
 
 # 5.8 E_MIXED and E_CODE_REQUIRED: one hint names every path

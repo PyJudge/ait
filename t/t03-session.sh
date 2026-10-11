@@ -21,9 +21,9 @@ check "1: one SID line" sh -c "[ \$(wc -l < '$T/out') = 1 ] && grep -qE '^S[0-9a
 # 2
 expect_ok "2: session list" ait session list
 check "2: block in order" lines_are "$(block "$S")" "session $S" "agent agent-a" "worktree $RT" "default yes" "subs 0" "listening no"
-# mini: no sub/unsub
-expect_err "2: sub is mini-unsupported" MINI ait sub src/order.c
-expect_err "2: unsub is mini-unsupported" MINI ait unsub src/order.c
+# not yet: no sub/unsub
+expect_err "2: sub is not supported yet" UNSUPPORTED ait sub src/order.c
+expect_err "2: unsub is not supported yet" UNSUPPORTED ait unsub src/order.c
 
 # 3
 expect_err "3: --agent 'a b'" E_USAGE ait session open --agent 'a b'
@@ -40,8 +40,8 @@ check "4: creator agent-a <S>" sh -c "git show HEAD:.ait/$ID | grep -qxF 'creato
 
 # 5
 tick; expect_err "5: unknown SID offer" E_SESSION env AIT_SESSION=S000000000000 ait future offer src/stock.c specs/p.yaml -m m
-expect_err "5: unknown SID peek (mini: peek unsupported)" MINI env AIT_SESSION=S000000000000 ait peek
-# mini: todo takes the place of peek (5.1 treats them the same)
+expect_err "5: unknown SID peek (not yet: peek unsupported)" UNSUPPORTED env AIT_SESSION=S000000000000 ait peek
+# not yet: todo takes the place of peek (5.1 treats them the same)
 expect_err "5: unknown SID todo" E_SESSION env AIT_SESSION=S000000000000 ait todo
 
 # 6
@@ -49,7 +49,7 @@ git worktree add -q "$T/w2" -b w2
 cd "$T/w2"; prompt_defs
 tick; expect_err "6: other worktree's SID offer" E_SESSION env AIT_SESSION=$S ait future offer src/stock.c specs/p.yaml -m m
 check "6: hint has cd '<r>'" err_has "cd '$RT'"
-expect_err "6: peek (mini: unsupported)" MINI env AIT_SESSION=$S ait peek src/stock.c
+expect_err "6: peek (not yet: unsupported)" UNSUPPORTED env AIT_SESSION=$S ait peek src/stock.c
 expect_err "6: other worktree's SID todo" E_SESSION env AIT_SESSION=$S ait todo
 check "6: todo hint has cd '<r>'" err_has "cd '$RT'"
 cd "$T/r"
@@ -63,17 +63,19 @@ tick; expect_err "7: default session is gone" E_SESSION ait future offer src/sto
 cd "$T/w2"; S2=$(ait session open --agent agent-b); cd "$T/r"
 W2=$(cd "$T/w2" && pwd -P)
 rm -rf "$T/w2"
-expect_err "8: peek with S2 (mini: unsupported)" MINI env AIT_SESSION=$S2 ait peek
+expect_err "8: peek with S2 (not yet: unsupported)" UNSUPPORTED env AIT_SESSION=$S2 ait peek
 expect_err "8: todo with S2 whose worktree is gone" E_SESSION env AIT_SESSION=$S2 ait todo
-# mini: basic hint only; the "its worktree is gone; close it: 'ait session close <S2>', then ...
-# 'ait session open --agent agent-b'" form is not checked
+# 8 (5.8 E_SESSION): the hint closes S2 and opens the same name, not cd
+check "8: hint closes S2 and opens agent-b again" err_has "hint: its worktree is gone; close it: 'ait session close $S2', then open a session with the same name in the worktree of your branch: 'ait session open --agent agent-b'"
+check "8: no cd in the hint" sh -c "! grep -qF \"cd '\" '$T/err'"
 
 # 8 (alternative, from the state of 8): open agent-b in r without closing S2
 run ait session open --agent agent-b
 check "8b: open agent-b in r ok" test "$rc" = 0
 SB=$(cat "$T/out")
 check "8b: warning names S2 and its worktree" err_has "warning: agent name 'agent-b' is also used by session '$S2' (worktree '$W2')"
-# mini: basic hint only; the "its worktree is gone; close it: ..." hint of 7.2.1 is not checked
+# 8b (7.2.1): S2's worktree is gone, so close S2 and keep this one if r is on my branch
+check "8b: hint closes S2, keeps or closes this one" err_has "hint: its worktree is gone; close it: 'ait session close $S2', and keep this one if this worktree is on your branch, otherwise close this one too ('ait session close $SB') and open it again in the worktree of your branch"
 ait session close "$SB" >/dev/null 2>&1
 
 # 8 (first item): remove the registration, re-add the branch elsewhere, close and reopen

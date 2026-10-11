@@ -18,7 +18,7 @@ bad E_USAGE "a scope starting with '-'" ait future offer -x specs/p.yaml -m m
 bad E_SCOPE "an empty piece of a scope list" ait future offer src/order.c, specs/p.yaml -m m
 
 # 3.2 scope arguments
-bad MINI "a line range" ait future offer src/order.c:1-2 specs/p.yaml -m m
+H95=$(git rev-parse HEAD); tick; expect_ok "a line range" ait future offer src/order.c:1-2 specs/p.yaml -m m; git reset -q --hard "$H95"
 for r in 0-2 3-1 a-b 1-; do bad E_SCOPE "a malformed range ':$r'" ait future offer "src/order.c:$r" specs/p.yaml -m m; done
 bad E_SCOPE "new: for a file that exists" ait future offer new:src/order.c specs/p.yaml -m m
 bad E_SCOPE "a file that is not there" ait future offer src/none.c specs/p.yaml -m m

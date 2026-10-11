@@ -112,7 +112,7 @@ ait contract pull K[=C]… [도우미 절…] [--force] [-m MSG]
 **0. 시작 조건**
 - v14 5.2와 같다. `.ait/`가 깨끗하고, 진행 중인 git 조작이 없고, 브랜치 위에 있어야 한다.
 - HEAD에 이미 있는 오류(5.10)로 막히면 그 hint를 준다. HEAD의 사고 판, 형식이 틀린 판, 묶음 무결성(5.9 e, 2.4)의 위반도 5.10의 오류다(결정 8, 17, HD1, HD3).
-- pull이 쓰는 경로에 index나 작업 폴더의 변경이 있으면 멈춘다(WT1). 추적하지 않는 파일도 같다(NEW2). 받는 결과가 merge이고 index가 HEAD와 다르면 `E_DIRTY`다(IDX1). pull이 쓰는 경로는 1~5로 받는 결과를 정한 뒤에 알 수 있으므로, 이 검사는 5 다음, 아무것도 바꾸기 전에 한다.
+- pull이 쓰는 경로에 index나 작업 폴더의 변경이 있으면 멈춘다(WT1). 추적하지 않는 파일도 같다(NEW2). 무시되는 파일은 git merge처럼 덮어쓴다(결정 38). 받는 결과가 merge이고 index가 HEAD와 다르면 `E_DIRTY`다(IDX1). pull이 쓰는 경로는 1~5로 받는 결과를 정한 뒤에 알 수 있으므로, 이 검사는 5 다음, 아무것도 바꾸기 전에 한다.
   ```
   error: your local changes to 'specs/d.yaml' would be overwritten by this pull
   hint: commit your changes with 'ait contract add specs/d.yaml' and 'ait contract commit -m <why>', or set them aside, before you pull
@@ -457,8 +457,8 @@ ait contract pull K[=C]… [도우미 절…] [--force] [-m MSG]
 | C4 | a1: D(future)와 `src/other.c`를 바꿨다. main: other.c를 다르게 바꿨다. other.c를 확인하는 계약은 없다 | `src/other.c`만 충돌한다 | git처럼 멈춘다. 계약 파일과 명세 파일은 pull이 정한 대로 둔다. 받는 쪽이 해결해 마친다 |
 | S2 | S1과 같은데 K5가 current다 | S1과 같다 | 6.2의 다시 고정이 K5의 고정을 바꾸므로 멈춘다. hint는 `pull D future amend K5 -m <why>` 또는 `pull D --force -m <why>` |
 | S3 | main의 current K6이 `src/stock.c`를 고정한다(g0). a1이 D를 이행하며 stock.c의 1행을 바꿨다 | 합친 stock.c가 K6의 고정 g0과 다르다 | 멈춘다. hint는 `pull D future amend K6 -m <why>` 또는 `pull D --force -m <why>` |
-| S4 | S3과 같은데, K6을 main의 current offer O6이 떠맡았다 | S3과 같다 | 멈춘다. 첫 hint의 절은 `future amend O6 future amend K6`이다 |
-| IND1 | D는 current이고 main의 current offer O가 떠맡았다. a1은 stock.c 1행을, main은 9행을 바꾸고 각자 D를 다시 확인했다 | D는 갈라졌다. `D=a1`이면 합친 stock.c가 a1의 고정과 다르다 | `pull D=a1 -m <why>`는 5에서 멈춘다. 첫 hint의 절은 `future amend O future amend D`다(5.9a) |
+| S4 | S3과 같은데, K6을 main의 current offer O6이 떠맡았다 | S3과 같다 | 멈춘다. 첫 hint의 절은 `future amend K6 future amend O6`이다(5.9a: 되돌리는 D, 이어서 그것을 떠맡은 offer) |
+| IND1 | D는 current이고 main의 current offer O가 떠맡았다. a1은 stock.c 1행을, main은 9행을 바꾸고 각자 D를 다시 확인했다 | D는 갈라졌다. `D=a1`이면 합친 stock.c가 a1의 고정과 다르다 | `pull D=a1 -m <why>`는 5에서 멈춘다. 첫 hint의 절은 `future amend D future amend O`다(5.9a) |
 | CK4 | U6에서 `pull D=a1 -m <why>` | 결과 새 판에 a1과 같은 PINS의 `check reported` 행이 있다. 확인 행이 맞고 사고 판이 아니다 | a1을 들인다. 결과는 `check reported`다 |
 | CK5 | D는 current이고 `check forced`다. a1: 같은 고정을 `-r`로 다시 확인했다. main: consumer만 고쳤다(`forced` 그대로) | a1의 본문은 D0과 같고 main이 앞으로 나갔다. 두 판의 PINS가 같다. main과 a가 각자 만드는 새 판은 바이트까지 같다 | main은 `kept D`, a는 main의 커밋을 들인다. 둘 다 결과는 `check reported`이고 같은 판으로 모인다(결정 22) |
 | CK6 | a1은 `-r`, b1은 `--force`로 같은 코드로 D를 이행했다. main: D0 | 남는 판 2개, 본문 1개 | 멈추지 않는다. 결과 새 판은 `check reported`다(결정 22) |

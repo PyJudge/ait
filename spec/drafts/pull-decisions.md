@@ -232,6 +232,26 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
     - 결과 고정 없는 파일에서 버린 명세 변경을 제외한 내용과, 뒤에서 Git이 고른 더 새로운 merge base의 차이가 충돌해도 Git의 충돌로 드러낸다(SF3). 사용자가 해결한다.
     - 앞서 사용자는 base tree에도 제외 규칙을 적용하는 안을 골랐으나, p1에서 p2·p3가 갈라진 이력과 두 접근의 장단을 확인한 뒤 이 결정으로 바꾸었다. base 수정안은 구현하거나 명세에 넣지 않았다.
     - 결과 고정이 있는 경우 그 고정으로 대체하는 기존 규칙은 유지한다(X1). 결과 고정이 없으면 분류에 쓴 merge base의 내용으로 대체하며, 모든 합치기가 충돌 없이 끝난다고 보장하지 않는다.
+38. **pull이 쓸 경로의 무시되는 파일은 git merge처럼 덮어쓴다.** (2026-10-12, 사용자: "이건 git에 따라야지")
+    - 구현이 무시되는 파일까지 추적하지 않는 파일로 보고 멈추던 것(t74)을 고친다. git merge와 `read-tree -m -u`는 표준 제외 규칙(`.gitignore`, `info/exclude`, `core.excludesFile`)에 걸린 파일을 덮어쓴다(git v2.53.0 unpack-trees.c:1918-1922, builtin/merge.c `--overwrite-ignore` 기본값).
+    - 추적하지 않는 파일과 index·작업 폴더의 변경은 그대로 멈춘다(WT1, NEW2).
+
+39. **ait는 version 2 하나다. ait-mini(version 1)의 경로를 코드와 테스트에서 지운다.** (2026-10-12, 사용자: "그냥 version2로 완전히 컨버젼해서, 기존 테스트까지 합격시켜야지", "mini의 잔재를 없애")
+    - 구현이 `.ait/init`의 내용으로 version 1이면 mini처럼(`Ait-Check` 기록줄, 행 범위·drop 레코드 거절), version 2이면 v15처럼 동작하던 두 갈래와 `AIT_MINI` 컴파일 분기를 지운다. version 2가 아닌 init 파일은 2.1.2a대로 `E_FORMAT`이다.
+    - 기존 테스트(t/*.sh)도 version 2 저장소에서 돈다. mini 때문에 바꾸거나 건너뛴 시나리오 단계는 v15대로 되돌린다.
+    - ait-mini의 실험 묶음(`make bundle`)은 mini의 마지막 커밋(190f2d9)에서 만든다(결정 32: mini는 시험용으로 그 자리에 둔다).
+
+40. **`ait contract add`·`ait contract commit`(7.5·7.6)을 이번 범위에 넣는다.** (2026-10-12, 사용자: "contract add·commit 구현 (추천)")
+    - 5.10의 복원, E_GUARD, E_DIRTY, E_MIXED, 형식이 틀린 레코드, init 파일, 통합 hook의 "keeps an error from HEAD" 등 명세의 고치는 hint가 모두 이 두 명령으로 끝나므로, 없는 명령을 가리키지 않게 한다. 손으로 고친 계약 파일이 관문을 지나고 기록줄을 남기는 입구다.
+
+41. **cherry-pick·rebase·revert가 들어오는 쪽의 current 판을 버리고 future를 남기면 되돌린 커밋이다(1.5d 그대로).** (2026-10-12, 사용자: "추천대로")
+    - T28-21의 시나리오는 "부모(HEAD)에서 future였으니 되돌린 커밋이 아니다"라고 했으나, 1.5d의 조건 2는 V의 prev에 있는 current 판도 센다. 7.1.3-5가 I의 current 판을 prev에 넣으므로 이 커밋은 되돌린 커밋이고 `is reopened in this merge`와 H10을 쓴다. 조건 2의 prev 절은 부모가 HEAD뿐인 통합과 pull의 고르기에서 남의 current를 버린 것을 잡으려고 있다. 시나리오와 t28을 고친다.
+
+42. **통합 hook은 current가 아닌 D·O의 확인 행을 지운다(7.1.3-2).** (2026-10-12, 사용자: "추천대로")
+    - 충돌을 풀며 state만 future로 바꾸면 확인 행이 남아 2.2.2의 형식 오류가 되던 것(T28-22)을, hook의 정규화가 지운다. 2.2.2의 "future로 되돌리면 지운다"와 7.1.3-3이 되돌릴 때 확인 행을 지우는 것과 같은 일이다. 확인 행은 뜻에 들지 않으므로(9.2) 뜻이 바뀌지 않는다.
+
+43. **T47-9·10의 `pull K`는 D도 이름으로 받는다(7.12.3 그대로).** (2026-10-12, 사용자: "추천대로")
+    - 준비의 R1(D)이 Rk의 조상이므로 `pull K`는 D도 함께 들인다. 7.12.3대로 이름을 모두 적게 하고, 시나리오와 t47의 명령을 `ait contract pull <D> <K>`로 고친다.
 
 ## Claude가 허락 없이 정한 것 (기록)
 
@@ -604,3 +624,32 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
 155. **커밋 기록줄의 `---`는 패치 경계가 아니다.** git v2.53.0 pretty.c:1767의 커밋 기록줄 파서는 no_divider=1이다. `interpret-trailers --parse --no-divider`로 읽고 기본 옵션으로 지우면 `---` 아래 기록줄이 남아 반복이 끝나지 않는 것을 실제 git으로 확인했다. 읽기·삭제·추가 모두 같은 옵션을 쓰고, t72의 해결 메시지에 `---`와 중복 기록줄을 함께 넣었다.
 
 156. **S5의 K6은 a가 갈라진 뒤 main에 만든다.** 구현 검수 수정 뒤 전체 검사에서, 공통 init에 K6을 둔 기존 재현은 a1에서 provider가 사라져 같은 고정으로 이미 미확인인 부모를 만들었다. 1.5a·7.12.5·9.1대로면 이 이력은 허용되므로 거절 기대의 재현이 아니다. S5의 거절 기대는 유지하고 main에만 K6을 만드는 이력으로 바꿨다. 실제 받는 부모에 이미 미확인인 K6이 있는 경우의 허용은 t76에 별도로 검사한다.
+
+### Q. version 2 전환에서 Claude가 정한 것 (2026-10-12)
+
+157. **판 모형을 공통 파일 하나(version.c)로 옮겼다.** 포함·극대 판·끝난 판·사고 판(2.2.4, 2.3.3), 되돌린 커밋과 되돌린 쪽(1.5d), 새 미확인(9.1), 확인 행 규칙(2.2.2), 내 약속(1.3)을 pull만이 아니라 모든 명령이 같은 함수로 판정한다. record.c의 mini 판정(`reopened`, `unverified_at`, `off_at`)은 지웠다.
+158. **미확인은 1.5a의 조건 하나다.** 확인 행이 맞고 provider 코드가 고정 이후 바뀐 current D·O다. 확인 행이 없거나 PINS가 맞지 않으면 사고 판이고, 명세 파일이 고정과 다르면 묶음 무결성 위반이다(mini는 셋을 미확인으로 섞었다).
+159. **"HEAD에 이미 있던 오류"는 레코드로 판정한다.** 7.1.3-7의 정의(오류가 가리키는 레코드를 HEAD의 구조 오류도 가리킨다)를 관문의 전이 hint 1(5.9a)에도 쓴다. 관문이 새로 만든 연결의 오류는 HEAD의 것이 아니다(t08), 손으로 넣은 연결은 HEAD의 것이다(t86).
+160. **5.10 hint의 조합.** 복원과 지우기가 함께면 `restore 'A' as in 'G', remove 'C', then 'ait contract commit -m <why>'`로 한 행에 잇는다. HEAD에 없는 레코드 경로가 아닌 파일은 `remove 'PATH'`만 쓴다(T11-i). t86의 기대(D·O·연결을 모두 복원)는 mini의 문구였으므로 5.10대로 연결만 지우는 hint로 고쳤다.
+161. **`ait contract new`(7.4)도 넣었다.** 결정 40의 contract commit이 주는 전이 hint(5.9a 3·10)가 `ait contract new ROLE`을 가리키므로, 없는 명령을 가리키지 않게 틀을 쓰는 명령을 함께 넣었다. drop 틀도 쓸 수 있지만 `future drop`과 drop의 이행은 여전히 지원하지 않는다.
+162. **drop이 없어서 쓰지 않는 hint.** H8과 contract commit 전이 hint 5의 철회 hint, H2의 X 형, H10의 drop 형은 쓰지 않는다. 가리킬 명령(`future drop`)이 없기 때문이다.
+163. **E_BUSY의 첫 행은 조작 이름을 쓴다**(`cannot run now: a git rebase is in progress`). OP는 5.8 E_BUSY의 판정이고, 여러 커밋을 고르는 중이면 `sequencer/todo`의 첫 낱말로 정한다.
+164. **5.9a의 `first finish or abort the git OP in progress` 앞말은 모든 hint의 ait 쓰기 명령 앞에 한 번 쓴다.** hook 안에서는 그 커밋 뒤에도 이어지는 조작(rebase, 남은 고르기)만 센다. merge와 한 번의 고르기는 그 커밋으로 끝난다(5.9a "hook의 hint는 그 커밋 뒤의 상태").
+165. **E_GUARD의 임시 index 판정.** 막힌 계약 경로가 이 worktree의 index에 stage돼 있지 않으면 hook이 받은 index는 `-a`나 경로를 준 commit의 것이다(git commit은 `-a`에도 index.lock을 쓰므로 파일 이름으로는 가릴 수 없다).
+166. **같은 hint는 한 번만 쓴다**(5.9a)를 `suggest()` 한 곳에서 지킨다. H8이 이어 쓰는 되돌리기 hint 같은 겹침을 부르는 쪽마다 피하던 것을 없앴다.
+167. **H9 경고와 그 hint는 오류보다 먼저 쓴다.** git도 경고를 오류 앞에 쓴다. 테스트의 `expect_err`는 앞선 `warning:`·`hint:` 행을 건너뛰고 첫 오류 행을 본다. H9의 hint는 `to include them, run 'ait contract pull …'`이고, 그 pull이 0단계 로컬 변경에 막힐 것이면 그 hint를 앞에 쓴다(7.12.0의 판정은 pull과 같은 함수다).
+168. **9.2의 "뜻이 같다"를 구현했다.** 본문이 prev·확인 행·고정만 다르고, 범위는 같은 경로이며 행 범위는 옛 범위를 새 blob으로 사상한 것(1.5e, 3.7)이면 뜻이 같다. H9가 쓴다.
+169. **pull의 명세 파일 다시 고정은 6.2의 다시 펼치기와 같은 함수다.** 충돌한(unmerged) 경로는 레코드의 행을 두고, 충돌한 정의가 있으면 그것이 선언했을 수 있는 행도 두되 다시 고정한다. 전에는 pull이 blob만 손으로 바꿔 정의가 inputs를 바꾸면 따라가지 못했다.
+170. **mini의 낱말을 지웠다.** `not supported in ait-mini`는 `not supported: '…'`(hint 없음, 맞는 hint를 모른다), 테스트의 `MINI` 키는 `UNSUPPORTED`, `# mini:`는 `# not yet:`이다.
+171. **contract add의 E_MIXED.** 계약 경로가 아닌 PATH는 `contract changes and code changes are mixed: 'PATH' is no contract path`이고 hint는 없다(5.8이 정하지 않았다).
+172. **통합 hook의 `comes in unverified`·`is unverified after this merge`에 이어 쓰는 H8은 `(unverified since …)` 없이 쓴다.** 판정한 tree(통합 결과)의 이력은 아직 커밋이 아니다.
+173. **되돌리기 절의 차례는 K가 먼저다.** 도우미 경로와 pull 경로가 서로 달랐던 것을 5.9a·7.1.2의 예(`ait future amend ID future amend O… -m <why>`)대로 맞추고, 기준 S4·IND1과 t69를 고쳤다.
+174. **t93의 충돌 재현을 바꿨다.** cancelled offer를 되살리는 해결은 v15에서 E_STATE(HK3)이므로, 같은 충돌을 amend끼리의 충돌로 재현하고 되살리는 해결은 거절되는지 따로 본다.
+175. **약속으로 하기 hint는 5.9a의 `if it does not hold yet, make it future: …`다.** 시나리오 T10-3과 테스트에 남은 옛 문구 `make it a promise`를 명세에 맞췄다("함께 고칠 용어"의 결정).
+176. **T27-2의 `contract pull`은 계약 ID를 준 pull이다.** 목록은 명령 이름만 적었다. ID 없는 pull은 5.13-1의 문법 오류(E_USAGE)가 먼저이므로, merge 중의 E_BUSY는 `ait contract pull <O>`로 본다.
+177. **pull의 `already`는 이름을 준 차례로 쓴다**(T28-6의 `already <O> <D>`). 7.12는 차례를 정하지 않았고 기준(MH3·MH7)도 이 차례와 같다. 같은 출력을 두 곳에서 쓰던 것을 하나로 합쳤다.
+178. **7.1.3-7에서 오류를 없애는 출발 판은 HEAD의 것부터 본다.** 7.13.1-5의 고를 쪽(형식이 틀린 쪽을 피하고, 전이로 갈 수 있는 쪽, 아니면 이 브랜치)을 다 옮기지 않고, "그 판으로 복원하면 오류가 없어지는가"를 HEAD, 이어 들어오는 쪽 차례로 본다. 찾지 못하면 `no side passes here; abort the git OP as 'git status' says`다.
+179. **H9는 HEAD의 판이 형식이 틀렸거나 사고 판인 계약을 보지 않는다.** 그런 계약은 명령이 5.10으로 먼저 거절하고, 최신 판의 판정(pull의 계획)이 그 상태에서 명령을 멈추게 하기 때문이다(H9는 알리기만 한다).
+180. **열린 일: t28의 간헐 실패.** 전체 t28을 병렬 6번 돌릴 때 한 번, 11단계의 통합 커밋은 성공했지만 commit-msg의 `is reopened in this merge` 경고와 H10이 나오지 않았다(K는 future, 새 기록줄은 있다). 같은 단계를 따로 12번, 진단 출력을 넣은 바이너리로 전체를 병렬 8번 더 돌려 재현하지 못했다. 검수에서 다시 본다.
+181. **init의 `then commit it`은 7.1.1-1대로 절대경로로, git 디렉터리 밖의 파일에만 쓴다.** `.git/hooks`는 git이 stage하지 않으므로 따를 수 없는 hint였다. t97f의 상대경로 기대를 고쳤다.
+182. **E_CODE_REQUIRED와 E_CHECK_FAILED의 계약별 hint를 5.8 차례대로 쓴다.** HEAD의 계약이면 `new:` 범위여도 범위 옮기기, 이 명령이 이행하는 내 O 하나가 떠맡은 D면 놓기(D가 걸린 계약이거나 다른 대상 O도 떠맡으면 쓰지 않는다), 이행하려고 고른 내 future면 cancel. 조건 바꾸기 hint의 5.9 d O…는 HEAD에서 current인 것이다(되돌리기는 HEAD에서 돈다).

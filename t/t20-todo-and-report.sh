@@ -17,14 +17,14 @@ B=$(ait session open --agent agent-b)
 prompt_defs; exec_def guard; exec_def pass
 tick; run ait_a future demand src/order.c src/stock.c specs/low.yaml,specs/guard.yaml as d -m m
 D=$(new_id)
-# mini: line ranges are not supported; the scenario's src/stock.c:1-10 becomes src/stock.c
-tick; run ait_b future offer src/stock.c specs/pass.yaml as o undertake "$D" o -m m
+# T20 prep: O's provider is the line range src/stock.c:1-10
+tick; run ait_b future offer src/stock.c:1-10 specs/pass.yaml as o undertake "$D" o -m m
 O=$(new_id)
 check "prepare: D and O exist" test -n "$D" -a -n "$O"
 
 # 1
 expect_ok "1: B todo" ait_b todo
-check "1: stdout is exactly the O block" out_is "id $O" "role offer" "state future" "creator agent-b" "provider src/stock.c" \
+check "1: stdout is exactly the O block" out_is "id $O" "role offer" "state future" "creator agent-b" "provider src/stock.c:1-10" \
 	"file specs/pass.yaml exec" "    pass" "    \$ ./tests/pass.sh" "file tests/pass.sh input" \
 	"undertakes $D future agent-a" "undertakes-provider $D src/stock.c" \
 	"undertakes-file $D specs/guard.yaml exec" "    guard" "    \$ ./tests/guard.sh" \
@@ -42,7 +42,7 @@ check "2: file tests/guard.sh input" block_has "$D" "file tests/guard.sh input"
 # 3
 expect_err "3: B fulfill O asks for results" E_NEEDS_RESULTS ait_b fulfill "$O" -m m
 Q=$(out_value check-request); W=$(out_value check-result)
-check "3: report is exactly the 7.7.6 form" out_is "id $O" "provider $D src/stock.c" "provider $O src/stock.c" "" \
+check "3: report is exactly the 7.7.6 form" out_is "id $O" "provider $D src/stock.c" "provider $O src/stock.c:1-10" "" \
 	"task $D:specs/guard.yaml exec" "task $D:specs/low.yaml prompt" "task $O:specs/pass.yaml exec" \
 	"check-request $Q" "check-result $W" "ready yes"
 cp "$W" "$T/w3.yaml"; in3=$(yval "$W" input)
@@ -95,14 +95,14 @@ sed -i.bak '3s/.*/s3 z/' src/stock.c && rm -f src/stock.c.bak
 tick; git commit -qam three 2>/dev/null
 expect_ok "10: todo src/stock.c" ait todo src/stock.c
 check "10: O state current" block_has "$O" "state current"
-check "10: O provider ?changed" block_has "$O" "provider src/stock.c ?changed"
+check "10: O provider ?changed" block_has "$O" "provider src/stock.c:1-10 ?changed"
 check "10: O unverified yes" block_has "$O" "unverified yes"
 check "10: D provider ?changed" block_has "$D" "provider src/stock.c ?changed"
 check "10: D unverified yes" block_has "$D" "unverified yes"
 # the same facts by ID (separates the scope argument from the display)
 expect_ok "10: todo O D" ait todo "$O" "$D"
 check "10 (by ID): O state current" block_has "$O" "state current"
-check "10 (by ID): O provider ?changed" block_has "$O" "provider src/stock.c ?changed"
+check "10 (by ID): O provider ?changed" block_has "$O" "provider src/stock.c:1-10 ?changed"
 check "10 (by ID): O unverified yes" block_has "$O" "unverified yes"
 check "10 (by ID): D provider ?changed" block_has "$D" "provider src/stock.c ?changed"
 check "10 (by ID): D unverified yes" block_has "$D" "unverified yes"

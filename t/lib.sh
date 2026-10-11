@@ -26,9 +26,6 @@ setup() {
 	for i in $(seq 1 50); do echo "s$i"; done > src/stock.c
 	tick; git add -A && git commit -qm base
 	tick; ait init >/dev/null
-	# These fixtures retain the frozen ait-mini version 1 contract.
-	printf "version 1\n" > .ait/init
-	git add .ait/init; git -c core.hooksPath=/dev/null commit -q --amend --no-edit
 	git push -q origin master
 }
 tick() { N=$((N+60)); export GIT_COMMITTER_DATE="@$((1700000000+N)) +0000" GIT_AUTHOR_DATE="@$((1700000000+N)) +0000"; }
@@ -97,14 +94,15 @@ code_of() {
 	E_GUARD) echo "1 error: contract files cannot be changed by a plain commit:" ;;
 	E_GIT) echo "128 fatal: git failed:" ;;
 	E_IO) echo "128 fatal: write error:" ;;
-	MINI) echo "128 fatal: not supported in ait-mini:" ;;
+	UNSUPPORTED) echo "128 fatal: not supported:" ;;
 	esac
 }
 expect_ok() { desc=$1; shift; run "$@"; [ $rc = 0 ] && say_ok "$desc" || say_fail "$desc (exit $rc)"; }
+# the error is the first line after the warnings and their hints, which git writes before it too
 expect_err() {
 	desc=$1 kind=$2; shift 2; run "$@"
 	want=$(code_of "$kind")
-	if [ "$rc" = "${want%% *}" ] && head -1 "$T/err" | grep -qF -- "${want#* }"; then say_ok "$desc"; else say_fail "$desc (want $kind, exit $rc)"; fi
+	if [ "$rc" = "${want%% *}" ] && grep -v '^warning: \|^hint: ' "$T/err" | head -1 | grep -qF -- "${want#* }"; then say_ok "$desc"; else say_fail "$desc (want $kind, exit $rc)"; fi
 }
 # 0.2 `불변`: HEAD, the index and the status are the same before and after
 snapshot() { { git rev-parse HEAD; git ls-files -s; git status --porcelain --untracked-files=all; } 2>&1; }
@@ -121,6 +119,8 @@ out_value() { sed -n "s/^$1 //p" "$T/out" | head -1; }
 rec() { git show "HEAD:.ait/$1"; }
 blob() { git rev-parse "$1"; }
 pins() { git show "$1:.ait/$2" | grep -E '^(provider|file) ' | git hash-object --stdin; }
+# check_line REV ID: the check line of ID's record at REV without its key ("reported|forced PINS", 1.5a)
+check_line() { git show "$1:.ait/$2" | sed -n 's/^check //p'; }
 new_id() { out_value new | cut -d' ' -f1; }
 
 # 0.2 `fill W OUT [TASK=OUT2]...`
@@ -143,7 +143,7 @@ with_r() {
 	outcome=$1; shift
 	wr_before=$(snapshot); run "$@"
 	W=$(out_value check-result); Q=$(out_value check-request)
-	if [ "$rc" = 1 ] && head -1 "$T/err" | grep -qF "error: check results required:" && [ -n "$W" ] &&
+	if [ "$rc" = 1 ] && grep -v '^warning: \|^hint: ' "$T/err" | head -1 | grep -qF "error: check results required:" && [ -n "$W" ] &&
 	   [ "$(snapshot)" = "$wr_before" ]; then :; else say_fail "first run of '$*' asks for results"; return; fi
 	fill "$W" "$outcome"
 	run "$@" -r "$W"

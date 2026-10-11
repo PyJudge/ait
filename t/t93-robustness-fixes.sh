@@ -59,10 +59,17 @@ git reset -q --hard HEAD^
 
 # 7.1.3: a cherry-pick resolution is an integration: validated, not guarded
 git checkout -q -b side && tick && ait future amend $O src/order.c - -m s >/dev/null 2>&1; S=$(git rev-parse HEAD)
-git checkout -q master && tick && ait future cancel $O -m c >/dev/null 2>&1
-check "the side changed the offer" [ "$S" != "$(git rev-parse master)" ]
+git checkout -q master && tick && ait future amend $O src/stock.c,src/order.c - -m c >/dev/null 2>&1; M=$(git rev-parse HEAD)
+check "the side changed the offer" [ "$S" != "$M" ]
 git cherry-pick $S >/dev/null 2>&1
 check "the cherry-pick conflicts on the record" sh -c "git status --porcelain | grep -q '^UU .ait/$O'"
 git checkout --theirs .ait/$O && git add .ait/$O
 tick; expect_ok "a resolved cherry-pick commits" git commit -q --no-edit
+# 2.3.2: a resolution that brings a cancelled contract back is refused
+git reset -q --hard "$M"
+tick && ait future cancel $O -m c >/dev/null 2>&1
+git cherry-pick $S >/dev/null 2>&1
+git checkout --theirs .ait/$O && git add .ait/$O
+tick; expect_err "a resolution reviving the cancelled offer is refused" E_STATE git commit -q --no-edit
+git cherry-pick --abort
 done_testing

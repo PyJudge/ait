@@ -33,7 +33,6 @@ pbase() {
 	ds=${DSTATE:-future} dck=${DCHECK:-reported}; unset DSTATE DCHECK
 	[ -n "$T" ] && cd / && rm -rf "$T"
 	setup
-	printf 'version 2\n' > .ait/init
 	MSID=$(ait session open --agent agent-m)
 	printf 'line%s v=0\n' 1 2 3 4 5 6 7 8 9 > src/stock.c
 	echo order > src/order.c
