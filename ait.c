@@ -38,8 +38,8 @@ static char *prefixed(const char *hint)
 	return strbuf_detach(&sb, NULL);
 }
 
-/* a hook is running: what it says is about the state after its commit (5.9a) */
-static int in_hook;
+/* a hook of a commit is running: what it says is about the state after that commit (5.9a) */
+static int commit_hook;
 
 /* HINT runs an ait command that writes, which waits for a git operation in progress (5.2) */
 static int ait_writes(const char *hint)
@@ -62,7 +62,7 @@ static const char *op_ahead(void)
 {
 	const char *op = git_op();
 
-	if (in_hook && op && strcmp(op, "rebase") && access(xstrfmt("%s/sequencer/todo", gitdir), F_OK))
+	if (commit_hook && op && strcmp(op, "rebase") && access(xstrfmt("%s/sequencer/todo", gitdir), F_OK))
 		return NULL;
 	return op;
 }
@@ -210,13 +210,21 @@ char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...)
 	return git_args(&args, in, index, rc);
 }
 
-/* into PATHS, the paths of the "-z" listing OUT that git has just given */
+/* git quotes unusual paths unless given -z (core.quotePath), so path listings are read as -z ones */
 void z_paths(const char *out, struct string_list *paths)
 {
 	const char *p, *end = out + git_out_len;
 
 	for (p = out; p < end; p += strlen(p) + 1)
 		string_list_insert(paths, p);
+}
+
+/* the first line of S, cut in place: a git output of one value */
+char *line1(char *s)
+{
+	if (s)
+		s[strcspn(s, "\n")] = 0;
+	return s;
 }
 
 /* the boolean setting KEY as git config reads it: 1 when true */
@@ -269,14 +277,6 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 	if (fread(buf, 1, n, out) != n || fgetc(out) != '\n')
 		reject(128, NULL, "git failed: 'git cat-file': it stopped");
 	return buf;
-}
-
-/* the first line of S, cut in place: a git output of one value */
-char *line1(char *s)
-{
-	if (s)
-		s[strcspn(s, "\n")] = 0;
-	return s;
 }
 
 /* S as one shell word, for the commands hints give (5.9a) */
@@ -842,33 +842,40 @@ static int pre_push(void)
 
 /*
  * spec 7.1.3: git stopped while bringing another commit into HEAD and has
- * not committed the result: a merge, cherry-pick, revert, or a rebase that
- * stopped at a commit. Any other operation in progress is no integration.
+ * not committed the result: the file that names what it brings, MERGE_HEAD,
+ * CHERRY_PICK_HEAD, REVERT_HEAD, or REBASE_HEAD of a rebase that stopped at
+ * a commit. Any other operation in progress is no integration (NULL).
  */
-int integrating(void)
+const char *integration_head(void)
 {
 	struct strbuf safe = STRBUF_INIT;
 
 	/* a merge in progress is the file MERGE_HEAD; git writes it whether or not its contents resolve */
-	if (!access(xstrfmt("%s/MERGE_HEAD", gitdir), F_OK) || object("CHERRY_PICK_HEAD", 0, NULL, NULL) ||
-	    object("REVERT_HEAD", 0, NULL, NULL))
-		return 1;
+	if (!access(xstrfmt("%s/MERGE_HEAD", gitdir), F_OK))
+		return "MERGE_HEAD";
+	if (object("CHERRY_PICK_HEAD", 0, NULL, NULL))
+		return "CHERRY_PICK_HEAD";
+	if (object("REVERT_HEAD", 0, NULL, NULL))
+		return "REVERT_HEAD";
 	if (!object("REBASE_HEAD", 0, NULL, NULL))
-		return 0;
+		return NULL;
 	/* a merge-backend rebase writes MERGE_MSG when it stops at a commit */
 	if (!access(xstrfmt("%s/rebase-merge", gitdir), F_OK))
-		return !access(xstrfmt("%s/MERGE_MSG", gitdir), F_OK);
+		return access(xstrfmt("%s/MERGE_MSG", gitdir), F_OK) ? NULL : "REBASE_HEAD";
 	/* an apply-backend one stopped at a commit while abort-safety is still HEAD: git am has not committed */
-	return strbuf_read_file(&safe, xstrfmt("%s/rebase-apply/abort-safety", gitdir), 0) >= 0 &&
-	       head && !strcmp(line1(safe.buf), head);
+	if (strbuf_read_file(&safe, xstrfmt("%s/rebase-apply/abort-safety", gitdir), 0) >= 0 && head &&
+	    !strcmp(line1(safe.buf), head))
+		return "REBASE_HEAD";
+	return NULL;
 }
 
 /*
  * H7 and H8: check an unverified contract again, judged at HEAD's tree H
  * where the amend will run: at its scope, or where its code went, then reopen it.
- * The guard of 7.1.2 makes the commit H8 would name, so it names none.
+ * H8 names where it became unverified in the history of TIPS, the judged
+ * tree's; none (NULL) when the commit being made does it (7.1.2, 7.1.5).
  */
-void recheck_hint(struct state *s, struct record *r, struct tree *h, int guard)
+void recheck_hint(struct state *s, struct record *r, struct tree *h, const struct string_list *tips)
 {
 	const char *since;
 
@@ -876,7 +883,7 @@ void recheck_hint(struct state *s, struct record *r, struct tree *h, int guard)
 		suggest("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
 		return;
 	}
-	since = guard ? NULL : unverified_since(r);
+	since = tips ? unverified_since(r, tips) : NULL;
 	suggest("'%s' has no code under its scope%s; if it was moved, run 'ait %s -m <why>' to get the tasks",
 		r->id, since ? xstrfmt(" (unverified since '%s')", since) : "", amend_clause(r, moved_arg(r, h), "-"));
 	suggest("%s", reopen_hint(s, r));
@@ -917,42 +924,33 @@ void fulfill_hint(struct state *s, struct record *p, struct tree *t)
  */
 static int post_hook(const char *before)
 {
-	struct state now = { 0 }, was = { 0 };
+	struct state now = { 0 };
 	struct string_list errors = STRING_LIST_INIT_DUP, old = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct verdict v;
 	size_t i;
 
 	if (!head)
 		return 0;
 	state_load(&now, head_tree());
-	state_errors(&now, head_tree(), &errors);
-	for (i = 0; i < now.nr; i++)
-		if (accident_at_head(now.r[i], &v))
-			string_list_insert(&errors, v.msg)->util = xmemdupz(&v, sizeof(v));
-	if (before) {
-		state_load(&was, tree_load(before));
-		state_errors(&was, tree_load(before), &old);
-		for (i = 0; i < was.nr; i++)
-			if (accident_at(before, was.r[i]->id))
-				string_list_insert(&old, xstrfmt("'%s' at HEAD was changed outside ait's rules", was.r[i]->id));
-	}
+	commit_errors(head, &errors);
+	if (before)
+		commit_errors(before, &old);
 	for_each_string_list_item(item, &errors) {
-		struct verdict *e = item->util;
-
 		if (string_list_has_string(&old, item->string))
 			continue;
-		warning("%s", e->msg);
-		suggest("%s", strcmp(e->word, "accident") ? head_repair(e, NULL, 0) : e->hint);
+		warning("%s", ((struct verdict *)item->util)->msg);
+		suggest("%s", head_repair(item->util, NULL, 0));
 	}
 	for (i = 0; before && i < now.nr; i++) {
 		struct version *then = version_in(before, now.r[i]->id), *v_now = version_in(head, now.r[i]->id);
 
-		if (then && v_now && then != v_now && contains(then, v_now)) {
-			warning("this commit put '%s' back to an older version; only this branch has it", now.r[i]->id);
+		if (!then || !v_now || then == v_now || !contains(then, v_now))
+			continue;
+		warning("this commit put '%s' back to an older version; only this branch has it", now.r[i]->id);
+		/* reopening leaves a new version only from a current one (7.3.2); other versions have no such command */
+		if (is_current(then->r))
 			suggest("to take it back for others too, reopen it with ait once this commit is reverted: "
 				"'ait future amend %s -m <why>'", now.r[i]->id);
-		}
 	}
 	return 0;
 }
@@ -982,7 +980,7 @@ char *quoted_paths(struct string_list *paths)
 	return strbuf_detach(&sb, NULL);
 }
 
-/* the list of the one string S */
+/* hints name their paths as one list (5.9a), even when there is one path */
 struct string_list *single(const char *s)
 {
 	struct string_list *list = xcalloc(1, sizeof(*list));
@@ -1010,7 +1008,7 @@ static void guard(struct state *hs, struct string_list *paths)
 	struct string_list held = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	const char *through;
-	int own = 1;
+	char *index;
 
 	for_each_string_list_item(item, paths)
 		string_list_append(contract_path(hs, item->string) ? &blocked : &code, item->string);
@@ -1018,10 +1016,10 @@ static void guard(struct state *hs, struct string_list *paths)
 		return;
 	/* the empty tree (git v2.53.0 hash.h) before the first commit */
 	z_paths(git("diff --cached --name-only -z %s", head ? head : "4b825dc642cb6eb9a060e54bf8d69288fbee4904"), &staged);
-	for_each_string_list_item(item, &blocked)
-		own &= string_list_has_string(&staged, item->string);
 	through = xstrfmt("commit them through ait: %s", through_ait(&blocked));
-	if (own)
+	/* a plain commit runs its hooks on this worktree's index, -a, -i and paths on another (git v2.53.0 builtin/commit.c:476) */
+	index = realpath(line1(git("rev-parse --path-format=absolute --git-path index")), NULL);
+	if (!hook_index || (index && !strcmp(hook_index, index)))
 		reject(1, code.nr ? xstrfmt("unstage %s and commit the rest; then %s", quoted_paths(&blocked), through) : through,
 		       "contract files cannot be changed by a plain commit: %s", quoted_paths(&blocked));
 	/* 5.9a, local changes: contract paths this worktree's index has staged go out of the way first */
@@ -1043,9 +1041,10 @@ static int cmd_hook(int argc, const char **argv)
 	char before[48];
 	size_t i;
 
-	in_hook = 1;
+	/* pre-push makes no commit, so an operation in progress goes on after it */
 	if (argc > 1 && !strcmp(argv[1], "pre-push"))
 		return pre_push();
+	commit_hook = 1;
 	if (argc > 2 && !strcmp(argv[1], "commit-msg")) {
 		integration_message(argv[2]);
 		return 0;
@@ -1061,7 +1060,7 @@ static int cmd_hook(int argc, const char **argv)
 		integration_validate(t);
 		return 0;
 	}
-	if (integrating()) {
+	if (integration_head()) {
 		integrate_at(t);
 		return 0;
 	}
@@ -1094,30 +1093,24 @@ static int cmd_hook(int argc, const char **argv)
 	/* the reopen hint, then H7 or H8, whose own reopen hint is said already */
 	for_each_string_list_item(item, &left) {
 		suggest("%s", reopen_hint(&hs, item->util));
-		recheck_hint(&hs, item->util, t, 1);
+		recheck_hint(&hs, item->util, t, NULL);
 	}
 	return 0;
 }
 
 /* spec 3.9: two scopes overlap; "DIR/" and "/" cover what is under them */
-static int overlap(const char *a, const char *b)
-{
-	a = scope_path(a);
-	b = scope_path(b);
-	return !strcmp(a, "/") || !strcmp(b, "/") || !strcmp(a, b) ||
-	       (ends_with(a, "/") && starts_with(b, a)) || (ends_with(b, "/") && starts_with(a, b));
-}
-
-/* the scope ARG of todo overlaps one of R's scopes or spec files (7.8.1) */
-static int named(struct record *r, const char *arg)
+/* the scope ARG of todo overlaps one of R's scopes or spec files at T, a drop's by its target's (7.8.1) */
+static int named(struct state *s, struct record *r, const char *arg, struct tree *t)
 {
 	static const enum key ks[] = { CONSUMER, PROVIDER, FILES };
 	struct string_list_item *item;
 	size_t k;
 
-	for (k = 0; k < ARRAY_SIZE(ks); k++)
+	if (*r->id == 'X')
+		r = state_get(s, val(r, TARGET));
+	for (k = 0; r && k < ARRAY_SIZE(ks); k++)
 		for_each_string_list_item(item, &r->f[ks[k]])
-			if (overlap(arg, item->string))
+			if (overlap(arg, item->string, t))
 				return 1;
 	return 0;
 }
@@ -1200,7 +1193,7 @@ static void todo_hints(struct state *s, struct state *hs, struct record *r, stru
 
 	/* H7 and H8 are about K unverified in HEAD, where the amend runs; staged changes are commit's (7.7a) */
 	if (in_head && !in_head->bad && unverified(in_head, ht))
-		recheck_hint(hs, in_head, ht, 0);
+		recheck_hint(hs, in_head, ht, single(head));
 	/* a drop is not written here (11), so its hints are not given */
 	if (!me || !in_state(r, "future") || *r->id == 'X')
 		return;
@@ -1255,7 +1248,7 @@ static int cmd_todo(int argc, const char **argv)
 			suggest("%s", v.hint);
 		}
 	for (i = 0; i < s.nr; i++) {
-		struct record *r = s.r[i];
+		struct record *r = s.r[i], *target;
 		struct string_list by = STRING_LIST_INIT_DUP;
 		int mine, future, unver, pick = 0;
 
@@ -1281,7 +1274,7 @@ static int cmd_todo(int argc, const char **argv)
 		/* 7.8.1: my promise (1.3), or my demand */
 		mine = my_promise(r, me, &by) || (unver && made_by(r, me));
 		for (k = 1; k < argc; k++)
-			pick |= id_shaped(argv[k]) ? !strcmp(argv[k], r->id) : (future || unver) && named(r, argv[k]);
+			pick |= id_shaped(argv[k]) ? !strcmp(argv[k], r->id) : (future || unver) && named(&s, r, argv[k], t);
 		/* without arguments: my promises and my unverified demands; without a session every future and unverified current */
 		if (argc == 1 && me)
 			pick = mine && (future || (unver && *r->id == 'D'));
@@ -1294,6 +1287,12 @@ static int cmd_todo(int argc, const char **argv)
 			printf("consumer %s\n", show(item->string, t, 0));
 		for_each_string_list_item(item, &r->f[PROVIDER])
 			printf("provider %s\n", show(item->string, t, is_current(r)));
+		/* 7.8.2: a drop shows its target and the scope it withdraws */
+		if (*r->id == 'X')
+			printf("target %s\n", val(r, TARGET));
+		if (*r->id == 'X' && (target = state_get(&s, val(r, TARGET))))
+			for_each_string_list_item(item, &target->f[PROVIDER])
+				printf("scope %s\n", show(item->string, t, is_current(target)));
 		if (unver)
 			puts("unverified yes");
 		file_lines("file", r, t);

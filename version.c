@@ -5,7 +5,11 @@
 #include "ait.h"
 #include "strvec.h"
 
-/* every version read once: "ID OID" for a blob, "ID MODE OID" for a tree entry, whose validity is its own */
+/*
+ * every version read once: "ID OID" for a blob, "ID MODE OID" for a tree entry,
+ * whose validity is its own; an entry is inserted only once its version is
+ * made, since making one inserts others and so moves the entries
+ */
 static struct string_list versions = STRING_LIST_INIT_DUP;
 
 static struct version *version_new(struct record *r, const char *oid)
@@ -20,34 +24,43 @@ static struct version *version_new(struct record *r, const char *oid)
 	return v;
 }
 
-/* the version OID of contract file ID; NULL for none ("-") */
+/* the version OID of contract file ID; "-", the prev of a first version (2.2.4), is none */
 struct version *version_of(const char *id, const char *oid)
 {
+	char *key;
 	struct string_list_item *item;
+	struct version *v;
 
 	if (!oid || !strcmp(oid, "-"))
 		return NULL;
-	item = string_list_insert(&versions, xstrfmt("%s %s", id, oid));
-	if (!item->util)
-		item->util = version_new(record_decode(id, oid), oid);
-	return item->util;
+	key = xstrfmt("%s %s", id, oid);
+	item = string_list_lookup(&versions, key);
+	if (item)
+		return item->util;
+	v = version_new(record_decode(id, oid), oid);
+	string_list_insert(&versions, key)->util = v;
+	return v;
 }
 
 /* the version of ID that COMMIT holds, judged as its tree entry (mode and path too, 2.1); NULL when it has none */
 struct version *version_in(const char *commit, const char *id)
 {
 	struct entry *e = file_entry(tree_load(commit), xstrfmt(".ait/%s", id));
+	char *key;
 	struct string_list_item *item;
 	struct record *r;
+	struct version *v;
 
 	if (!e)
 		return NULL;
-	item = string_list_insert(&versions, xstrfmt("%s %s %s", id, e->mode, e->oid));
-	if (item->util)
+	key = xstrfmt("%s %s %s", id, e->mode, e->oid);
+	item = string_list_lookup(&versions, key);
+	if (item)
 		return item->util;
 	r = record_from_entry(e, id, 0);
-	item->util = r->bad ? version_new(r, e->oid) : version_of(id, e->oid);
-	return item->util;
+	v = r->bad ? version_new(r, e->oid) : version_of(id, e->oid);
+	string_list_insert(&versions, key)->util = v;
+	return v;
 }
 
 /* 2.2.4: the versions V includes; a missing blob ends its branch, but its OID still counts */
@@ -204,6 +217,12 @@ int accident(struct version *v)
 	return v->accident = good ? 0 : unknown ? -1 : 1;
 }
 
+/* 5.10, 7.1.3, 7.12.1: a malformed version or an accident is no starting version where it came from elsewhere */
+int wrong_version(struct version *v)
+{
+	return v->r->bad || accident(v) == 1;
+}
+
 /*
  * 1.5d: V, ID's version at a commit with PARENTS, reopens a current version:
  * V is a new future version, a current C is a parent's version or in V's
@@ -258,13 +277,16 @@ int reopens(struct version *v, const struct string_list *parents)
  * first, each with its parents in ->util: a commit that changes none of them
  * against a parent judges as that parent does (13.4)
  */
-static void history(struct strvec *paths, struct string_list *out)
+static void history(const struct string_list *tips, struct strvec *paths, struct string_list *out)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct strvec args = STRVEC_INIT;
 	struct string_list_item *item;
 
-	strvec_pushl(&args, "log", "--full-history", "--topo-order", "--format=%H %P", head, "--", NULL);
+	strvec_pushl(&args, "log", "--full-history", "--topo-order", "--format=%H %P", NULL);
+	for_each_string_list_item(item, tips)
+		strvec_push(&args, item->string);
+	strvec_push(&args, "--");
 	strvec_pushv(&args, paths->v);
 	string_list_split(&lines, git_args(&args, NULL, NULL, NULL), "\n", -1);
 	for_each_string_list_item(item, &lines) {
@@ -297,7 +319,7 @@ void reopeners(const char *id, struct string_list *agents)
 	if (!head)
 		return;
 	strvec_push(&paths, xstrfmt(".ait/%s", id));
-	history(&paths, &commits);
+	history(single(head), &paths, &commits);
 	for_each_string_list_item(item, &commits) {
 		struct version *v = version_in(item->string, id);
 		int again = 0;
@@ -362,8 +384,8 @@ int newly_unverified(struct record *r, struct tree *t, const struct string_list 
 	return 1;
 }
 
-/* 9.1 for H8: the latest commit of HEAD's history where R newly became unverified with the pins it has now */
-const char *unverified_since(struct record *r)
+/* 9.1 for H8: the latest commit of the history of TIPS where R newly became unverified with the pins it has now */
+const char *unverified_since(struct record *r, const struct string_list *tips)
 {
 	struct string_list commits = STRING_LIST_INIT_DUP;
 	struct strvec paths = STRVEC_INIT;
@@ -374,7 +396,7 @@ const char *unverified_since(struct record *r)
 	strvec_push(&paths, xstrfmt(".ait/%s", r->id));
 	for_each_string_list_item(item, &r->f[PROVIDER])
 		strvec_push(&paths, scope_path(item->string));
-	history(&paths, &commits);
+	history(tips, &paths, &commits);
 	for_each_string_list_item(item, &commits) {
 		struct version *v = version_in(item->string, r->id);
 
@@ -536,18 +558,60 @@ char *head_repair(struct verdict *v, struct string_list *code, int rerun)
 		/* 2.1.2a: the init file has one content */
 		strbuf_addstr(&hint, "rewrite '.ait/init' as the single line 'version 2' with mode 100644");
 		commit = through_ait(single(".ait/init"));
-	} else {
+	} else if (strcmp(v->word, "incomplete")) {
+		/* a broken bundle (5.8 E_INCOMPLETE) needs no restore: the gate pins it again (6.2) */
 		entangled_restore(v, &hint);
 	}
 	if (commit && code && code->nr)
-		strbuf_addf(&hint, ", unstage %s first", quoted_paths(code));
+		strbuf_addf(&hint, "%sunstage %s first", hint.len ? ", " : "", quoted_paths(code));
 	if (commit)
-		strbuf_addf(&hint, ", then %s", commit);
+		strbuf_addf(&hint, "%s%s", hint.len ? ", then " : "run ", commit);
 	if (commit && code && code->nr)
 		strbuf_addf(&hint, ", stage %s again", quoted_paths(code));
 	if (rerun)
 		strbuf_addstr(&hint, ", then rerun this command");
 	return strbuf_detach(&hint, NULL);
+}
+
+/* 2.3.3: the version of contract ID at COMMIT is an accident */
+int accident_at(const char *commit, const char *id)
+{
+	struct version *v = commit ? version_in(commit, id) : NULL;
+
+	return v && !v->r->bad && strcmp(id, "init") && accident(v) == 1;
+}
+
+/* 5.10 E_ACCIDENT: R's version at COMMIT, HEAD as it is judged, is an accident (2.3.3), as a verdict without its hint */
+static int accident_verdict(const char *commit, struct record *r, struct verdict *out)
+{
+	if (!accident_at(commit, r->id))
+		return 0;
+	*out = (struct verdict){ 1, "accident", NULL, xstrfmt("'%s' at HEAD was changed outside ait's rules", r->id), r, NULL };
+	return 1;
+}
+
+/* 5.10: R of HEAD is an accident (2.3.3), as a verdict */
+int accident_at_head(struct record *r, struct verdict *out)
+{
+	if (!accident_verdict(head, r, out))
+		return 0;
+	out->hint = head_repair(out, NULL, 0);
+	return 1;
+}
+
+/* 5.10: the errors of the state at COMMIT, each a verdict under its first line: structure, format and bundle (5.9), and accidents */
+void commit_errors(const char *commit, struct string_list *out)
+{
+	struct tree *t = tree_load(commit);
+	struct state s = { 0 };
+	struct verdict v;
+	size_t i;
+
+	state_load(&s, t);
+	state_errors(&s, t, out);
+	for (i = 0; i < s.nr; i++)
+		if (accident_verdict(commit, s.r[i], &v))
+			string_list_insert(out, v.msg)->util = xmemdupz(&v, sizeof(v));
 }
 
 /*
@@ -563,20 +627,20 @@ void base_versions(struct state *s, struct string_list *written)
 	struct string_list_item *item;
 	struct state gs = { 0 };
 	const char *good;
-	size_t i;
 
-	state_errors(s, head_tree(), &errors);
+	if (!written->nr)
+		return;
+	commit_errors(head, &errors);
 	for_each_string_list_item(item, &errors) {
 		struct verdict *e = item->util;
 
-		if (strcmp(e->word, "incomplete"))
-			string_list_insert(&set, e->k->id);
-		if (strcmp(e->word, "incomplete") && e->o)
+		/* a broken bundle is pinned again by the gate (6.2), so no version of it is wrong */
+		if (!strcmp(e->word, "incomplete"))
+			continue;
+		string_list_insert(&set, e->k->id);
+		if (e->o)
 			string_list_insert(&set, e->o->id);
 	}
-	for (i = 0; i < s->nr; i++)
-		if (accident_at(head, s->r[i]->id))
-			string_list_insert(&set, s->r[i]->id);
 	if (!set.nr)
 		return;
 	good = find_good(&set, &gs);
@@ -590,25 +654,10 @@ void base_versions(struct state *s, struct string_list *written)
 		r->base = blob;
 		r->base_at = good;
 		r->rebased = 1;
+		/* 2.2.5, 6.2: the creator never changes, so what a helper writes keeps its base's */
+		if (then)
+			r->f[CREATOR] = then->f[CREATOR];
 	}
-}
-
-/* 2.3.3: the version of contract ID at COMMIT is an accident */
-int accident_at(const char *commit, const char *id)
-{
-	struct version *v = commit ? version_in(commit, id) : NULL;
-
-	return v && !v->r->bad && strcmp(id, "init") && accident(v) == 1;
-}
-
-/* 5.10: R of HEAD is an accident (2.3.3), as a verdict */
-int accident_at_head(struct record *r, struct verdict *out)
-{
-	if (!accident_at(head, r->id))
-		return 0;
-	*out = (struct verdict){ 1, "accident", NULL, xstrfmt("'%s' at HEAD was changed outside ait's rules", r->id), r, NULL };
-	out->hint = head_repair(out, NULL, 0);
-	return 1;
 }
 
 /* 5.10: HEAD's first error (structure, format, bundle, then accident), with the hint that mends it; 0 when none */

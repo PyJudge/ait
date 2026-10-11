@@ -63,7 +63,7 @@ cd "$T/wb"; tick; run ait future offer src/stock.c:20-30 specs/p.yaml as o under
 O=$(id_of o)
 check "2: B's O undertakes D" test $rc = 0 -a -n "$O"
 check "2: warning: D has changes not in HEAD" err_has "warning: '$D' has changes not in HEAD: '$R2C' on 'refs/heads/a'"
-check "2: hint: ait contract pull D" err_has "ait contract pull $D"
+check "2: hint: ait contract pull D" err_has "hint: to include them, run 'ait contract pull $D'"
 BH=$(git rev-parse HEAD)
 tick; run ait contract pull $D
 check "2: included D from R2's commit" test "$(cat "$T/out")" = "included $D from '$R2C'"
@@ -225,7 +225,7 @@ cd "$T/wb"; echo 'body: other' >specs/low.yaml; git add specs/low.yaml
 setl src/stock.c 1 s1x; git add src/stock.c
 expect_err "11: B fulfills D" E_NEEDS_RESULTS ait fulfill $D -m m
 check "11: H9 hint: commit or set aside your changes to specs/low.yaml" err_has "commit or set aside your changes to 'specs/low.yaml' before you pull"
-check "11: H9 hint: ait contract pull D" err_has "ait contract pull $D"
+check "11: H9 hint: ait contract pull D" err_has "hint: to include them, run 'ait contract pull $D'"
 before=$(snapshot)
 tick; run ait contract pull $D
 check "11: pull: E_DIRTY, your local changes would be overwritten" fails 1 "error: your local changes to 'specs/low.yaml' would be overwritten by this pull"

@@ -51,7 +51,9 @@ tick; expect_err "inputs as a scalar" E_FORMAT ait future offer src/stock.c spec
 # 5.9a: a value the shell reads is quoted in a hint
 echo s > 'src/a$b.c' && git add 'src/a$b.c' && tick && git commit -qm dollar
 tick; run ait offer 'src/a$b.c' specs/pass.yaml -m o
-check "the promise hint quotes the path" err_has "'ait future offer 'src/a\$b.c' specs/pass.yaml -m <why>'" 
+fill "$(git rev-parse --git-path ait/check-result.yaml)" fail
+tick; run ait offer 'src/a$b.c' specs/pass.yaml -r "$(git rev-parse --git-path ait/check-result.yaml)" -m o
+check "the promise hint (E_CHECK_FAILED) quotes the path" err_has "'ait future offer 'src/a\$b.c' specs/pass.yaml -m <why>'" 
 # the same causes, elsewhere: every file ait reads as text, task values in any YAML form, links read once
 tick; run ait offer src/order.c specs/pass.yaml -m o; W=$(out_value check-result); IN=$(sed -n 's/^input: //p' "$W")
 printf 'input: %s\nresults:\n  - task: +1:specs/pass.yaml\n    outcome: pass\n    basis: ok\n\000outcome: fail\n' "$IN" > "$W"

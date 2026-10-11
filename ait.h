@@ -33,7 +33,7 @@ void newid(char *out, int prefix);
 const char *session(int need);
 int lock_worktree(const char *wt);
 void write_state(const char *path, const char *text);
-int integrating(void);
+const char *integration_head(void);
 
 /* record.c: trees as git lists them; the index as git read-tree compares it */
 struct entry {
@@ -121,7 +121,7 @@ int at_head(struct verdict *v);
 void integrate_at(struct tree *t);
 void integration_validate(struct tree *t);
 void integration_message(const char *path);
-int as_in_head(struct record *r);
+int as_in_base(struct record *r);
 int malformed(struct state *s, struct verdict *v);
 const char *unusable(struct record *r, struct tree *t);
 
@@ -145,15 +145,17 @@ int follows(struct record *a, struct record *b, int gate);
 int confirmed(struct record *r);
 char *check_line(struct record *r, int result, struct string_list *from);
 int accident(struct version *v);
+int wrong_version(struct version *v);
 int reopens(struct version *v, const struct string_list *parents);
 void reopeners(const char *id, struct string_list *agents);
 int my_promise(struct record *r, const char *me, struct string_list *by);
 int newly_unverified(struct record *r, struct tree *t, const struct string_list *parents);
-const char *unverified_since(struct record *r);
+const char *unverified_since(struct record *r, const struct string_list *tips);
 char *head_repair(struct verdict *v, struct string_list *code, int rerun);
 void base_versions(struct state *s, struct string_list *written);
 int accident_at(const char *commit, const char *id);
 int accident_at_head(struct record *r, struct verdict *out);
+void commit_errors(const char *commit, struct string_list *out);
 int head_error(struct verdict *v);
 
 /* record.c: names: paths, scopes, object, session and agent IDs (3, 1.10, 7.2.1) */
@@ -168,6 +170,7 @@ const char *case_twin(struct tree *t, const char *path);
 char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs);
 void repin(struct record *r, enum key k, struct tree *t, int new_only);
 char *show(const char *scope, struct tree *t, int current);
+int overlap(const char *arg, const char *r, struct tree *t);
 char *shows(struct record *r, enum key k, struct tree *t, int current);
 char *scope_args(struct record *r, enum key k);
 int code_changed(struct record *r, struct tree *t);
@@ -213,6 +216,7 @@ int yaml_out(void *sb, unsigned char *buf, size_t n);
 int cmd_request(int argc, const char **argv);
 int cmd_pull(int argc, const char **argv);
 void changes_not_in_head(struct string_list *ids);
+void ref_list(struct string_list *refs);
 int cmd_fulfill(int argc, const char **argv);
 const char *git_op(void);
 const char *finishing_commit(void);
@@ -227,7 +231,7 @@ const char *pull_helpers(const char *tree, struct strvec *clauses, char *after_o
 int check_state_except(struct state *s, struct tree *t, struct verdict *v, struct string_list *conflicts);
 int expand_files_except(struct record *r, struct tree *t, struct string_list *conflicts);
 void fulfill_hint(struct state *s, struct record *p, struct tree *t);
-void recheck_hint(struct state *s, struct record *r, struct tree *h, int guard);
+void recheck_hint(struct state *s, struct record *r, struct tree *h, const struct string_list *tips);
 char *pull_options(int argc, const char **argv, struct strvec *args, int *force, struct strbuf *msg);
 
 int scope_changed(const char *scope, struct tree *t);

@@ -635,7 +635,7 @@ check ID reported|forced
 - 7.1.7 hook이 거절할 때는 stderr에 5.8의 첫 행과 hint를 쓰고, 그 오류의 종료 코드(5.8)로 끝난다. git은 0이 아닌 종료를 거절로 본다.
 - 7.1.8 **`post-commit`·`post-merge`**(규칙 6, 9): 커밋이나 merge(fast-forward 포함)가 끝난 뒤 git이 부른다. git은 이 hook의 종료 코드를 보지 않으므로 막지 않고 알린다. `--no-verify`나 충돌 없는 revert처럼 앞의 hook이 돌지 않은 커밋도 여기서 드러난다. 새 HEAD를 전 HEAD(post-commit은 첫 부모, post-merge는 `ORIG_HEAD`)와 견준다.
   - 새 HEAD에 새로 생긴 HEAD의 오류(5.10: 구조 오류, 형식이 틀린 판, 사고 판, 고정과 다른 명세 파일)마다 그 오류의 첫 행(5.8)을 `error:` 대신 `warning:`으로 쓰고 5.10의 hint를 쓴다(예: `warning: 'K' at HEAD was changed outside ait's rules`).
-  - 레코드가 옛 판으로 돌아갔으면(새 HEAD의 판이 전 HEAD의 판에 포함되고 그와 다르다) `warning: this commit put 'K' back to an older version; only this branch has it`와 `hint: to take it back for others too, reopen it with ait once this commit is reverted: 'ait future amend K -m <why>'`를 쓴다. 옛 판으로 돌아간 것은 사고가 아니다. 그 브랜치가 옛 상태에 있을 뿐이고(규칙 2), 새 판이 없으므로 남에게 사건이 아니다(9.1). 남에게도 거두려면 ait 명령으로 새 판을 남긴다.
+  - 레코드가 옛 판으로 돌아갔으면(새 HEAD의 판이 전 HEAD의 판에 포함되고 그와 다르다) `warning: this commit put 'K' back to an older version; only this branch has it`와 `hint: to take it back for others too, reopen it with ait once this commit is reverted: 'ait future amend K -m <why>'`를 쓴다. hint는 전 HEAD의 판이 current인 D·O일 때만 쓴다(되돌리기가 새 판을 남기는 것은 current에서뿐이다, 7.3.2. future면 `noop`이고 연결과 끝난 계약에는 되돌리기가 없다). 옛 판으로 돌아간 것은 사고가 아니다. 그 브랜치가 옛 상태에 있을 뿐이고(규칙 2), 새 판이 없으므로 남에게 사건이 아니다(9.1). 남에게도 거두려면 ait 명령으로 새 판을 남긴다.
 
 ### 7.2 session
 

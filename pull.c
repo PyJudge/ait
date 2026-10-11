@@ -115,6 +115,27 @@ static const char *introduction(struct pull *p, const char *id, struct version *
 	return best;
 }
 
+/* 5.11: the refs, each short name with its commit in ->util; for-each-ref's percent-hex is a literal byte */
+void ref_list(struct string_list *refs)
+{
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+
+	string_list_split(&lines, git("for-each-ref --format=%(refname)%20%(objectname)%20%(symref) refs/heads refs/remotes"), "\n", -1);
+	for_each_string_list_item(item, &lines) {
+		char ref[4096], oid[48], sym[4096];
+
+		/* a symbolic ref has a third word and is left out */
+		if (sscanf(item->string, "%4095s %47s %4095s", ref, oid, sym) == 2) {
+			const char *name = ref;
+
+			skip_prefix(ref, "refs/heads/", &name) || skip_prefix(ref, "refs/remotes/", &name);
+			string_list_insert(refs, name)->util = xstrdup(oid);
+		}
+	}
+	string_list_clear(&lines, 0);
+}
+
 static void snapshot_refs(struct pull *p)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
@@ -126,23 +147,11 @@ static void snapshot_refs(struct pull *p)
 		string_list_split(&p->shallow, shallow.buf, "\n", -1);
 		string_list_sort(&p->shallow);
 	}
-	string_list_split(&lines, git("for-each-ref --format=%(refname)%20%(objectname)%20%(symref) refs/heads refs/remotes"), "\n", -1);
-	/* for-each-ref's percent-hex is a literal byte; symbolic refs are excluded (5.11) */
-	for_each_string_list_item(item, &lines) {
-		char ref[4096], oid[48], sym[4096];
-
-		if (sscanf(item->string, "%4095s %47s %4095s", ref, oid, sym) == 2) {
-			const char *name = ref;
-
-			skip_prefix(ref, "refs/heads/", &name) || skip_prefix(ref, "refs/remotes/", &name);
-			string_list_insert(&p->refs, name)->util = xstrdup(oid);
-		}
-	}
+	ref_list(&p->refs);
 	string_list_insert(&p->refs, "HEAD")->util = (void *)head;
 	strvec_pushl(&args, "rev-list", "--parents", "--topo-order", NULL);
 	for_each_string_list_item(item, &p->refs)
 		strvec_push(&args, item->util);
-	string_list_clear(&lines, 0);
 	string_list_split(&lines, git_args(&args, NULL, NULL, NULL), "\n", -1);
 	for_each_string_list_item(item, &lines) {
 		struct string_list *ids = xcalloc(1, sizeof(*ids));
@@ -167,7 +176,7 @@ static void candidate_add(struct pull *p, struct selection *s, const char *commi
 	known = string_list_lookup(&s->candidates, v->oid);
 	if (known && known->util)
 		return;
-	if (v->r->bad || accident(v) == 1) {
+	if (wrong_version(v)) {
 		if (known)
 			return;
 		if (!p->quiet && v->r->bad)
@@ -434,7 +443,7 @@ static void add_links(struct pull *p)
 			if (!skip_prefix(t->e[i].path, ".ait/undertake/", &id) || strlen(id) != 27)
 				continue;
 			v = version_in(ref->string, xstrfmt("undertake/%s", id));
-			if (!v || v->r->bad || accident(v) == 1)
+			if (!v || wrong_version(v))
 				continue;
 			if (string_list_has_string(&p->selections, xstrndup(id, 13)) || string_list_has_string(&p->selections, id + 14))
 				string_list_insert(&ids, xstrfmt("undertake/%s", id));
@@ -541,7 +550,7 @@ static struct string_list incoming_missing(struct pull *p, struct string_list *s
 				continue;
 			v = version_in(end->string, id);
 			mine = version_in(head, id);
-			if (v->r->bad || accident(v) == 1 || contains(mine, v))
+			if (wrong_version(v) || contains(mine, v))
 				continue;
 			if (*id == 'u' && strlen(id) == 37) {
 				if (!string_list_has_string(&p->selections, xstrndup(id + 10, 13)))
@@ -737,6 +746,9 @@ static char *choices_hint(struct pull *p, int all)
 	int pass;
 
 	choice_commands(p, &commands, &resolved, all);
+	/* one pull that picks nothing leaves nothing to pick (H9's 'to include them') */
+	if (commands.nr == 1 && !choice_rank(commands.items[0].string))
+		return NULL;
 	for (pass = 0; pass < 2; pass++)
 		for_each_string_list_item(item, &commands)
 			if ((choice_rank(item->string) > 1) == pass)
@@ -1212,15 +1224,24 @@ static void check_local(struct tree *t, struct string_list *conflicts, int merge
 		reject(v.code, xstrfmt("%s, then rerun this command", v.hint), "%s", v.msg);
 }
 
-static void reopen_warnings(struct pull *p, struct state *state, struct tree *t, const char *where)
+/* Parents describe the received state; introducing commits only describe sources. */
+static struct string_list pull_parents(struct pull *p)
 {
 	struct string_list parents = STRING_LIST_INIT_DUP;
+	struct string_list_item *end;
+
+	string_list_insert(&parents, head);
+	for_each_string_list_item(end, &p->ends)
+		string_list_insert(&parents, end->string);
+	return parents;
+}
+
+static void reopen_warnings(struct pull *p, struct state *state, struct tree *t, const char *where)
+{
+	struct string_list parents = pull_parents(p);
 	struct string_list_item *item;
 	size_t i;
 
-	string_list_insert(&parents, head);
-	for_each_string_list_item(item, &p->ends)
-		string_list_insert(&parents, item->string);
 	for (i = 0; i < state->nr; i++) {
 		struct record *r = state->r[i];
 		struct version *v = version_of(r->id, blob_at(t, xstrfmt(".ait/%s", r->id)));
@@ -1300,24 +1321,19 @@ static struct string_list integration_sides(struct pull *p)
 	struct string_list sources = STRING_LIST_INIT_DUP;
 	struct string_list_item *source;
 	struct strbuf data = STRBUF_INIT;
+	const char *rev = integration_head();
 
 	string_list_insert(&sources, head);
-	if (!read_text(&data, xstrfmt("%s/MERGE_HEAD", gitdir))) {
+	if (rev && !strcmp(rev, "MERGE_HEAD") && !read_text(&data, xstrfmt("%s/MERGE_HEAD", gitdir))) {
 		string_list_split(&p->ends, data.buf, "\n", -1);
 		string_list_sort(&p->ends);
 		string_list_remove(&p->ends, "", 0);
 		for_each_string_list_item(source, &p->ends)
-			if (*source->string)
-				string_list_insert(&sources, source->string);
-	} else {
-		const char *rev = object("CHERRY_PICK_HEAD", 0, NULL, NULL) ? "CHERRY_PICK_HEAD" :
-			object("REVERT_HEAD", 0, NULL, NULL) ? "REVERT_HEAD" : object("REBASE_HEAD", 0, NULL, NULL) ? "REBASE_HEAD" : NULL;
-
-		if (rev) {
-			p->picked = line1(git("rev-parse %s", rev));
-			/* a revert starts from I's first parent */
-			string_list_insert(&sources, strcmp(rev, "REVERT_HEAD") ? p->picked : line1(git("rev-parse %s^", p->picked)));
-		}
+			string_list_insert(&sources, source->string);
+	} else if (rev && strcmp(rev, "MERGE_HEAD")) {
+		p->picked = line1(git("rev-parse %s", rev));
+		/* a revert starts from I's first parent */
+		string_list_insert(&sources, strcmp(rev, "REVERT_HEAD") ? p->picked : line1(git("rev-parse %s^", p->picked)));
 	}
 	string_list_sort(&sources);
 	string_list_remove(&sources, "", 0);
@@ -1341,24 +1357,34 @@ static int starts_at(struct pull *p, const char *source, const char *id)
 }
 
 /*
- * 7.1.3-7: restore record ID as the starting version of SIDE has it, with
- * the spec files that version declares and the index T lacks (2.4.1; spec
- * files the index has are pinned again by 2), then the finishing commit
+ * 7.1.3-7: what restoring the records IDS as the starting version of SIDE
+ * has them brings back, into PATHS with SIDE's entry (NULL: gone): each
+ * record, and the spec files its version there declares that the index T
+ * lacks (2.4.1; those the index has are pinned again by 2)
  */
-static char *side_restore(const char *side, struct string_list *ids, struct tree *t)
+static void restore_set(const char *side, struct string_list *ids, struct tree *t, struct string_list *paths)
 {
-	struct string_list paths = STRING_LIST_INIT_DUP;
+	struct tree *there = tree_load(side);
 	struct string_list_item *id, *f;
 
 	for_each_string_list_item(id, ids) {
 		struct version *v = version_in(side, id->string);
+		char *path = xstrfmt(".ait/%s", id->string);
 
-		string_list_append(&paths, xstrfmt(".ait/%s", id->string));
+		string_list_append(paths, path)->util = file_entry(there, path);
 		if (v && !v->r->bad && is_live(v->r))
 			for_each_string_list_item(f, &v->r->f[FILES])
 				if (!blob_at(t, scope_path(f->string)))
-					string_list_append(&paths, scope_path(f->string));
+					string_list_append(paths, scope_path(f->string))->util = file_entry(there, scope_path(f->string));
 	}
+}
+
+/* 7.1.3-7: the hint that restores the records IDS as the starting version of SIDE has them, then finishes */
+static char *side_restore(const char *side, struct string_list *ids, struct tree *t)
+{
+	struct string_list paths = STRING_LIST_INIT_DUP;
+
+	restore_set(side, ids, t, &paths);
 	return xstrfmt("restore %s as in '%s' and stage the result, then run '%s'", quoted_paths(&paths), side, finishing_commit());
 }
 
@@ -1382,10 +1408,22 @@ static char *mending_side(struct pull *p, struct string_list *sources, struct st
 	for_each_string_list_item(source, sources)
 		if (strcmp(source->string, head))
 			string_list_append(&order, source->string);
+	/* each side is tried as its hint restores: its records and the spec files they declare that the index lacks */
 	for_each_string_list_item(source, &order) {
+		struct string_list paths = STRING_LIST_INIT_DUP;
+		struct strbuf info = STRBUF_INIT;
+		struct string_list_item *path;
 		struct state trial = { 0 };
+		struct tree *after;
 		struct verdict w;
 
+		restore_set(source->string, &ids, t, &paths);
+		for_each_string_list_item(path, &paths) {
+			struct entry *e = path->util;
+
+			index_line(&info, e ? e->mode : NULL, e ? e->oid : NULL, path->string);
+		}
+		after = tree_load(tree_with(t->oid, info.buf, NULL));
 		for (i = 0; i < state->nr; i++)
 			if (!string_list_has_string(&ids, state->r[i]->id))
 				*state_add(&trial, state->r[i]->id) = *state->r[i];
@@ -1395,7 +1433,7 @@ static char *mending_side(struct pull *p, struct string_list *sources, struct st
 			if (x)
 				*state_add(&trial, id->string) = *x->r;
 		}
-		if (!check_state(&trial, t, &w))
+		if (!check_state(&trial, after, &w))
 			return side_restore(source->string, &ids, t);
 	}
 	return xstrfmt("no side passes here; abort the git %s as 'git status' says", git_op());
@@ -1496,7 +1534,7 @@ static void integrate_records(struct tree *t, int write)
 		for_each_string_list_item(source, &sources) {
 			struct version *up = starts_at(&p, source->string, r->id) ? version_in(source->string, r->id) : NULL;
 
-			if (!up || !is_current(up->r) || (strcmp(source->string, head) && (up->r->bad || accident(up) == 1)))
+			if (!up || !is_current(up->r) || (strcmp(source->string, head) && wrong_version(up)))
 				continue;
 			string_list_append(&from, up->oid)->util = up;
 			same |= !strcmp(pins(r), pins(up->r));
@@ -1545,7 +1583,7 @@ static void integrate_records(struct tree *t, int write)
 
 			if (!up)
 				continue;
-			if (strcmp(source->string, head) && (up->r->bad || accident(up) == 1)) {
+			if (strcmp(source->string, head) && wrong_version(up)) {
 				if (write && up->r->bad)
 					warning("skipping malformed '%s' at '%s'", path, source->string);
 				else if (write)
@@ -1596,7 +1634,8 @@ static void integrate_records(struct tree *t, int write)
 			for_each_string_list_item(item, &latest) {
 				struct version *up = item->util;
 
-				diverged |= strcmp(first->body, up->body) != 0;
+				/* 7.1.3-5: versions that differ only in their pins mean the same (1.5e) */
+				diverged |= !same_meaning(first->r, up->r);
 				if (!strcmp(up->body, record_text(r, MEANING_KEYS)) && !strcmp(val(up->r, CHECK), val(r, CHECK)))
 					same = up;
 				string_list_insert(&previous, up->oid);
@@ -1647,18 +1686,6 @@ static int managed_trailers(const char *text)
 	return 0;
 }
 
-/* Parents describe the received state; introducing commits only describe sources. */
-static struct string_list pull_parents(struct pull *p)
-{
-	struct string_list parents = STRING_LIST_INIT_DUP;
-	struct string_list_item *end;
-
-	string_list_insert(&parents, head);
-	for_each_string_list_item(end, &p->ends)
-		string_list_insert(&parents, end->string);
-	return parents;
-}
-
 /* 7.1.5 and 7.12.6 use the same final-blob rule for request commits. */
 static int fresh_records(struct pull *p, struct state *state, struct tree *t,
 			 const struct string_list *parents)
@@ -1704,27 +1731,23 @@ static int at_risk(struct state *s, struct record *k)
  */
 static void unverified_warnings(struct pull *p, struct state *state, struct tree *t)
 {
-	struct string_list parents = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
+	struct string_list parents = pull_parents(p);
 	struct state hs = { 0 };
 	size_t i;
 
-	string_list_insert(&parents, head);
-	for_each_string_list_item(item, &p->ends)
-		string_list_insert(&parents, item->string);
 	state_load(&hs, head_tree());
 	for (i = 0; i < state->nr; i++) {
 		struct record *r = state->r[i], *before = state_get(&hs, r->id);
 
 		if (r->bad)
 			continue;
-		if (newly_unverified(r, t, &parents))
+		if (newly_unverified(r, t, &parents)) {
 			warning("'%s' is unverified after this merge", r->id);
-		else if (unverified(r, t) && !(before && unverified(before, head_tree())) && at_risk(state, r))
+			recheck_hint(state, r, t, NULL);
+		} else if (unverified(r, t) && !(before && unverified(before, head_tree())) && at_risk(state, r)) {
 			warning("'%s' comes in unverified", r->id);
-		else
-			continue;
-		recheck_hint(state, r, t, 1);
+			recheck_hint(state, r, t, &parents);
+		}
 	}
 }
 
@@ -1813,7 +1836,7 @@ void integration_message(const char *path)
 	struct strbuf msg = STRBUF_INIT;
 	char rid[16];
 
-	if (!integrating())
+	if (!integration_head())
 		return;
 	integrate_records(t, 0);
 	sides = integration_sides(&p);

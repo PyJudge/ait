@@ -278,16 +278,12 @@ tick; expect_ok "q2: contract commit as the hint says" ait contract commit -m m
 check "q2: a separate contract commit" sh -c "[ \"\$(git diff --name-only HEAD^ HEAD | tr '\n' ' ')\" = '.ait/$DN specs/q.yaml ' ] && [ \"\$(git diff --name-only HEAD~2 HEAD^)\" = src/stock.c ]"
 back
 
-# s: a drop of a future contract (5.9a transition hint 8)
-expect_ok "s: contract new drop" ait contract new drop
-X=$(out_value path | sed 's|^\.ait/||')
-edit ".ait/$X" "s/^target .*/target $DN/"
-expect_ok "s: contract add .ait/X" ait contract add ".ait/$X"
-expect_err "s: contract commit" E_STATE ait contract commit -m m
-check "s: Dn is not current" err_has "'$DN' is not current; a drop withdraws a current contract"
-check "s: remove the drop" err_has "remove '.ait/$X'"
-check "s: cancel it if no longer needed" err_has "if it is no longer needed, cancel it"
-check "s: set state cancelled" err_has "set 'state cancelled' in '.ait/$DN'"
+# s: a new drop is not supported, as future drop is not: it could not be fulfilled here
+expect_err "s: contract new drop" UNSUPPORTED ait contract new drop
+check "s: no frame is written" test -z "$(git status --porcelain -- .ait)"
+printf 'role drop\nstate future\ntarget %s\n' "$DN" > .ait/X0123456789ab
+expect_ok "s: contract add .ait/X" ait contract add .ait/X0123456789ab
+expect_err "s: contract commit of a new drop" UNSUPPORTED ait contract commit -m m
 back
 
 # r (last): a closed contract is not changed; move the change to a new contract (5.9a transition hint 3)

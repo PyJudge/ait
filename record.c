@@ -61,6 +61,13 @@ struct tree *tree_load(const char *treeish)
 	return t;
 }
 
+struct entry *tree_get(struct tree *t, const char *path)
+{
+	struct entry key = { path };
+
+	return bsearch(&key, t->e, t->nr, sizeof(*t->e), cmp_entry);
+}
+
 /*
  * The entries of the index as they are (spec 5.5-1), which git read-tree -m
  * compares with: intent-to-add ones too, listed by git with the empty blob
@@ -75,13 +82,6 @@ struct tree *index_load(struct tree *noted)
 	for (i = 0; i < t->nr; i++)
 		t->e[i].ita = !tree_get(noted, t->e[i].path);
 	return t;
-}
-
-struct entry *tree_get(struct tree *t, const char *path)
-{
-	struct entry key = { path };
-
-	return bsearch(&key, t->e, t->nr, sizeof(*t->e), cmp_entry);
 }
 
 /* the version of the file PATH in T, a listing that holds trees too: no tree entry is a file's version */
@@ -395,7 +395,7 @@ static struct record *record_new(const char *id)
 	return r;
 }
 
-/* the record ID leaves S */
+/* a record a direct commit removes may go (2.1.5, 5.10), so the state it judges lacks it */
 void state_drop(struct state *s, const char *id)
 {
 	size_t i;
@@ -525,61 +525,6 @@ static int id_ok(const char *id)
 	return ok;
 }
 
-static char *record_check(struct record *r);
-
-/* Entry validity belongs to the tree, not the blob's version cache (2.1); WRITTEN reads it in the authoring form (2.2.3) */
-struct record *record_from_entry(struct entry *e, const char *id, int written)
-{
-	struct record *r = record_new(id);
-	const char *text = strcmp(e->mode, "100644") ? NULL : blob_text(e->oid);
-
-	if (!strcmp(id, "init")) {
-		r->bad = text && !strcmp(text, "version 2\n") ? NULL : xstrdup("must be the single line 'version 2'");
-	} else if (strcmp(e->mode, "100644") || !id_ok(id)) {
-		/* 7.12: malformed entries still declare changes that must be excluded. */
-		if (id_ok(id))
-			*r = *record_decode(id, e->oid);
-		r->bad = xstrdup("not a record path");
-		r->mend = xstrfmt("remove '.ait/%s'", id);
-	} else if (!text) {
-		r->bad = xstrdup("not a text file");
-	} else {
-		*r = *(written ? record_written(id, text) : record_decode(id, e->oid));
-	}
-	return r;
-}
-
-/* the records of T; a malformed one carries why in ->bad (spec 5.9 a-c, 5.10) */
-void state_load(struct state *s, struct tree *t)
-{
-	size_t i;
-
-	for (i = 0; i < t->nr; i++) {
-		struct entry *e = &t->e[i];
-		const char *id;
-		struct record *r;
-
-		if (!skip_prefix(e->path, ".ait/", &id) || !strcmp(e->mode, "040000"))
-			continue;
-		r = state_add(s, id);
-		*r = *record_from_entry(e, id, 0);
-		r->old = record_copy(r);
-		r->base = xstrdup(e->oid);
-	}
-	for (i = 0; i < s->nr; i++) {
-		struct record *r = s->r[i], *d, *o;
-
-		if (*r->id != 'u' || r->bad)
-			continue;
-		d = link_end(s, r, 0);
-		o = link_end(s, r, 1);
-		if (!d || !o || *d->id != 'D' || *o->id != 'O') {
-			/* the link is as it was; what went is its end */
-			r->bad = r->old->bad = xstrdup("its demand or offer does not exist");
-		}
-	}
-}
-
 /* one of LETTERS and 12 hex digits: the shape of the IDs ait makes (1.9) */
 int id_like(const char *s, const char *letters)
 {
@@ -682,8 +627,8 @@ static const char *const contract_states[] = { "future", "current", "cancelled",
 static const char *const link_states[] = { "undertaken", "released", NULL };
 static const char *const drop_states[] = { "future", "cancelled", "fulfilled", NULL };
 
-/* R means what its HEAD version means: the request did not change it (prev aside, 6.2) */
-int as_in_head(struct record *r)
+/* R means what its base version means (prev aside, 6.2): HEAD's, or GOOD's when entangled with HEAD's errors (5.10) */
+int as_in_base(struct record *r)
 {
 	return r->old && !strcmp(record_text(r, MEANING_KEYS), record_text(r->old, MEANING_KEYS));
 }
@@ -769,6 +714,87 @@ struct record *record_decode(const char *id, const char *oid)
 	if (r->f[PREV].nr > 1 && string_list_has_string(&r->f[PREV], "-"))
 		r->bad = xstrdup("initial prev mixed with versions");
 	return r;
+}
+
+/* Entry validity belongs to the tree, not the blob's version cache (2.1); WRITTEN reads it in the authoring form (2.2.3) */
+struct record *record_from_entry(struct entry *e, const char *id, int written)
+{
+	struct record *r = record_new(id);
+	const char *text = strcmp(e->mode, "100644") ? NULL : blob_text(e->oid);
+
+	if (!strcmp(id, "init")) {
+		r->bad = text && !strcmp(text, "version 2\n") ? NULL : xstrdup("must be the single line 'version 2'");
+	} else if (strcmp(e->mode, "100644") || !id_ok(id)) {
+		/* 7.12: malformed entries still declare changes that must be excluded. */
+		if (id_ok(id))
+			*r = *record_decode(id, e->oid);
+		r->bad = xstrdup("not a record path");
+		r->mend = xstrfmt("remove '.ait/%s'", id);
+	} else if (!text) {
+		r->bad = xstrdup("not a text file");
+	} else {
+		*r = *(written ? record_written(id, text) : record_decode(id, e->oid));
+	}
+	return r;
+}
+
+/* the records of T; a malformed one carries why in ->bad (spec 5.9 a-c, 5.10) */
+void state_load(struct state *s, struct tree *t)
+{
+	size_t i;
+
+	for (i = 0; i < t->nr; i++) {
+		struct entry *e = &t->e[i];
+		const char *id;
+		struct record *r;
+
+		if (!skip_prefix(e->path, ".ait/", &id) || !strcmp(e->mode, "040000"))
+			continue;
+		r = state_add(s, id);
+		*r = *record_from_entry(e, id, 0);
+		r->old = record_copy(r);
+		r->base = xstrdup(e->oid);
+	}
+	for (i = 0; i < s->nr; i++) {
+		struct record *r = s->r[i], *d, *o;
+
+		if (*r->id != 'u' || r->bad)
+			continue;
+		d = link_end(s, r, 0);
+		o = link_end(s, r, 1);
+		if (!d || !o || *d->id != 'D' || *o->id != 'O') {
+			/* the link is as it was; what went is its end */
+			r->bad = r->old->bad = xstrdup("its demand or offer does not exist");
+		}
+	}
+}
+
+/*
+ * The paths of KEY joined by ',' as one helper argument, quoted for the shell
+ * when it would read them (5.9a, git v2.53.0 quote.c sq_quote_buf_pretty());
+ * DEFS_ONLY keeps only the definitions of FILES.
+ */
+static char *join_arg(struct record *r, enum key k, int defs_only)
+{
+	struct strbuf sb = STRBUF_INIT, arg = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &r->f[k])
+		if (!defs_only || is_def(item->string))
+			strbuf_addf(&sb, "%s%.*s", sb.len ? "," : "", (int)strcspn(item->string, " "), item->string);
+	sq_quote_buf_pretty(&arg, sb.buf);
+	strbuf_release(&sb);
+	return strbuf_detach(&arg, NULL);
+}
+
+char *scope_args(struct record *r, enum key k)
+{
+	return r->f[k].nr ? join_arg(r, k, 0) : xstrdup("");
+}
+
+char *def_paths(struct record *r)
+{
+	return join_arg(r, FILES, 1);
 }
 
 /* validate(state) of spec 5.9 a-d for record R of S, no parents involved; 0 when it holds */
@@ -864,34 +890,6 @@ int malformed(struct state *s, struct verdict *v)
 		if (s->r[i]->bad)
 			return bad_record(v, s->r[i], s->r[i]->bad);
 	return 0;
-}
-
-/*
- * The paths of KEY joined by ',' as one helper argument, quoted for the shell
- * when it would read them (5.9a, git v2.53.0 quote.c sq_quote_buf_pretty());
- * DEFS_ONLY keeps only the definitions of FILES.
- */
-static char *join_arg(struct record *r, enum key k, int defs_only)
-{
-	struct strbuf sb = STRBUF_INIT, arg = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, &r->f[k])
-		if (!defs_only || is_def(item->string))
-			strbuf_addf(&sb, "%s%.*s", sb.len ? "," : "", (int)strcspn(item->string, " "), item->string);
-	sq_quote_buf_pretty(&arg, sb.buf);
-	strbuf_release(&sb);
-	return strbuf_detach(&arg, NULL);
-}
-
-char *scope_args(struct record *r, enum key k)
-{
-	return r->f[k].nr ? join_arg(r, k, 0) : xstrdup("");
-}
-
-char *def_paths(struct record *r)
-{
-	return join_arg(r, FILES, 1);
 }
 
 /*
@@ -1014,6 +1012,28 @@ static struct scope_location locate_scope(const char *scope, struct tree *t)
 	return place;
 }
 
+/*
+ * spec 3.9: the argument scope ARG, read at T, overlaps scope R, which is
+ * mapped to T; a range R cannot map there is its whole file
+ */
+int overlap(const char *arg, const char *r, struct tree *t)
+{
+	const char *a = scope_path(arg), *b = scope_path(r);
+	struct scope_location place;
+	int start, end;
+
+	if (!strcmp(a, "/") || !strcmp(b, "/"))
+		return 1;
+	if (ends_with(a, "/") || ends_with(b, "/"))
+		return (ends_with(a, "/") && starts_with(b, a)) || (ends_with(b, "/") && starts_with(a, b));
+	if (strcmp(a, b))
+		return 0;
+	place = locate_scope(r, t);
+	if (range_of(arg, &start, &end) != 1 || !place.range || place.status != SCOPE_FOUND)
+		return 1;
+	return start <= place.end && place.start <= end;
+}
+
 static char *location_arg(struct scope_location *place)
 {
 	return place->range ? xstrfmt("%s:%d-%d", place->path, place->start, place->end) : xstrdup(place->path);
@@ -1060,9 +1080,7 @@ char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
 	}
 	if (case_twin(t, path))
 		reject(128, xstrfmt("give it as git has it: '%s'", case_twin(t, path)), "bad scope: '%s'", arg);
-	/* only a file can be new (scope_shape) */
-	reject(128, e || is_new || !allow_new || ends_with(arg, "/") ? NULL :
-	       xstrfmt("if it does not exist yet, use 'new:%s'", arg), "bad scope: '%s'", arg);
+	reject(128, NULL, "bad scope: '%s'", arg);
 }
 
 /* spec 3.8: where a scope is in T; "?changed" only for the provider of a current contract */
@@ -1277,263 +1295,6 @@ void repin(struct record *r, enum key k, struct tree *t, int new_only)
 		}
 	}
 	normalize_scopes(&r->f[k]);
-}
-
-/* the body lines of a definition, each after INDENT */
-static void body_lines(struct strbuf *sb, struct string_list *kv, const char *indent)
-{
-	struct string_list body = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-
-	string_list_split(&body, yget(kv, "body"), "\n", -1);
-	for_each_string_list_item(item, &body)
-		if (*item->string || item != body.items + body.nr - 1)
-			strbuf_addf(sb, "%s%s\n", indent, item->string);
-}
-
-/* the body lines of the definition PATH and its "$ ARG..." line, each after INDENT (spec 7.8.2) */
-char *def_text(struct tree *t, const char *path, const char *indent)
-{
-	struct string_list *kv = def_get(t, path);
-	struct strbuf sb = STRBUF_INIT;
-	const char *a;
-	int k;
-
-	body_lines(&sb, kv, indent);
-	for (k = 0; (a = yget(kv, xstrfmt("command.%d", k))); k++)
-		strbuf_addf(&sb, "%s%s", k ? " " : xstrfmt("%s$ ", indent), a);
-	if (k)
-		strbuf_addch(&sb, '\n');
-	return strbuf_detach(&sb, NULL);
-}
-
-const char *engine_of(struct tree *t, const char *def)
-{
-	struct string_list *kv = def_get(t, def);
-
-	return yget(kv, "engine") && *yget(kv, "engine") ? "exec" : "prompt";
-}
-
-/* spec 5.4: the PINS of a check line, the hash of R's provider and file lines; each text is hashed once */
-char *pins(struct record *r)
-{
-	static struct string_list hashed = STRING_LIST_INIT_DUP;
-	char *text = record_text(r, PIN_KEYS);
-	struct string_list_item *hit = string_list_lookup(&hashed, text);
-
-	if (!hit) {
-		hit = string_list_insert(&hashed, text);
-		hit->util = line1(git_run(text, NULL, NULL, "hash-object --stdin"));
-	}
-	return hit->util;
-}
-
-/*
- * spec 1.5a: current D or O R is unverified at T: its check line confirms its
- * pins and its code changed since (3.11). A check line that does not is an
- * accident (2.3.3), and spec files off their pins break the bundle (2.4).
- */
-int unverified(struct record *r, struct tree *t)
-{
-	return is_current(r) && confirmed(r) && code_changed(r, t);
-}
-
-/*
- * spec 2.5.2: the inputs the definitions DEFS declare at T, each a PATH of 3.1,
- * into OUT as "input -> the definition declaring it", once per declaration
- */
-void def_inputs(struct tree *t, struct string_list *defs, struct string_list *out)
-{
-	struct string_list_item *def, *in;
-
-	for_each_string_list_item(def, defs) {
-		struct string_list *kv = def_get(t, def->string);
-
-		for_each_string_list_item(in, kv) {
-			const char *p = yget(kv, in->string);
-
-			if (!starts_with(in->string, "inputs."))
-				continue;
-			if (!path_ok(p))
-				reject(128, NULL, "bad format: '%s': bad input '%s'%s", def->string, p, yline(kv, in->string));
-			/* an input that is a definition of these is that definition */
-			if (!unsorted_string_list_has_string(defs, p))
-				string_list_append(out, p)->util = def->string;
-		}
-	}
-}
-
-/* the file line "PATH MODE OID WHAT" of PATH at T into OUT; -1 when T has no such file */
-static int file_line(struct string_list *out, struct tree *t, const char *path, const char *what)
-{
-	struct entry *e = tree_get(t, path);
-
-	if (!blob_at(t, path))
-		return -1;
-	string_list_insert(out, xstrfmt("%s %s %s %s", path, e->mode, e->oid, what));
-	return 0;
-}
-
-/*
- * spec 2.4, 6.2: R's file lines again at T: its definitions and what they
- * declare, pinned at T; -1 when T lacks one. A path in CONFLICTS is unmerged
- * (7.12.6) and keeps R's line; while a definition is unmerged what it
- * declares cannot be read, so R's other lines stay too, pinned again.
- */
-int expand_files_except(struct record *r, struct tree *t, struct string_list *conflicts)
-{
-	struct string_list defs = STRING_LIST_INIT_DUP, out = STRING_LIST_INIT_DUP, declared = STRING_LIST_INIT_DUP;
-	struct string_list inputs = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	int held = 0;
-
-	for_each_string_list_item(item, &r->f[FILES]) {
-		const char *path = scope_path(item->string);
-
-		if (conflicts && string_list_has_string(conflicts, path)) {
-			string_list_insert(&out, item->string);
-			held |= is_def(item->string);
-		} else if (is_def(item->string)) {
-			string_list_insert(&defs, path);
-		}
-	}
-	for_each_string_list_item(item, &defs)
-		if (file_line(&out, t, item->string, "def"))
-			return -1;
-	def_inputs(t, &defs, &declared);
-	for_each_string_list_item(item, &declared)
-		string_list_insert(&inputs, item->string);
-	if (held)
-		for_each_string_list_item(item, &r->f[FILES])
-			if (!is_def(item->string))
-				string_list_insert(&inputs, scope_path(item->string));
-	for_each_string_list_item(item, &inputs)
-		if (!(conflicts && string_list_has_string(conflicts, item->string)) && file_line(&out, t, item->string, "input"))
-			return -1;
-	r->f[FILES] = out;
-	return 0;
-}
-
-int expand_files(struct record *r, struct tree *t)
-{
-	return expand_files_except(r, t, NULL);
-}
-
-static int files_match_except(struct record *r, struct tree *t, struct string_list *conflicts)
-{
-	struct record *x = record_copy(r);
-
-	return !expand_files_except(x, t, conflicts) && !strcmp(record_text(x, 1u << FILES), record_text(r, 1u << FILES));
-}
-
-int files_match(struct record *r, struct tree *t)
-{
-	return files_match_except(r, t, NULL);
-}
-
-/* spec 5.9 e: live R of S keeps its bundle at T, its spec files as it pins them (2.4); 0 when it does */
-static int bundle_error(struct state *s, struct record *r, struct tree *t, struct string_list *conflicts, struct verdict *v)
-{
-	if (!is_live(r) || files_match_except(r, t, conflicts))
-		return 0;
-	fail_with(v, 1, "incomplete", xstrfmt("make the spec files of '%s' match it, or reopen it with them: 'ait %s -m <why>'",
-					      r->id, reopen_clauses(s, r, NULL)),
-		  xstrfmt("spec files do not match the contract: '%s'", r->id));
-	v->k = r;
-	return 1;
-}
-
-int check_state_except(struct state *s, struct tree *t, struct verdict *v, struct string_list *conflicts)
-{
-	size_t i;
-
-	if (check_records(s, v))
-		return v->code;
-	for (i = 0; i < s->nr; i++)
-		if (bundle_error(s, s->r[i], t, conflicts, v))
-			return 1;
-	return 0;
-}
-
-int check_state(struct state *s, struct tree *t, struct verdict *v)
-{
-	return check_state_except(s, t, v, NULL);
-}
-
-/* 5.10, 7.1.8: every error of the state S at T, one per record, each message with its verdict */
-void state_errors(struct state *s, struct tree *t, struct string_list *out)
-{
-	size_t i;
-
-	for (i = 0; i < s->nr; i++) {
-		struct verdict *v = xcalloc(1, sizeof(*v));
-
-		if (record_error(s, s->r[i], v) || bundle_error(s, s->r[i], t, NULL, v))
-			string_list_insert(out, v->msg)->util = v;
-	}
-}
-
-/*
- * 5.9a transition hint 1, 7.1.3-7: HEAD had the error V already, so the state
- * judged now did not make it: a record V points to is one that a structure
- * error of HEAD (5.9 a-d) points to
- */
-int at_head(struct verdict *v)
-{
-	static struct string_list held = STRING_LIST_INIT_DUP;
-	static int loaded;
-	struct string_list errors = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	struct state hs = { 0 };
-
-	if (!loaded++) {
-		state_load(&hs, head_tree());
-		state_errors(&hs, head_tree(), &errors);
-		for_each_string_list_item(item, &errors) {
-			struct verdict *e = item->util;
-
-			if (!strcmp(e->word, "incomplete"))
-				continue;
-			string_list_insert(&held, e->k->id);
-			if (e->o)
-				string_list_insert(&held, e->o->id);
-		}
-	}
-	return (v->k && string_list_has_string(&held, v->k->id)) || (v->o && string_list_has_string(&held, v->o->id));
-}
-
-/* R is a future or current demand or offer that has PATH as a spec file */
-int declares(struct record *r, const char *path)
-{
-	struct string_list_item *item;
-
-	if (!is_live(r))
-		return 0;
-	for_each_string_list_item(item, &r->f[FILES])
-		if (!strcmp(scope_path(item->string), path))
-			return 1;
-	return 0;
-}
-
-/* the paths of the contract: records and the spec files of live contracts (spec 6.1) */
-int contract_path(struct state *s, const char *path)
-{
-	size_t i;
-
-	for (i = 0; i < s->nr; i++)
-		if (declares(s->r[i], path))
-			return 1;
-	return starts_with(path, ".ait/");
-}
-
-/* a file ait reads as text: 0, or -1 when it cannot be read, 1 when it holds a NUL */
-int read_text(struct strbuf *sb, const char *path)
-{
-	ssize_t n = strcmp(path, "-") ? strbuf_read_file(sb, path, 0) : strbuf_read(sb, 0, 0);
-
-	if (n < 0)
-		return -1;
-	return strlen(sb->buf) != sb->len;
 }
 
 /*
@@ -2057,4 +1818,269 @@ struct string_list *def_get(struct tree *t, const char *path)
 		reject(128, NULL, "bad format: '%s': bad value of 'success'%s", path, yline(kv, "success"));
 	string_list_insert(&parsed, oid)->util = kv;
 	return kv;
+}
+
+/* the body lines of a definition, each after INDENT */
+static void body_lines(struct strbuf *sb, struct string_list *kv, const char *indent)
+{
+	struct string_list body = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+
+	string_list_split(&body, yget(kv, "body"), "\n", -1);
+	for_each_string_list_item(item, &body)
+		if (*item->string || item != body.items + body.nr - 1)
+			strbuf_addf(sb, "%s%s\n", indent, item->string);
+}
+
+/* the body lines of the definition PATH and its "$ ARG..." line, each after INDENT (spec 7.8.2) */
+char *def_text(struct tree *t, const char *path, const char *indent)
+{
+	struct string_list *kv = def_get(t, path);
+	struct strbuf sb = STRBUF_INIT;
+	const char *a;
+	int k;
+
+	body_lines(&sb, kv, indent);
+	for (k = 0; (a = yget(kv, xstrfmt("command.%d", k))); k++)
+		strbuf_addf(&sb, "%s%s", k ? " " : xstrfmt("%s$ ", indent), a);
+	if (k)
+		strbuf_addch(&sb, '\n');
+	return strbuf_detach(&sb, NULL);
+}
+
+const char *engine_of(struct tree *t, const char *def)
+{
+	struct string_list *kv = def_get(t, def);
+
+	return yget(kv, "engine") && *yget(kv, "engine") ? "exec" : "prompt";
+}
+
+/* spec 5.4: the PINS of a check line, the hash of R's provider and file lines; each text is hashed once */
+char *pins(struct record *r)
+{
+	static struct string_list hashed = STRING_LIST_INIT_DUP;
+	char *text = record_text(r, PIN_KEYS);
+	struct string_list_item *hit = string_list_lookup(&hashed, text);
+
+	if (!hit) {
+		hit = string_list_insert(&hashed, text);
+		hit->util = line1(git_run(text, NULL, NULL, "hash-object --stdin"));
+	}
+	return hit->util;
+}
+
+/*
+ * spec 1.5a: current D or O R is unverified at T: its check line confirms its
+ * pins and its code changed since (3.11). A check line that does not is an
+ * accident (2.3.3), and spec files off their pins break the bundle (2.4).
+ */
+int unverified(struct record *r, struct tree *t)
+{
+	return is_current(r) && confirmed(r) && code_changed(r, t);
+}
+
+/*
+ * spec 2.5.2: the inputs the definitions DEFS declare at T, each a PATH of 3.1,
+ * into OUT as "input -> the definition declaring it", once per declaration
+ */
+void def_inputs(struct tree *t, struct string_list *defs, struct string_list *out)
+{
+	struct string_list_item *def, *in;
+
+	for_each_string_list_item(def, defs) {
+		struct string_list *kv;
+
+		/* a definition T lacks declares nothing there: who needs it reports it missing (2.4, 7.5.2) */
+		if (!blob_at(t, def->string))
+			continue;
+		kv = def_get(t, def->string);
+		for_each_string_list_item(in, kv) {
+			const char *p = yget(kv, in->string);
+
+			if (!starts_with(in->string, "inputs."))
+				continue;
+			if (!path_ok(p))
+				reject(128, NULL, "bad format: '%s': bad input '%s'%s", def->string, p, yline(kv, in->string));
+			/* an input that is a definition of these is that definition */
+			if (!unsorted_string_list_has_string(defs, p))
+				string_list_append(out, p)->util = def->string;
+		}
+	}
+}
+
+/* the file line "PATH MODE OID WHAT" of PATH at T into OUT; -1 when T has no such file */
+static int file_line(struct string_list *out, struct tree *t, const char *path, const char *what)
+{
+	struct entry *e = tree_get(t, path);
+
+	if (!blob_at(t, path))
+		return -1;
+	string_list_insert(out, xstrfmt("%s %s %s %s", path, e->mode, e->oid, what));
+	return 0;
+}
+
+/*
+ * spec 2.4, 6.2: R's file lines again at T: its definitions and what they
+ * declare, pinned at T; -1 when T lacks one. A path in CONFLICTS is unmerged
+ * (7.12.6) and keeps R's line; while a definition is unmerged what it
+ * declares cannot be read, so R's other lines stay too, pinned again.
+ */
+int expand_files_except(struct record *r, struct tree *t, struct string_list *conflicts)
+{
+	struct string_list defs = STRING_LIST_INIT_DUP, out = STRING_LIST_INIT_DUP, declared = STRING_LIST_INIT_DUP;
+	struct string_list inputs = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	int held = 0;
+
+	for_each_string_list_item(item, &r->f[FILES]) {
+		const char *path = scope_path(item->string);
+
+		if (conflicts && string_list_has_string(conflicts, path)) {
+			string_list_insert(&out, item->string);
+			held |= is_def(item->string);
+		} else if (is_def(item->string)) {
+			string_list_insert(&defs, path);
+		}
+	}
+	for_each_string_list_item(item, &defs)
+		if (file_line(&out, t, item->string, "def"))
+			return -1;
+	def_inputs(t, &defs, &declared);
+	for_each_string_list_item(item, &declared)
+		string_list_insert(&inputs, item->string);
+	if (held)
+		for_each_string_list_item(item, &r->f[FILES])
+			if (!is_def(item->string))
+				string_list_insert(&inputs, scope_path(item->string));
+	for_each_string_list_item(item, &inputs)
+		if (!(conflicts && string_list_has_string(conflicts, item->string)) && file_line(&out, t, item->string, "input"))
+			return -1;
+	r->f[FILES] = out;
+	return 0;
+}
+
+int expand_files(struct record *r, struct tree *t)
+{
+	return expand_files_except(r, t, NULL);
+}
+
+static int files_match_except(struct record *r, struct tree *t, struct string_list *conflicts)
+{
+	struct record *x = record_copy(r);
+
+	return !expand_files_except(x, t, conflicts) && !strcmp(record_text(x, 1u << FILES), record_text(r, 1u << FILES));
+}
+
+int files_match(struct record *r, struct tree *t)
+{
+	return files_match_except(r, t, NULL);
+}
+
+/* spec 5.9 e: live R of S keeps its bundle at T, its spec files as it pins them (2.4); 0 when it does */
+static int bundle_error(struct state *s, struct record *r, struct tree *t, struct string_list *conflicts, struct verdict *v)
+{
+	if (!is_live(r) || files_match_except(r, t, conflicts))
+		return 0;
+	fail_with(v, 1, "incomplete", xstrfmt("make the spec files of '%s' match it, or reopen it with them: 'ait %s -m <why>'",
+					      r->id, reopen_clauses(s, r, NULL)),
+		  xstrfmt("spec files do not match the contract: '%s'", r->id));
+	v->k = r;
+	return 1;
+}
+
+int check_state_except(struct state *s, struct tree *t, struct verdict *v, struct string_list *conflicts)
+{
+	size_t i;
+
+	if (check_records(s, v))
+		return v->code;
+	for (i = 0; i < s->nr; i++)
+		if (bundle_error(s, s->r[i], t, conflicts, v))
+			return 1;
+	return 0;
+}
+
+int check_state(struct state *s, struct tree *t, struct verdict *v)
+{
+	return check_state_except(s, t, v, NULL);
+}
+
+/* 5.10, 7.1.8: every error of the state S at T, one per record, each message with its verdict */
+void state_errors(struct state *s, struct tree *t, struct string_list *out)
+{
+	size_t i;
+
+	for (i = 0; i < s->nr; i++) {
+		struct verdict *v = xcalloc(1, sizeof(*v));
+
+		if (record_error(s, s->r[i], v) || bundle_error(s, s->r[i], t, NULL, v))
+			string_list_insert(out, v->msg)->util = v;
+	}
+}
+
+/*
+ * 5.9a transition hint 1, 7.1.3-7, 5.8: HEAD had the error V already, so the
+ * state judged now did not make it: a record V points to is one that a
+ * structure error of HEAD (5.9 a-d) points to, or, for a broken bundle, one
+ * whose bundle HEAD breaks too
+ */
+int at_head(struct verdict *v)
+{
+	static struct string_list held = STRING_LIST_INIT_DUP, broken = STRING_LIST_INIT_DUP;
+	static int loaded;
+	struct string_list errors = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	struct state hs = { 0 };
+
+	if (!loaded++) {
+		state_load(&hs, head_tree());
+		state_errors(&hs, head_tree(), &errors);
+		for_each_string_list_item(item, &errors) {
+			struct verdict *e = item->util;
+
+			if (!strcmp(e->word, "incomplete"))
+				string_list_insert(&broken, e->k->id);
+			else
+				string_list_insert(&held, e->k->id);
+			if (e->o)
+				string_list_insert(&held, e->o->id);
+		}
+	}
+	if (!strcmp(v->word, "incomplete"))
+		return v->k && string_list_has_string(&broken, v->k->id);
+	return (v->k && string_list_has_string(&held, v->k->id)) || (v->o && string_list_has_string(&held, v->o->id));
+}
+
+/* R is a future or current demand or offer that has PATH as a spec file */
+int declares(struct record *r, const char *path)
+{
+	struct string_list_item *item;
+
+	if (!is_live(r))
+		return 0;
+	for_each_string_list_item(item, &r->f[FILES])
+		if (!strcmp(scope_path(item->string), path))
+			return 1;
+	return 0;
+}
+
+/* the paths of the contract: records and the spec files of live contracts (spec 6.1) */
+int contract_path(struct state *s, const char *path)
+{
+	size_t i;
+
+	for (i = 0; i < s->nr; i++)
+		if (declares(s->r[i], path))
+			return 1;
+	return starts_with(path, ".ait/");
+}
+
+/* a file ait reads as text: 0, or -1 when it cannot be read, 1 when it holds a NUL */
+int read_text(struct strbuf *sb, const char *path)
+{
+	ssize_t n = strcmp(path, "-") ? strbuf_read_file(sb, path, 0) : strbuf_read(sb, 0, 0);
+
+	if (n < 0)
+		return -1;
+	return strlen(sb->buf) != sb->len;
 }
