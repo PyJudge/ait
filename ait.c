@@ -865,8 +865,8 @@ static int pre_push(void)
 			continue;
 		if (!detached && (!strcmp(local, "HEAD") || !strcmp(local, branch)))
 			reject(v.code, head_repair(&v, 0), "%s", v.msg);
-		reject(v.code, xstrfmt("'%s' (%s) cannot be fixed here; where that commit is HEAD on a branch, run "
-				       "'ait contract commit -m <why>' to get the fix", local, commit), "%s", v.msg);
+		reject(v.code, xstrfmt("'%s' (%s) cannot be fixed here; fix it where that commit is HEAD on a branch", local, commit),
+		       "%s", v.msg);
 	}
 	/* 5.6: a message is one line */
 	if (*p)
@@ -1360,7 +1360,7 @@ static int cmd_todo(int argc, const char **argv)
 			reject(128, NULL, "no such contract: '%s'", argv[k]);
 	/* 5.10: HEAD's accidents are shown as they are, their error as a warning */
 	for (i = 0; i < hs.nr; i++)
-		if (accident_at_head(hs.r[i], &v)) {
+		if (accident_at_head(hs.r[i], &v, 0)) {
 			warning("%s", v.msg);
 			suggest("%s", v.hint);
 		}

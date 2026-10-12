@@ -151,7 +151,7 @@ check "8: hint: aliases are local to one command" err_has "aliases are local to 
 expect_err "8: cancel an alias" E_ID ait future cancel o -m x
 check "8: hint: aliases are local to one command (cancel)" err_has "aliases are local to one command"
 expect_err "8: -r a missing file" E_READ env AIT_SESSION=$E ait fulfill $O2 -m x -r "$T/none.yaml"
-check "8: hint: rerun without -r" err_has "rerun without -r"
+check "8: no hint: the judgment knows only that it cannot read it (user decision 52)" not grep -q '^hint:' "$T/err"
 expect_err "8: fulfill O2" E_NEEDS_RESULTS env AIT_SESSION=$E ait fulfill $O2 -m x
 W=$(out_value check-result)
 check "8: tasks are O2's and D's" test "$(grep '^task ' "$T/out" | sed 's/^task \([^:]*\):.*/\1/' | sort | tr '\n' ' ')" = "$(printf '%s\n%s\n' $D $O2 | sort | tr '\n' ' ')"
@@ -161,7 +161,7 @@ expect_err "8: a pass without basis" E_FORMAT env AIT_SESSION=$E ait fulfill $O2
 check "8: hint: a pass needs a basis" err_has "a pass needs a basis"
 fill "$W" fail
 expect_err "8: fail" E_CHECK_FAILED env AIT_SESSION=$E ait fulfill $O2 -m x -r "$W"
-check "8: hint: make the code meet the failed task(s)" err_has "make the code meet the failed task(s) and stage it, then rerun without -r to get the new tasks"
+check "8: hint: make the code meet the failed task(s)" grep -qx "hint: make the code meet the failed task(s) and stage it, then rerun without -r" "$T/err"
 # T47-8 (5.8 E_CHECK_FAILED, 5.9a): D is undertaken by O2, which E made, so release it; E is not wb's default session
 check "8: hint: E releases D from O2" err_has "AIT_SESSION=$E ait release $D $O2 -m <why>"
 

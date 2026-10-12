@@ -10,9 +10,12 @@ Invariants
   I3  an ait command that succeeds leaves HEAD no new error of 5.10
       ('ait hook post-commit' against HEAD^ warns of none)
   I4  a hint that gives one 'ait ...' command to run now, with nothing to fill
-      in, is taken when run as given in a copy of the repository: it succeeds,
-      or says itself that it needs results or that local changes stop it
-      (5.9a, user decision 52); advice such as 'when ready' is not checked
+      in, is taken when run as given in a copy of the repository, after the
+      states it names first (restore, remove): it succeeds,
+      or says itself that it needs results or that local changes stop it, or
+      that another contract, or an error the repository already had (todo
+      warns of it) other than the one the hint answered, stops it (5.9a, user
+      decision 52); advice such as 'when ready' is not checked
   I5  'ait todo' succeeds in every state
 
 usage: tools/explore.py [--ait DIR] [--seeds N] [--first S] [--steps K] [--jobs J] [--out DIR]
@@ -76,7 +79,18 @@ class Run:
         return p.returncode, p.stdout, p.stderr
 
     def snapshot(self):
-        return self.sh("git rev-parse HEAD; git ls-files -s; git status --porcelain --untracked-files=all")[1]
+        """HEAD, the index, and every file of the work tree with its content and executable bit"""
+        files = []
+        for top, dirs, names in os.walk(self.dir):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for name in names:
+                path = os.path.join(top, name)
+                if os.path.islink(path):
+                    files.append((path, "link", os.readlink(path)))
+                else:
+                    with open(path, "rb") as f:
+                        files.append((path, os.access(path, os.X_OK), f.read()))
+        return self.sh("git rev-parse HEAD; git ls-files -s")[1], sorted(files)
 
     def bind(self, out):
         for line in out.splitlines():
@@ -114,6 +128,10 @@ def step(rng, run):
         ("echo 'exit %d' >> tests/x.sh && ait contract add specs/x.yaml tests/x.sh >/dev/null" % (line % 2),
          "ait contract commit -m e"),
         ("git rm -q %s" % rng.choice(DEFS + ["tests/x.sh"]), "git commit -qm gone"),
+        # what only a commit that skips the hooks leaves at HEAD (5.10)
+        ("git rm -q %s" % rng.choice(DEFS + ["tests/x.sh"]), "git commit -q --no-verify -m nv"),
+        ("printf 'body: b\\ninputs: [tests/none.sh]\\n' > %s && git add %s" % (f, f), "git commit -q --no-verify -m nv"),
+        ("rm -f tests/x.sh && ln -s ../src/a.c tests/x.sh && git add -A tests", "git commit -q --no-verify -m nv"),
     ]
     if k:
         x = rng.choice(k)
@@ -125,6 +143,8 @@ def step(rng, run):
             ("git add -A", "ait fulfill %s%s -m f" % (x, rng.choice(["", " --force"]))),
             ("sed -i.bak 's/^state .*/state %s/' .ait/%s && rm -f .ait/%s.bak && ait contract add .ait/%s >/dev/null"
              % (rng.choice(["future", "current", "cancelled"]), x, x, x), "ait contract commit -m w"),
+            ("sed -i.bak 's/^state .*/state %s/' .ait/%s && rm -f .ait/%s.bak && git add .ait/%s"
+             % (rng.choice(["future", "current", "cancelled", "withdrawn"]), x, x, x), "git commit -q --no-verify -m nv"),
             ("sed -i.bak '%s' .ait/%s && rm -f .ait/%s.bak && ait contract add .ait/%s >/dev/null"
              % (rng.choice(["s|^provider .*|provider src/b.c|", "s|^creator .*|creator z S000000000000|",
                             "s|^prev .*|prev junk|", "/^file /d"]), x, x, x),
@@ -150,19 +170,41 @@ def step(rng, run):
     return setup, cmd
 
 
+def repair(text):
+    """
+    The states a hint names before its command (5.9a: 'restore P... as in SRC',
+    'remove P...'), as shell that makes them, and the text after them
+    """
+    prep = []
+    while True:
+        m = re.match(r"(restore|remove) ((?:'[^']*' ?)+?)(?: as in '([^']+)')?(?:, then |, )", text)
+        if not m or (m.group(1) == "restore") != bool(m.group(3)):
+            return prep, text
+        for path in re.findall(r"'([^']*)'", m.group(2)):
+            if m.group(3):
+                prep.append("{ git cat-file -e '%s:%s' 2>/dev/null && git checkout -q '%s' -- '%s' || "
+                            "git rm -q -rf --ignore-unmatch -- '%s'; }" % (m.group(3), path, m.group(3), path, path))
+            else:
+                prep.append("{ git rm -q -rf --ignore-unmatch -- '%s'; rm -rf '%s'; }" % (path, path))
+        text = text[m.end():]
+
+
 def hint_commands(err):
     """
     I4's hint: the first of an output, as the others follow it in turn (5.8),
-    when it gives one 'ait ...' command to run now with nothing to fill in;
-    advice for later or for a condition ('when ready', 'to need it again') is git's kind
+    when it gives one 'ait ...' command to run now with nothing to fill in, after
+    the states it names first; advice for later or for a condition ('when
+    ready', 'to need it again') is git's kind
     """
     for line in err.splitlines():
         if not line.startswith("hint: "):
             continue
-        cmds = re.findall(r"'(ait [^']*)'", line)
-        if (len(cmds) == 1 and line.rstrip().endswith("'") and
-                not re.search(r"then|restore|once|push|next time|when ready|need it again|<[^w]", line)):
-            yield line, cmds[0].replace("<why>", "x")
+        prep, rest = repair(line[6:])
+        m = re.fullmatch(r"(?:run )?'(ait [^']*)'(?:, then rerun this command)?", rest)
+        cmds = re.findall(r"'(ait [^']*)'", rest)
+        if len(cmds) == 1 and not re.search(r"<[^w]", cmds[0]) and (m or (
+                not prep and rest.endswith("'") and not re.search(r"then|restore|once|push|next time|when ready|need it again", rest))):
+            yield line, " && ".join(prep + [cmds[0].replace("<why>", "x")])
         return
 
 
@@ -196,20 +238,32 @@ def taken(run, cmd, clean):
     return p.returncode == 0 or "error: check results required" in p.stderr, p.stderr
 
 
-def replay(run, line, cmd):
+def first_error(err):
+    """the message of the first error of ERR, or of its first warning, without the word before it"""
+    lines = err.splitlines()
+    return next((l.split(": ", 1)[1] for l in lines if l.startswith(("error:", "fatal:"))), None) or \
+        next((l.split(": ", 1)[1] for l in lines if l.startswith("warning:")), "")
+
+
+def replay(run, line, cmd, answered):
     """
-    I4: CMD is taken as given, or once local changes are set aside: what stops
-    it there is its own to say (5.9a local changes, user decision 52)
+    I4: CMD, from a hint that answered the error ANSWERED, is taken as given, or
+    once local changes are set aside: what stops it there is its own to say
+    (5.9a local changes, user decision 52)
     """
     ok, err = taken(run, cmd, False)
-    first = next((l for l in err.splitlines() if l.startswith(("error:", "fatal:"))), "")
+    first = first_error(err)
     # local changes stop it, which it says itself (choice 228), or it runs once they are set aside
-    if ok or re.match(r"error: (uncommitted changes in|contract changes and code changes are mixed)", first) or \
+    if ok or re.match(r"(uncommitted changes in|contract changes and code changes are mixed)", first) or \
             taken(run, cmd, True)[0]:
         return None
-    # a refusal about another contract than the hint's is that command's own report (user decision 52)
-    named = set(re.findall(r"[DOX][0-9a-f]{12}", first))
-    if named and not named & set(re.findall(r"[DOX][0-9a-f]{12}", cmd)):
+    # a refusal about another contract than the one the hint names is that command's own report (user decision 52)
+    named, hinted = set(re.findall(r"[DOX][0-9a-f]{12}", first)), set(re.findall(r"[DOX][0-9a-f]{12}", cmd))
+    if named and hinted and not named & hinted:
+        return None
+    # so is an error the repository already had, which the hint's judgment did not read (user decision 52)
+    warned = [l for l in run.sh("ait todo")[2].splitlines() if l.startswith("warning:")]
+    if named and first != answered and all(any(k in l for l in warned) for k in named):
         return None
     return "I4 hint not taken: %s\n%s" % (line, err)
 
@@ -234,7 +288,7 @@ def check(run, setup, cmd):
             return "I3 '%s' left HEAD a new error\n%s" % (cmd, perr)
     for line, hinted in hint_commands(err):
         run.seen["hints"] += 1
-        broken = replay(run, line, hinted)
+        broken = replay(run, line, hinted, first_error(err))
         if broken:
             return broken
     trc, _, terr = run.sh("ait todo")

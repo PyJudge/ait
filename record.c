@@ -105,6 +105,12 @@ const char *blob_at(struct tree *t, const char *path)
 	return e && strcmp(e->mode, "160000") ? e->oid : NULL;
 }
 
+/* 2.1.4: a spec file is a regular file */
+int regular_mode(const char *mode)
+{
+	return !strcmp(mode, "100644") || !strcmp(mode, "100755");
+}
+
 /* the text of a blob, or NULL when it holds a NUL and so is not text; each blob is read once */
 static const char *blob_text(const char *oid)
 {
@@ -597,7 +603,7 @@ static int value_ok(struct record *r, enum key k, const char *v)
 	case PROVIDER:
 		return scope_ok(v, !is_current(r), !is_current(r));
 	case FILES:
-		return n == 4 && path_ok(a) && (!strcmp(b, "100644") || !strcmp(b, "100755")) && oid_ok(c) &&
+		return n == 4 && path_ok(a) && regular_mode(b) && oid_ok(c) &&
 		       (!strcmp(d, "def") || !strcmp(d, "input")) && !strcmp(v, xstrfmt("%s %s %s %s", a, b, c, d));
 	case CREATOR:
 		/* 2.2.2: "AGENT SID", or "unknown -" for a record an integration made without a session */
@@ -1934,9 +1940,9 @@ void def_inputs(struct tree *t, struct string_list *defs, struct string_list *ou
 /* the file line "PATH MODE OID WHAT" of PATH at T into OUT; -1 when T has no such file */
 static int file_line(struct string_list *out, struct tree *t, const char *path, const char *what)
 {
-	struct entry *e = tree_get(t, path);
+	struct entry *e = file_entry(t, path);
 
-	if (!blob_at(t, path))
+	if (!e || !regular_mode(e->mode))
 		return -1;
 	string_list_insert(out, xstrfmt("%s %s %s %s", path, e->mode, e->oid, what));
 	return 0;

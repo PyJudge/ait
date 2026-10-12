@@ -468,7 +468,7 @@ static void read_files(struct request *q)
 	if (q->file)
 		text_or_die(&q->msg, q->file);
 	if (q->result && access(q->result, R_OK))
-		reject(128, "rerun without -r to get the check-result path", "could not read '%s'", q->result);
+		reject(128, NULL, "could not read '%s'", q->result);
 }
 
 /* spec 5.3: git's scissors line would cut the trailers off the message */
@@ -972,11 +972,11 @@ static char *reopen_first(struct request *q, struct record *k)
 }
 
 /* 5.9a transition hint 1: K is HEAD's accident (5.10), whose repair comes first; NULL when it is not */
-static char *head_first(struct request *q, struct record *k)
+static char *head_first(struct record *k)
 {
 	struct verdict v;
 
-	return accident_at_head(k, &v) ? head_repair(&v, 1) : NULL;
+	return accident_at_head(k, &v, 1) ? v.hint : NULL;
 }
 
 /*
@@ -986,7 +986,7 @@ static char *head_first(struct request *q, struct record *k)
  */
 static char *closed_hint(struct request *q, struct record *k)
 {
-	char *first = head_first(q, k);
+	char *first = head_first(k);
 
 	if (first)
 		return first;
@@ -1214,7 +1214,7 @@ static void fix_hints(struct request *q, struct string_list *ids)
 			amend = owner ? amend_clause(owner, "-", def_paths(owner->old)) : NULL;
 			if (!owner)
 				add_hint(q, q->gate ? code_first(q, "<your code>") : "make the code meet the failed task(s) and stage it, "
-					 "then rerun without -r to get the new tasks");
+					 "then rerun without -r");
 			else if (q->direct)
 				add_hint(q, xstrfmt("fix '%s', then %s", path, through_ait(single(path))));
 			else if (q->gate && unsorted_string_list_has_string(&q->files, path))
@@ -1546,7 +1546,7 @@ static int read_results(struct request *q, const char *input, struct strbuf *tex
 
 	/* 5.8 E_FORMAT of a result file carries its hint on every path */
 	if ((rc = read_text(text, q->result)) < 0)
-		reject(128, "rerun without -r to get the check-result path", "could not read '%s'", q->result);
+		reject(128, NULL, "could not read '%s'", q->result);
 	if (rc)
 		reject(128, hint, "bad format: '%s': not a text file%s", q->result, nul_line(text->buf));
 	if (yaml_parse(text->buf, kv, q->result, &err))
@@ -1693,7 +1693,7 @@ static char *step_hint(struct request *q, struct record *r, const char *from, co
 		return NULL;
 	if (r->old && !is_live(r->old))
 		return closed_hint(q, r->old);
-	return head_first(q, r) ?: was_current(r) ? reopen_first(q, r) : NULL;
+	return head_first(r) ?: was_current(r) ? reopen_first(q, r) : NULL;
 }
 
 /* spec 7.3.2: a clause applies to the records as the earlier clauses left them */
@@ -1963,15 +1963,18 @@ static char *change_line(struct request *q, struct record *r)
 }
 
 /* spec 7.7.4 and 6.5: pin the check set at the judged tree, add what changed to it and commit */
-/* spec 6.2: the spec files of every live contract of the request, expanded and pinned at its tree */
+/*
+ * spec 6.2: the spec files of every live contract of the request, expanded and
+ * pinned at its tree. What the arguments give was checked before, so a file
+ * missing here is one HEAD lost, which no command pins again: no hint (5.8 E_INCOMPLETE)
+ */
 static void expand_request(struct request *q)
 {
 	size_t i;
 
 	for (i = 0; i < q->s.nr; i++)
 		if (!q->s.r[i]->bad && is_live(q->s.r[i]) && expand_files(q->s.r[i], q->v))
-			reject(1, "create the spec files it declares, or stop declaring them",
-			       "spec files do not match the contract: '%s'", q->s.r[i]->id);
+			reject(1, NULL, "spec files do not match the contract: '%s'", q->s.r[i]->id);
 }
 
 /*
@@ -2221,11 +2224,8 @@ static int finish(struct request *q)
 	}
 	/* an accident the request leaves is HEAD's; what it writes was judged from its base (5.10) */
 	for (k = 0; k < q->s.nr && !q->pull_tree; k++)
-		if (unchanged(q->s.r[k]) && accident_at_head(q->s.r[k], &v)) {
-			if (!q->gate)
-				v.hint = head_repair(&v, 1);
+		if (unchanged(q->s.r[k]) && accident_at_head(q->s.r[k], &v, !q->gate))
 			invalid(q, v);
-		}
 	code_present(q);
 	if (!q->gate && !q->missing.nr && check_state(&q->s, q->v, &v)) {
 		if (at_head(&v))
@@ -2304,7 +2304,7 @@ static void given_scopes(struct request *q, struct record *r, const char *list)
 static void select_promise(struct request *q, struct record *r)
 {
 	if (!in_state(r, "future"))
-		reject(1, !is_current(r) ? closed_hint(q, r) : head_first(q, r) ?:
+		reject(1, !is_current(r) ? closed_hint(q, r) : head_first(r) ?:
 		       xstrfmt("'%s' is already current; to check it again, run 'ait amend %s -m <why>'", r->id, r->id),
 		       "not allowed: '%s' is %s", r->id, val(r, STATE));
 	put(r, STATE, "current");
@@ -2505,8 +2505,7 @@ static struct tree *stage_files(struct request *q)
 		/* the index as git commit takes it: an intent-to-add entry is not staged */
 		struct entry *e = file_entry(u, item->string), *staged = file_entry(q->noted, item->string);
 
-		/* 2.1.4: a spec file is a regular file */
-		if (!e || (strcmp(e->mode, "100644") && strcmp(e->mode, "100755")))
+		if (!e || !regular_mode(e->mode))
 			reject(1, NULL, "spec files do not match the contract: '%s' is not a regular file", item->string);
 		if (!same_entry(staged, e) && !same_entry(staged, file_entry(q->ht, item->string)))
 			reject(1, xstrfmt("stage all of '%s' or none of it", item->string),

@@ -46,7 +46,7 @@ fill "$W" pass $K:specs/nobroken.yaml=fail
 before=$(snapshot)
 expect_err "2: K's task fails" E_CHECK_FAILED ait fulfill $O -m m -r "$W"
 check "2: unchanged after the failed check" test "$(snapshot)" = "$before"
-check "2: hint: make the code meet the failed task(s)" err_has "make the code meet the failed task(s) and stage it, then rerun without -r to get the new tasks"
+check "2: hint: make the code meet the failed task(s)" grep -qx "hint: make the code meet the failed task(s) and stage it, then rerun without -r" "$T/err"
 # T22 step 2: K is current at HEAD (touched), so the reopen hints follow (5.8, 5.9a)
 check "2: reopen hint" err_has "'ait future amend $K -m <why>'"
 check "2: reopen hint with new defs" err_has "'ait future amend $K - <new defs> -m <why>'"

@@ -55,6 +55,7 @@ struct tree *index_load(struct tree *noted);
 struct entry *tree_get(struct tree *t, const char *path);
 struct entry *file_entry(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
+int regular_mode(const char *mode);
 void index_line(struct strbuf *sb, const char *mode, const char *oid, const char *path);
 char *tree_with(const char *base, const char *index_info, struct string_list *paths);
 void tree_diff(struct tree *a, struct tree *b, struct string_list *paths);
@@ -156,7 +157,7 @@ const char *unverified_since(struct record *r, const struct string_list *tips);
 char *head_repair(struct verdict *v, int rerun);
 void base_versions(struct state *s, struct string_list *written);
 int accident_at(const char *commit, const char *id);
-int accident_at_head(struct record *r, struct verdict *out);
+int accident_at_head(struct record *r, struct verdict *out, int rerun);
 void commit_errors(const char *commit, struct string_list *out);
 int head_error(struct verdict *v);
 

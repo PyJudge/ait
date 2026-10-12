@@ -713,4 +713,45 @@ tick; ait future offer src/stock.c specs/p.yaml as o undertake "$D" o -m o >/dev
 git rm -q specs/w.yaml
 run ait todo
 check "todo with an undertaken demand whose definition is gone" sh -c "[ $rc = 0 ] && grep -q \"skipping '.ait/$D'\" '$T/err'"
+# 5.8 E_INCOMPLETE: a helper on a contract whose spec file HEAD lost gets no hint either; creating the file did not help it
+prep
+tick; ait offer src/stock.c specs/w.yaml --force -m o >"$T/out" 2>&1; O=$(new_id)
+git rm -q specs/w.yaml; tick; git commit -qm gone --no-verify >/dev/null 2>&1
+run ait amend "$O" -m again
+check "a helper on it: refused with no hint" sh -c "[ $rc = 1 ] && grep -q 'spec files do not match the contract' '$T/err' && ! grep -q '^hint:' '$T/err'"
+# 5.10, 5.8 E_INCOMPLETE: whether the gate can pin HEAD's broken bundle again is the gate's own expansion, inputs a definition newly declares included
+prep
+tick; ait future offer src/stock.c specs/w.yaml -m o >/dev/null 2>&1
+printf 'body: w\ninputs: [tests/none.sh]\n' > specs/w.yaml; git add specs/w.yaml
+tick; run git commit -qm raw --no-verify
+check "a definition declaring an input HEAD lacks: warned, with no hint" sh -c "grep -q 'spec files do not match the contract' '$T/err' && ! grep -q '^hint:' '$T/err'"
+# 5.8 E_READ: a -r file that cannot be read is all the judgment knows (user decision 52), so no hint
+prep
+setl src/order.c 1 o1x; git add src/order.c
+run ait commit -r "$T/none.yaml" -m c
+check "an unreadable -r: refused with no hint" sh -c "[ $rc = 128 ] && grep -q 'could not read' '$T/err' && ! grep -q '^hint:' '$T/err'"
+# 7.1.3-7, 7.1.4: an error a merge keeps from HEAD is warned once per record; what fixes it is the state after the merge, so no hint
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(new_id)
+git switch -q -c b; setl src/order.c 1 o1x; tick; git commit -qam b; git switch -q master
+sed 's/^state future/state bogus/' ".ait/$O" > "$T/rec" && cat "$T/rec" > ".ait/$O"; git add ".ait/$O"; tick; git commit -q --no-verify -m bad >/dev/null 2>&1
+tick; run git merge --no-ff --no-edit b
+check "a merge keeping HEAD's error: one warning, no hint" sh -c "[ $rc = 0 ] && [ \$(grep -c 'keeps an error from HEAD' '$T/err') = 1 ] && ! grep -q '^hint:' '$T/err'"
+# 5.9a: a pull hint gives the pull as it was given, its --force too
+prep
+git switch -q -c b; setl src/stock.c 1 s1x; tick; git commit -qam code
+tick; ait future demand src/order.c src/stock.c specs/w.yaml -m q >/dev/null 2>&1
+tick; ait future demand src/order.c src/stock.c specs/p.yaml -m d >"$T/out" 2>&1; D=$(new_id); git switch -q master
+tick; ait offer src/stock.c specs/p.yaml --force -m o >/dev/null 2>&1
+tick; run ait contract pull "$D" --force -m p
+check "the pull's own hint keeps its --force" sh -c "[ $rc = 1 ] && grep -q \"name them too: 'ait contract pull [^']* --force -m <why>'\" '$T/err'"
+# 2.1.4, 6.2: a spec file is a regular file wherever it is pinned, so the gate cannot pin a symbolic link HEAD has: no hint
+prep
+exec_def pass; git add -A; tick; git commit -qm pass --no-verify
+tick; ait future offer src/stock.c specs/pass.yaml -m o >/dev/null 2>&1
+rm tests/pass.sh; ln -s ../src/stock.c tests/pass.sh; git add tests/pass.sh
+tick; run git commit -qm link --no-verify
+check "an input HEAD made a symbolic link: warned, with no hint" sh -c "grep -q 'spec files do not match the contract' '$T/err' && ! grep -q '^hint:' '$T/err'"
+run ait contract commit -m fix
+check "and the gate does not pin it" sh -c "[ $rc = 1 ] && ! grep -q 'fix it in this request' '$T/err'"
 done_testing

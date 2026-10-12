@@ -560,13 +560,9 @@ char *head_repair(struct verdict *v, int rerun)
 	} else if (strcmp(v->word, "incomplete")) {
 		/* back to GOOD; a broken bundle (5.8 E_INCOMPLETE) needs no restore, as the gate pins it again (6.2) */
 		entangled_restore(v, &hint);
-	} else if (v->k) {
-		struct string_list_item *f;
-
-		/* but not a spec file HEAD lost: no hint, as no command mends that (5.9a) */
-		for_each_string_list_item(f, &v->k->f[FILES])
-			if (!file_entry(head_tree(), scope_path(f->string)))
-				return NULL;
+	} else if (v->k && expand_files(record_copy(v->k), head_tree())) {
+		/* but not when the gate cannot pin it again, a spec file it declares not at HEAD: no command mends that (5.9a) */
+		return NULL;
 	}
 	if (commit)
 		strbuf_addf(&hint, "%s%s", hint.len ? ", then " : "run ", commit);
@@ -592,12 +588,12 @@ static int accident_verdict(const char *commit, struct record *r, struct verdict
 	return 1;
 }
 
-/* 5.10: R of HEAD is an accident (2.3.3), as a verdict */
-int accident_at_head(struct record *r, struct verdict *out)
+/* 5.10: R of HEAD is an accident (2.3.3), as a verdict whose repair reruns the command when RERUN */
+int accident_at_head(struct record *r, struct verdict *out, int rerun)
 {
 	if (!accident_verdict(head, r, out))
 		return 0;
-	out->hint = head_repair(out, 0);
+	out->hint = head_repair(out, rerun);
 	return 1;
 }
 
@@ -671,7 +667,7 @@ int head_error(struct verdict *v)
 		return v->code;
 	}
 	for (i = 0; i < s.nr; i++)
-		if (accident_at_head(s.r[i], v))
+		if (accident_at_head(s.r[i], v, 0))
 			return 1;
 	return 0;
 }

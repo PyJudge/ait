@@ -166,7 +166,7 @@ check "9: HEAD is still Cb" [ "$(git rev-parse HEAD)" = "$CB" ]
 git switch -q -c ok "$G"
 run git push origin master:refs/heads/x
 check "9: push of master from branch ok is refused" [ "$rc" != 0 ]
-check "9: master cannot be fixed here" err_has "'refs/heads/master' ($CB) cannot be fixed here; where that commit is HEAD on a branch, run 'ait contract commit -m <why>' to get the fix"
+check "9: master cannot be fixed here" grep -qx "hint: 'refs/heads/master' ($CB) cannot be fixed here; fix it where that commit is HEAD on a branch" "$T/err"
 check "9: no restore hint for master" sh -c "! grep -qF \"restore '.ait/$O'\" '$T/err'"
 git switch -q master
 tick; expect_err "9: contract commit on master" E_FORMAT ait contract commit -m x
