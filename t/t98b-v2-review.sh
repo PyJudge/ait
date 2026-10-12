@@ -99,7 +99,7 @@ check "a link put back: the warning" err_has "warning: this commit put 'undertak
 check "a link: release it" err_has "hint: to take it back for others too, once this commit is reverted, run 'ait release $D $O -m <why>'"
 tick; ait future amend "$O" - specs/low.yaml -m a >/dev/null 2>&1
 tick; run git revert --no-edit HEAD
-check "a future version: amend it to the older one" err_has "hint: to take it back for others too, once this commit is reverted, run 'ait future amend $O src/stock.c specs/p.yaml -m <why>'"
+check "a future version: amend what differs, the rest kept" err_has "hint: to take it back for others too, once this commit is reverted, run 'ait future amend $O - specs/p.yaml -m <why>'"
 tick; ait offer src/order.c specs/w.yaml --force -m k >"$T/out" 2>&1; K=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
 tick; ait future amend "$K" -m r >/dev/null 2>&1
 tick; run git revert --no-edit HEAD
@@ -489,12 +489,16 @@ check "a re-pin reverted: told, with no command (same scope and spec files)" sh 
 tick; git revert --no-edit HEAD >/dev/null 2>&1
 echo 'body: v2' > specs/p.yaml; tick; ait amend "$O" - specs/p.yaml --force -m v2 >/dev/null 2>&1
 tick; run git revert --no-edit HEAD
-check "a definition's content reverted: no command, as a helper pins what the work tree has" sh -c "grep -qF \"put '$O' back\" '$T/err' && ! grep -q 'take it back' '$T/err'"
+R1=$(git rev-parse HEAD); OLD=$(git rev-parse HEAD:.ait/$O)
+check "a definition's content reverted: restore the spec file, then amend" err_has "once this commit is reverted, restore 'specs/p.yaml' as in '$R1', then run 'ait amend $O - specs/p.yaml -m <why>' to get the tasks"
+tick; git revert --no-edit HEAD >/dev/null 2>&1; git checkout -q "$R1" -- specs/p.yaml
+tick; run ait amend "$O" - specs/p.yaml --force -m back
+check "which reaches the older pins" sh -c "[ \"\$(git show HEAD:.ait/$O | grep '^file')\" = \"\$(git show $OLD | grep '^file')\" ]"
 prep
 tick; ait demand src/order.c src/stock.c specs/w.yaml --force -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
 tick; ait amend "$D" src/order.c:1-5 - - -m consumer >/dev/null 2>&1
 tick; run git revert --no-edit HEAD
-check "a consumer reverted: amend without the tasks (it checks nothing)" sh -c "grep -qF \"run 'ait amend $D src/order.c src/stock.c specs/w.yaml -m <why>'\" '$T/err' && ! grep -q 'to get the tasks' '$T/err'"
+check "a consumer reverted: amend of the consumer alone, without the tasks" sh -c "grep -qF \"run 'ait amend $D src/order.c - - -m <why>'\" '$T/err' && ! grep -q 'to get the tasks' '$T/err'"
 CMD=$(backcmd); tick; git revert --no-edit HEAD >/dev/null 2>&1
 tick; run sh -c "$CMD"
 check "and it commits at once" sh -c "[ $rc = 0 ] && grep -q '^changed $D' '$T/out'"
@@ -600,4 +604,60 @@ git branch side; git switch -q side; tick; ait future amend "$O" src/order.c - -
 racing_git; printf 'git -C "$T/r" reset -q --hard side\n' > "$T/before-update-ref"
 tick; run env PATH="$T/bin:$PATH" ait future amend "$O" src/stock.c:10-20 - -m mine
 check "HEAD moved to the other version: no H9 for it" sh -c "[ $rc = 1 ] && grep -q 'HEAD moved while running' '$T/err' && ! grep -q 'has changes not in HEAD' '$T/err'"
+# 5.9a 기록: a hint's command, run as given, asks for results exactly when the hint says "to get the tasks"
+hintcmd() { grep -F -- "$1" "$T/err" | head -1 | grep -o "'ait [^']*'" | head -1 | tr -d "'" | sed 's/<why>/x/'; }
+follows() {
+	line=$(grep -F -- "$1" "$T/err" | head -1); cmd=$(hintcmd "$1")
+	[ -n "$cmd" ] || return 1
+	tick; run sh -c "$cmd"
+	case $line in
+	*"to get the tasks") fails 1 "error: check results required" ;;
+	*) [ $rc = 0 ] ;;
+	esac
+}
+prep
+run ait future demand src/order.c src/nope.c specs/w.yaml offer src/stock.c specs/p.yaml -m x
+check "E_SCOPE of a promise with a current offer after it: the tasks" follows "if it does not exist yet"
+prep
+tick; ait demand src/order.c src/stock.c specs/w.yaml --force -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+run ait amend "$D" src/nope.c - - -m x
+check "E_SCOPE of a current demand's consumer alone: no tasks" follows "if it does not exist yet"
+prep
+tick; ait demand src/order.c src/stock.c specs/w.yaml --force -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait amend "$D" src/order.c:1-5 - - -m consumer >/dev/null 2>&1
+setl src/stock.c 3 s3x; tick; git commit -qam code >/dev/null 2>&1
+tick; run git revert --no-edit HEAD~1
+tick; git revert --no-edit HEAD >/dev/null 2>&1
+check "7.1.8 over code changed since: the consumer alone, no tasks" follows "to take it back for others too"
+
+# 7.1.8: a link goes back by undertake only where undertake runs: live ends, no current offer for a promise (2.3, 5.9 d)
+prep
+tick; ait future demand src/order.c src/stock.c specs/w.yaml -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future offer src/stock.c specs/p.yaml as o undertake "$D" o -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \(O[^ ]*\) o$/\1/p' "$T/out")
+tick; ait release "$D" "$O" -m r >/dev/null 2>&1; R=$(git rev-parse HEAD); tick; ait future cancel "$O" -m c >/dev/null 2>&1
+tick; run git revert --no-edit "$R"
+check "a link whose offer ended since: told, with no undertake" sh -c "grep -qF 'back to an older version' '$T/err' && ! grep -q 'ait undertake' '$T/err'"
+
+# 5.9a 판정 시점: H9 after a commit is judged on that commit, wherever HEAD went after it
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+git branch other; racing_git; printf 'git -C "$T/r" checkout -q other\n' > "$T/before-update-ref"
+tick; run env PATH="$T/bin:$PATH" ait future amend "$O" src/order.c - -m mine
+check "no H9 for the commit the request made" sh -c "grep -q '^changed $O' '$T/out' && ! grep -q 'has changes not in HEAD' '$T/err'"
+
+# 5.1: a hook only reads the session; a stale default it cannot clean refuses nothing
+prep
+rm ".git/ait/sessions/$A"; chmod 444 .git/ait/worktrees/*.lock
+echo y >> src/order.c; git add src/order.c; tick; run git commit -qm code
+chmod 644 .git/ait/worktrees/*.lock
+check "a plain commit with a stale session pointer and a locked worktree state" test "$rc" = 0
+
+# 5.1: contract new and add need no session, but one that is set must be usable
+prep
+AIT_SESSION=S000000000000; export AIT_SESSION
+run ait contract add specs/p.yaml
+check "contract add with an unknown session: E_SESSION" fails 128 "no usable ait session"
+run ait contract new offer
+check "contract new with an unknown session: E_SESSION" fails 128 "no usable ait session"
+unset AIT_SESSION
 done_testing

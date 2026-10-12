@@ -490,6 +490,9 @@ const char *session(int need)
 	else if (!env)
 		env = dflt;
 	wt = session_read(env, agent);
+	/* 5.1: a lookup that may find none (a hook, a pull's creator) takes a usable session or none, and changes nothing */
+	if (need < 0 && (!wt || strcmp(wt, top)))
+		return NULL;
 	if (env && !wt && from_default) {
 		/* the default pointer names no session: drop it, unless another command changed it meanwhile (5.1) */
 		int fd = hold_lock(top);
@@ -499,16 +502,12 @@ const char *session(int need)
 			unlink(pointer_path(top));
 		close(fd);
 	} else if (env && !wt) {
-		if (need < 0)
-			return NULL;
 		reject(128, "ait session list", "no usable ait session: unknown session '%s'", env);
 	} else if (wt && strcmp(wt, top)) {
 		char *hint = gone(wt) ? xstrfmt("its worktree is gone; close it: 'ait session close %s', then open a session "
 						"with the same name in the worktree of your branch: 'ait session open --agent %s'",
 						env, agent) : xstrfmt("cd %s", quoted(wt));
 
-		if (need < 0)
-			return NULL;
 		reject(128, hint, "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
 	}
 	if (!wt && need > 0)
@@ -933,41 +932,61 @@ void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 
 /*
  * 7.1.8 (user decision 47): once the commit that put K back is reverted, so
- * that K is at THEN again, the ait commands that bring it to the older NOW
- * for others too, as WAS (the state before) has K's partners and AT its code;
- * NULL when no rule leads there: an ended contract stays ended (2.3.2), a
- * drop changes only by future drop (choice 161), a helper pins the spec files
- * AT has, and versions that mean the same leave nothing to bring back
+ * that K is at THEN again, what brings it to the older NOW for others too, as
+ * WAS (the state before) has K's partners and AT its code: the spec files NOW
+ * pins restored as HEAD has them, then the ait commands; NULL when no rule
+ * leads there: an ended contract stays ended (2.3.2), a drop changes only by
+ * future drop (choice 161), and versions that mean the same leave nothing
  */
 static char *back_commands(struct state *was, struct version *then, struct version *now, struct tree *at)
 {
 	struct record *t = then->r, *n = now->r;
 	char *consumer = input_scopes(n, CONSUMER, at), *provider = input_scopes(n, PROVIDER, at);
-	const char *args = "";
-	int checks;
+	struct string_list restore = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	const char *cmd;
+	int new_consumer, new_provider, new_files;
 
-	/* only who made the offer releases it (5.9a, others' contracts) */
-	if (*t->id == 'u')
-		return in_state(t, val(n, STATE)) || (in_state(n, "released") && !made_by(link_end(was, t, 1), *sid ? agent : NULL)) ?
-		       NULL : xstrfmt("'ait %s %s %s -m <why>'", in_state(n, "released") ? "release" : "undertake",
-				      link_end_id(t, 0), link_end_id(t, 1));
-	if (*t->id == 'X' || !is_live(t) || !is_live(n) || !files_match(n, at))
+	/*
+	 * only who made the offer releases it (5.9a, others' contracts); an
+	 * undertake takes live ends (2.3), and no current offer for a promise (5.9 d)
+	 */
+	if (*t->id == 'u') {
+		struct record *d = link_end(was, t, 0), *o = link_end(was, t, 1);
+
+		if (in_state(t, val(n, STATE)) || (in_state(n, "released") ? !made_by(o, *sid ? agent : NULL) :
+						   !d || !o || !is_live(d) || !is_live(o) || (is_current(o) && !is_current(d))))
+			return NULL;
+		return xstrfmt("run 'ait %s %s %s -m <why>'", in_state(n, "released") ? "release" : "undertake",
+			       link_end_id(t, 0), link_end_id(t, 1));
+	}
+	if (*t->id == 'X' || !is_live(t) || !is_live(n) || !files_match(n, head_tree()))
 		return NULL;
-	/* the scopes and definitions NOW has, given again where their input at AT differs (5.9a) */
-	checks = strcmp(provider, input_scopes(t, PROVIDER, at)) || strcmp(record_text(n, 1u << FILES), record_text(t, 1u << FILES));
-	if (checks || strcmp(consumer, input_scopes(t, CONSUMER, at)))
-		args = xstrfmt("%s%s %s %s", *consumer ? " " : "", consumer, provider, def_paths(n));
-	if (in_state(t, val(n, STATE)) && !*args)
+	for_each_string_list_item(item, &n->f[FILES]) {
+		struct entry *e = file_entry(at, scope_path(item->string));
+
+		if (!e || !starts_with(item->string, xstrfmt("%s %s %s ", e->path, e->mode, e->oid)))
+			string_list_append(&restore, scope_path(item->string));
+	}
+	/* 7.3.1: what NOW has otherwise, as input at AT (5.9a), and "-" for the rest, which a helper keeps unpinned */
+	new_consumer = strcmp(consumer, input_scopes(t, CONSUMER, at));
+	new_provider = strcmp(provider, input_scopes(t, PROVIDER, at));
+	new_files = strcmp(record_text(n, 1u << FILES), record_text(t, 1u << FILES));
+	cmd = !new_consumer && !new_provider && !new_files ? "" :
+	      xstrfmt("%s%s %s %s", *consumer ? " " : "", *consumer ? (new_consumer ? consumer : "-") : "",
+		      new_provider ? provider : "-", new_files ? def_paths(n) : "-");
+	if (in_state(t, val(n, STATE)) && !*cmd)
 		return NULL;
 	/* reopening a current demand takes the current offers of 5.9 d along */
 	if (in_state(n, "future"))
-		return xstrfmt("'ait %s -m <why>'", reopen_clauses(was, state_get(was, t->id), args));
-	if (in_state(t, "future") && *args)
-		return xstrfmt("'ait future amend %s%s -m <why>', then 'ait fulfill %s -m <why>' to get the tasks", t->id, args, t->id);
-	if (in_state(t, "future"))
-		return xstrfmt("'ait fulfill %s -m <why>' to get the tasks", t->id);
-	/* 5.9a: only a changed provider or spec file is checked (1.5b) */
-	return xstrfmt("'ait amend %s%s -m <why>'%s", t->id, args, checks ? " to get the tasks" : "");
+		cmd = xstrfmt("'ait %s -m <why>'", reopen_clauses(was, state_get(was, t->id), cmd));
+	else if (in_state(t, "future"))
+		cmd = xstrfmt("%s'ait fulfill %s -m <why>' to get the tasks",
+			      *cmd ? xstrfmt("'ait future amend %s%s -m <why>', then ", t->id, cmd) : "", t->id);
+	else
+		/* 5.9a: a new provider or spec file is pinned and so checked (1.5b) */
+		cmd = xstrfmt("'ait amend %s%s -m <why>'%s", t->id, cmd, new_provider || new_files ? " to get the tasks" : "");
+	return xstrfmt("%srun %s", restore.nr ? xstrfmt("restore %s as in '%s', then ", quoted_paths(&restore), head) : "", cmd);
 }
 
 /*
@@ -1004,7 +1023,7 @@ static int post_hook(const char *before)
 			continue;
 		warning("this commit put '%s' back to an older version; only this branch has it", now.r[i]->id);
 		if ((back = back_commands(&was, then, v_now, tree_load(before))))
-			suggest("to take it back for others too, once this commit is reverted, run %s", back);
+			suggest("to take it back for others too, once this commit is reverted, %s", back);
 	}
 	return 0;
 }

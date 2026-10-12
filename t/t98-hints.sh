@@ -42,7 +42,7 @@ git reset -q --hard "$H"
 tick; ait offer src/stock.c,src/order.c specs/p.yaml --force -m o >"$T/out"; O=$(new_id)
 git rm -q src/order.c && tick && git commit -q -m gone 2>/dev/null
 tick; run ait amend $O -m m
-check "the gate moves the scope in the same command" err_has "if it was moved, run 'ait amend $O src/stock.c,<new scope> - -m <why>'"
+check "the gate moves the scope in the same command" err_has "if it was moved, run 'ait amend $O src/stock.c,<new scope> - -m <why>' to get the tasks"
 git reset -q --hard "$H"
 tick; ait future offer src/stock.c,src/order.c specs/p.yaml -m o >"$T/out"; O=$(new_id)
 git rm -q src/order.c
