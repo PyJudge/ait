@@ -204,6 +204,11 @@ def replay(run, line, cmd):
     ok, err = taken(run, cmd, False)
     if ok or taken(run, cmd, True)[0]:
         return None
+    # a refusal about another contract than the hint's is that command's own report (user decision 52)
+    first = next((l for l in err.splitlines() if l.startswith(("error:", "fatal:"))), "")
+    named = set(re.findall(r"[DOX][0-9a-f]{12}", first))
+    if named and not named & set(re.findall(r"[DOX][0-9a-f]{12}", cmd)):
+        return None
     return "I4 hint not taken: %s\n%s" % (line, err)
 
 

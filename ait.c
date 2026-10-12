@@ -1231,7 +1231,8 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 			continue;
 		printf("%s %s %s %s\n", *r->id == 'O' ? "undertakes" : "undertaken-by", other->id, val(other, STATE),
 		       scope_path(val(other, CREATOR)));
-		if (*r->id != 'O' || !is_live(other))
+		/* what todo cannot show (its skip warning) is not shown here either */
+		if (*r->id != 'O' || !is_live(other) || unusable(other, t))
 			continue;
 		if (in_state(other, "future"))
 			printf("undertakes-provider %s %s\n", other->id, shows(other, PROVIDER, t, 0));

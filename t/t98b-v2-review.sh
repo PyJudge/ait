@@ -706,4 +706,11 @@ prep
 tick; ait offer src/stock.c specs/w.yaml --force -m o >/dev/null 2>&1
 git rm -q specs/w.yaml; tick; run git commit -qm gone --no-verify
 check "a lost spec file at HEAD: warned, with no hint" sh -c "grep -q 'spec files do not match the contract' '$T/err' && ! grep -q '^hint:' '$T/err'"
+# 7.8: todo runs in every state; a record it cannot show (unusable) is not shown as another's partner either
+prep
+tick; ait future demand src/order.c src/stock.c specs/w.yaml -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future offer src/stock.c specs/p.yaml as o undertake "$D" o -m o >/dev/null 2>&1
+git rm -q specs/w.yaml
+run ait todo
+check "todo with an undertaken demand whose definition is gone" sh -c "[ $rc = 0 ] && grep -q \"skipping '.ait/$D'\" '$T/err'"
 done_testing
