@@ -126,7 +126,7 @@ void integration_validate(struct tree *t);
 void integration_message(const char *path);
 int as_in_base(struct record *r);
 int malformed(struct state *s, struct verdict *v);
-const char *unusable(struct record *r, struct tree *t);
+const char *format_error(struct record *r);
 
 /* version.c: the versions of a contract file (2.2.4) and what is judged from them alone */
 struct version {

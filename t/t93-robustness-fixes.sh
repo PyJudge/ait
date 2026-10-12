@@ -13,10 +13,10 @@ sed -i.bak 's/^state future$/state future current/' .ait/$O && rm .ait/$O.bak &&
 expect_err "a state of two words" E_FORMAT push_check
 git reset -q --hard "$H"
 
-# 7.8 and 7.1.2: what is shown of HEAD skips a record that does not hold there, instead of crashing
+# 7.8 (user decision 53): a definition todo cannot read stops it with that definition's error
 git rm -q specs/guard.yaml && tick && git commit -q --no-verify -m rmdef
-expect_ok "todo with a definition gone from HEAD" ait todo
-check "the record is reported" err_has "warning: skipping '.ait/$O'"
+expect_err "todo with a definition gone from HEAD" E_INCOMPLETE ait todo
+check "the error names the definition" err_has "missing 'specs/guard.yaml'"
 git reset -q --hard "$H"
 
 # 5.5: a failed commit changes nothing: no record left in the work tree, no spec file left staged

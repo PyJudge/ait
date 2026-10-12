@@ -13,10 +13,12 @@ Invariants
       in, is taken when run as given in a copy of the repository, after the
       states it names first (restore, remove): it succeeds,
       or says itself that it needs results or that local changes stop it, or
-      that another contract, or an error the repository already had (todo
-      warns of it) other than the one the hint answered, stops it (5.9a, user
-      decision 52); advice such as 'when ready' is not checked
-  I5  'ait todo' succeeds in every state
+      that an error other than the one the hint answered stops it, one the
+      repository already had (a hook reported it) or one about what the hint
+      did not touch (5.9a, user decision 52); advice such as 'when ready' is
+      not checked
+  I5  'ait todo' succeeds in every state, or stops with the error of a
+      definition it cannot read (user decision 53)
 
 usage: tools/explore.py [--ait DIR] [--seeds N] [--first S] [--steps K] [--jobs J] [--out DIR]
 """
@@ -57,6 +59,8 @@ class Run:
         self.vars = {}
         self.n = 0
         self.seen = {"ok": 0, "refused": 0, "hints": 0}
+        # the errors git's hooks reported: what the repository already has (5.10)
+        self.reported = set()
         self.env = dict(os.environ, HOME=root, GIT_CONFIG_NOSYSTEM="1", GIT_EDITOR=":", LC_ALL="C",
                         PATH=ait_dir + os.pathsep + os.environ["PATH"])
         self.env.pop("AIT_SESSION", None)
@@ -132,6 +136,7 @@ def step(rng, run):
         ("git rm -q %s" % rng.choice(DEFS + ["tests/x.sh"]), "git commit -q --no-verify -m nv"),
         ("printf 'body: b\\ninputs: [tests/none.sh]\\n' > %s && git add %s" % (f, f), "git commit -q --no-verify -m nv"),
         ("rm -f tests/x.sh && ln -s ../src/a.c tests/x.sh && git add -A tests", "git commit -q --no-verify -m nv"),
+        ("printf 'body: b\\nfoo: 1\\n' > %s && git add %s" % (f, f), "git commit -q --no-verify -m nv"),
     ]
     if k:
         x = rng.choice(k)
@@ -196,7 +201,8 @@ def hint_commands(err):
     the states it names first; advice for later or for a condition ('when
     ready', 'to need it again') is git's kind
     """
-    for line in err.splitlines():
+    lines = err.splitlines()
+    for i, line in enumerate(lines):
         if not line.startswith("hint: "):
             continue
         prep, rest = repair(line[6:])
@@ -204,7 +210,8 @@ def hint_commands(err):
         cmds = re.findall(r"'(ait [^']*)'", rest)
         if len(cmds) == 1 and not re.search(r"<[^w]", cmds[0]) and (m or (
                 not prep and rest.endswith("'") and not re.search(r"then|restore|once|push|next time|when ready|need it again", rest))):
-            yield line, " && ".join(prep + [cmds[0].replace("<why>", "x")])
+            # what it answers is the error or warning it follows
+            yield line, " && ".join(prep + [cmds[0].replace("<why>", "x")]), next((l.split(": ", 1)[1] for l in reversed(lines[:i]) if l.startswith(("error:", "fatal:", "warning:"))), "")
         return
 
 
@@ -257,15 +264,19 @@ def replay(run, line, cmd, answered):
     if ok or re.match(r"(uncommitted changes in|contract changes and code changes are mixed)", first) or \
             taken(run, cmd, True)[0]:
         return None
-    # a refusal about another contract than the one the hint names is that command's own report (user decision 52)
-    named, hinted = set(re.findall(r"[DOX][0-9a-f]{12}", first)), set(re.findall(r"[DOX][0-9a-f]{12}", cmd))
-    if named and hinted and not named & hinted:
-        return None
-    # so is an error the repository already had, which the hint's judgment did not read (user decision 52)
-    warned = [l for l in run.sh("ait todo")[2].splitlines() if l.startswith("warning:")]
-    if named and first != answered and all(any(k in l for l in warned) for k in named):
+    if first == answered:
+        return "I4 hint not taken: %s\n%s" % (line, err)
+    # what stops it besides the error the hint answered is that command's own report (user decision 52):
+    # an error the repository already had, or one about what the hint did not touch, the contracts it names included
+    named = set(re.findall(r"'([^']+)'", first)) | set(re.findall(r"[DOX][0-9a-f]{12}", first))
+    subject = set(re.findall(r"[DOX][0-9a-f]{12}", cmd + answered))
+    if first in run.reported or (named and subject and not named & (subject | set(re.findall(r"[^\s'{};&|]+", cmd)))):
         return None
     return "I4 hint not taken: %s\n%s" % (line, err)
+
+
+def bare_git(cmd):
+    return cmd.startswith("git ")
 
 
 def check(run, setup, cmd):
@@ -275,6 +286,8 @@ def check(run, setup, cmd):
     before = run.snapshot()
     rc, out, err = run.sh(cmd)
     run.bind(out)
+    if bare_git(cmd):
+        run.reported |= {l.split(": ", 1)[1] for l in err.splitlines() if l.startswith(("error:", "fatal:", "warning:"))}
     run.seen["refused" if rc else "ok"] += 1
     if rc not in (0, 1, 128, 129) or "BUG" in err or "AddressSanitizer" in err:
         return "I1 exit %d of '%s'\n%s" % (rc, cmd, err)
@@ -286,13 +299,13 @@ def check(run, setup, cmd):
         prc, _, perr = run.sh("ait hook post-commit")
         if "warning:" in perr:
             return "I3 '%s' left HEAD a new error\n%s" % (cmd, perr)
-    for line, hinted in hint_commands(err):
+    for line, hinted, answered in hint_commands(err):
         run.seen["hints"] += 1
-        broken = replay(run, line, hinted, first_error(err))
+        broken = replay(run, line, hinted, answered)
         if broken:
             return broken
     trc, _, terr = run.sh("ait todo")
-    if trc:
+    if trc and not re.match(r"(spec files do not match the contract: missing|bad format: '(?!\.ait/))", first_error(terr)):
         return "I5 ait todo exit %d\n%s" % (trc, terr)
     return None
 

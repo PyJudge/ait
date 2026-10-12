@@ -706,13 +706,13 @@ prep
 tick; ait offer src/stock.c specs/w.yaml --force -m o >/dev/null 2>&1
 git rm -q specs/w.yaml; tick; run git commit -qm gone --no-verify
 check "a lost spec file at HEAD: warned, with no hint" sh -c "grep -q 'spec files do not match the contract' '$T/err' && ! grep -q '^hint:' '$T/err'"
-# 7.8: todo runs in every state; a record it cannot show (unusable) is not shown as another's partner either
+# 7.8 (user decision 53): a definition todo cannot read stops it, a partner's too
 prep
 tick; ait future demand src/order.c src/stock.c specs/w.yaml -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
 tick; ait future offer src/stock.c specs/p.yaml as o undertake "$D" o -m o >/dev/null 2>&1
 git rm -q specs/w.yaml
 run ait todo
-check "todo with an undertaken demand whose definition is gone" sh -c "[ $rc = 0 ] && grep -q \"skipping '.ait/$D'\" '$T/err'"
+check "todo with an undertaken demand whose definition is gone" sh -c "[ $rc = 1 ] && grep -q \"missing 'specs/w.yaml'\" '$T/err'"
 # 5.8 E_INCOMPLETE: a helper on a contract whose spec file HEAD lost gets no hint either; creating the file did not help it
 prep
 tick; ait offer src/stock.c specs/w.yaml --force -m o >"$T/out" 2>&1; O=$(new_id)
@@ -754,4 +754,18 @@ tick; run git commit -qm link --no-verify
 check "an input HEAD made a symbolic link: warned, with no hint" sh -c "grep -q 'spec files do not match the contract' '$T/err' && ! grep -q '^hint:' '$T/err'"
 run ait contract commit -m fix
 check "and the gate does not pin it" sh -c "[ $rc = 1 ] && ! grep -q 'fix it in this request' '$T/err'"
+# 5.10, 5.9 a: todo skips a record whose form is wrong as validate judges it, a check line on a non-current one too
+prep
+tick; ait demand src/order.c src/stock.c specs/p.yaml --force -m d >"$T/out" 2>&1; D=$(new_id)
+sed 's/^state current/state future/' ".ait/$D" > "$T/rec" && cat "$T/rec" > ".ait/$D"; git add ".ait/$D"; tick; git commit -q --no-verify -m nv >/dev/null 2>&1
+run ait todo "$D"
+check "a check line on a future demand: skipped as malformed, with no hint to undertake it" sh -c "grep -q \"skipping malformed '.ait/$D'\" '$T/err' && ! grep -q 'undertake it yourself' '$T/err'"
+# 2.5 (user decision 53): a definition that does not parse stops what reads it, and fixing it through ait still works
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >/dev/null 2>&1
+printf 'body: p\nfoo: 1\n' > specs/p.yaml; git add specs/p.yaml; tick; git commit -q --no-verify -m nv >/dev/null 2>&1
+run ait todo
+check "todo stops with the definition's error" sh -c "[ $rc = 128 ] && grep -q \"bad format: 'specs/p.yaml'\" '$T/err'"
+echo 'body: p' > specs/p.yaml; ait contract add specs/p.yaml >/dev/null 2>&1
+tick; expect_ok "fixed and committed through ait" ait contract commit -m fix
 done_testing

@@ -974,21 +974,28 @@ char *def_paths(struct record *r)
 }
 
 /* validate(state) of spec 5.9 a-d for record R of S, no parents involved; 0 when it holds */
+/*
+ * 5.9 a: what is wrong with R's own form, NULL when nothing. Only a current
+ * contract has a check line (2.2.2); that version still reads, so the
+ * integration hook drops the line (7.1.3-2).
+ */
+const char *format_error(struct record *r)
+{
+	if (r->bad || !strcmp(r->id, "init"))
+		return r->bad;
+	return record_check(r) ?: r->f[CHECK].nr && !is_current(r) ? "check on a contract that is not current" : NULL;
+}
+
 static int record_error(struct state *s, struct record *r, struct verdict *v)
 {
 	struct record *d, *o;
-	char *why;
+	const char *why;
 	size_t j;
 
-	if (r->bad)
-		return bad_record(v, r, r->bad);
+	if ((why = format_error(r)))
+		return bad_record(v, r, why);
 	if (!strcmp(r->id, "init"))
 		return 0;
-	if ((why = record_check(r)))
-		return bad_record(v, r, why);
-	/* 2.2.2: only a current contract has a check line; the version still reads, so the integration hook drops it (7.1.3-2) */
-	if (r->f[CHECK].nr && !is_current(r))
-		return bad_record(v, r, "check on a contract that is not current");
 	if (*r->id == 'X') {
 		struct record *target = state_get(s, val(r, TARGET));
 
@@ -1037,24 +1044,6 @@ int check_records(struct state *s, struct verdict *v)
 		if (record_error(s, s->r[i], v))
 			return v->code;
 	return 0;
-}
-
-/* why R cannot be shown from T: malformed, or a definition it declares is not a text file in T (NULL when it can) */
-const char *unusable(struct record *r, struct tree *t)
-{
-	struct string_list_item *item;
-
-	if (r->bad)
-		return r->bad;
-	if (!is_live(r))
-		return NULL;
-	for_each_string_list_item(item, &r->f[FILES]) {
-		const char *oid = blob_at(t, scope_path(item->string));
-
-		if (is_def(item->string) && (!oid || !blob_text(oid)))
-			return xstrfmt("its definition '%s' is not there", scope_path(item->string));
-	}
-	return NULL;
 }
 
 /* the first malformed record of S, as a verdict (5.10) */
@@ -1996,7 +1985,17 @@ int expand_files(struct record *r, struct tree *t)
 static int files_match_except(struct record *r, struct tree *t, struct string_list *conflicts)
 {
 	struct record *x = record_copy(r);
+	struct string_list_item *item;
 
+	/* a definition not as R pins it is a mismatch already, so what it declares is not read (user decision 53) */
+	for_each_string_list_item(item, &r->f[FILES]) {
+		const char *path = scope_path(item->string);
+		struct entry *e = file_entry(t, path);
+
+		if (is_def(item->string) && !(conflicts && string_list_has_string(conflicts, path)) &&
+		    (!e || strcmp(item->string, xstrfmt("%s %s %s def", path, e->mode, e->oid))))
+			return 0;
+	}
 	return !expand_files_except(x, t, conflicts) && !strcmp(record_text(x, 1u << FILES), record_text(r, 1u << FILES));
 }
 

@@ -1162,7 +1162,7 @@ static int cmd_hook(int argc, const char **argv)
 	if (head)
 		string_list_append(&parents, head);
 	for (i = 0; i < hs.nr; i++)
-		if (!unusable(hs.r[i], ht) && newly_unverified(hs.r[i], t, &parents))
+		if (!format_error(hs.r[i]) && newly_unverified(hs.r[i], t, &parents))
 			string_list_append(&left, hs.r[i]->id)->util = hs.r[i];
 	if (!left.nr)
 		return 0;
@@ -1231,8 +1231,8 @@ static void link_lines(struct state *s, struct record *r, struct tree *t)
 			continue;
 		printf("%s %s %s %s\n", *r->id == 'O' ? "undertakes" : "undertaken-by", other->id, val(other, STATE),
 		       scope_path(val(other, CREATOR)));
-		/* what todo cannot show (its skip warning) is not shown here either */
-		if (*r->id != 'O' || !is_live(other) || unusable(other, t))
+		/* what todo skips as malformed is not shown here either */
+		if (*r->id != 'O' || !is_live(other) || format_error(other))
 			continue;
 		if (in_state(other, "future"))
 			printf("undertakes-provider %s %s\n", other->id, shows(other, PROVIDER, t, 0));
@@ -1369,7 +1369,7 @@ static int cmd_todo(int argc, const char **argv)
 		struct string_list by = STRING_LIST_INIT_DUP;
 		int mine, future, unver, pick = 0;
 
-		if (r->bad) {
+		if (format_error(r)) {
 			struct state one = { 1, 1, &r };
 			const char *path = xstrfmt(".ait/%s", r->id);
 
@@ -1377,10 +1377,6 @@ static int cmd_todo(int argc, const char **argv)
 			/* 5.10: one HEAD has too is HEAD's error, mended as such */
 			if (!strcmp(blob_at(t, path) ?: "", blob_at(ht, path) ?: "") && malformed(&one, &v))
 				suggest("%s", head_repair(&v, 0) ?: "");
-			continue;
-		}
-		if (unusable(r, t)) {
-			warning("skipping '.ait/%s' at 'index': %s", r->id, unusable(r, t));
 			continue;
 		}
 		/* links and the init file are no contracts */
