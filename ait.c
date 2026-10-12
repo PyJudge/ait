@@ -703,6 +703,8 @@ static int cmd_init(int argc, const char **argv)
 	char *dir = hooks_dir(), *tree;
 	struct strbuf info = STRBUF_INIT;
 	struct string_list_item *wt;
+	struct entry *e;
+	struct verdict v;
 	struct tree *t;
 	int i, bad = 0, in_repo = 0;
 
@@ -743,8 +745,13 @@ static int cmd_init(int argc, const char **argv)
 	if (bad)
 		return 1;
 	t = head_tree();
-	if (blob_at(t, ".ait/init") && !strcmp(tree_get(t, ".ait/init")->mode, "100644") &&
-	    !strcmp(object(blob_at(t, ".ait/init"), 1, NULL, NULL), "version 2\n")) {
+	/* 7.1.1-5, 2.1.2a (user decision 46): an init file HEAD has is right, or it is E_FORMAT, mended as 5.10 says */
+	if ((e = tree_get(t, ".ait/init"))) {
+		struct record *r = record_from_entry(e, "init", 0);
+		struct state one = { 1, 1, &r };
+
+		if (malformed(&one, &v))
+			reject(v.code, head_repair(&v, NULL, 0), "%s", v.msg);
 		puts("init exists");
 		return 0;
 	}
@@ -925,6 +932,42 @@ void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 }
 
 /*
+ * 7.1.8 (user decision 47): once the commit that put K back is reverted, so
+ * that K is at THEN again, the ait commands that bring it to the older NOW
+ * for others too, as WAS (the state before) has K's partners and AT its code;
+ * NULL when no rule leads there: an ended contract stays ended (2.3.2)
+ */
+static char *back_commands(struct state *was, struct version *then, struct version *now, struct tree *at)
+{
+	struct record *t = then->r, *n = now->r;
+	struct string_list set = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	struct strbuf sb = STRBUF_INIT;
+	const char *args = "";
+
+	if (*t->id == 'u')
+		return in_state(t, val(n, STATE)) ? NULL : xstrfmt("'ait %s %s %s -m <why>'", in_state(n, "released") ? "release" :
+								  "undertake", link_end_id(t, 0), link_end_id(t, 1));
+	if (!is_live(t) || !is_live(n))
+		return NULL;
+	/* the scopes and definitions NOW has, given again where they changed, as input at AT (5.9a) */
+	if (strcmp(record_text(t, (1u << CONSUMER) | PIN_KEYS), record_text(n, (1u << CONSUMER) | PIN_KEYS)))
+		args = *n->id == 'D' ? xstrfmt(" %s %s %s", input_scopes(n, CONSUMER, at), input_scopes(n, PROVIDER, at), def_paths(n)) :
+		       xstrfmt(" %s %s", input_scopes(n, PROVIDER, at), def_paths(n));
+	if (in_state(n, "future")) {
+		/* reopening a current demand takes the current offers of 5.9 d along */
+		reopen_set(was, state_get(was, t->id), &set);
+		for_each_string_list_item(item, &set)
+			strbuf_addf(&sb, " future amend %s%s", item->string, strcmp(item->string, t->id) ? "" : args);
+		return xstrfmt("'ait%s -m <why>'", sb.buf);
+	}
+	if (in_state(t, "future"))
+		return xstrfmt("%s'ait fulfill %s -m <why>' to get the tasks", *args ? xstrfmt("'ait future amend %s%s -m <why>', then ",
+										       t->id, args) : "", t->id);
+	return *args ? xstrfmt("'ait amend %s%s -m <why>' to get the tasks", t->id, args) : NULL;
+}
+
+/*
  * spec 7.1.8: after a commit or merge from BEFORE (none for a root commit),
  * what no hook of ait judged before it: HEAD's new errors, and records put
  * back to older versions. Git does not look at the exit code; this only tells.
@@ -952,17 +995,13 @@ static int post_hook(const char *before)
 	}
 	for (i = 0; before && i < now.nr; i++) {
 		struct version *then = version_in(before, now.r[i]->id), *v_now = version_in(head, now.r[i]->id);
+		char *back;
 
 		if (!then || !v_now || then == v_now || !contains(then, v_now))
 			continue;
 		warning("this commit put '%s' back to an older version; only this branch has it", now.r[i]->id);
-		/*
-		 * reopening leaves a new version only from a current one (7.3.2), with the
-		 * offers of 5.9 d as the state before has them; other versions have no such command
-		 */
-		if (is_current(then->r))
-			suggest("to take it back for others too, reopen it with ait once this commit is reverted: 'ait %s -m <why>'",
-				reopen_clauses(&was, state_get(&was, now.r[i]->id), NULL));
+		if ((back = back_commands(&was, then, v_now, tree_load(before))))
+			suggest("to take it back for others too, once this commit is reverted, run %s", back);
 	}
 	return 0;
 }
@@ -1231,6 +1270,36 @@ static void todo_hints(struct state *s, struct state *hs, struct record *r, stru
 }
 
 /* spec 7.8: my promises and my unverified demands, with what to do next */
+/*
+ * 7.8.1: T0, the index's tree; a path left unmerged has no entry of its own
+ * there, so it is read as HEAD has it, git's stage 2 (user decision 45), as
+ * git's own readers show the rest of the index around such a path
+ */
+static struct tree *index_tree(void)
+{
+	struct strbuf info = STRBUF_INIT;
+	struct string_list unmerged = STRING_LIST_INIT_DUP;
+	const char *p, *end;
+
+	for (p = git("ls-files -s -z"), end = p + git_out_len; p < end; p += strlen(p) + 1) {
+		char mode[8], oid[48];
+		int stage, at;
+
+		if (sscanf(p, "%7s %47s %d\t%n", mode, oid, &stage, &at) != 3)
+			continue;
+		if (stage && !unsorted_string_list_has_string(&unmerged, p + at)) {
+			string_list_append(&unmerged, p + at);
+			warning("'%s' is unmerged; it is read as HEAD has it", p + at);
+		}
+		if (stage == 0 || stage == 2)
+			index_line(&info, mode, oid, p + at);
+	}
+	if (!unmerged.nr)
+		return tree_load(line1(git("write-tree")));
+	/* the empty tree (git v2.53.0 hash.h) holds what the lines put in it */
+	return tree_load(tree_with("4b825dc642cb6eb9a060e54bf8d69288fbee4904", info.buf, NULL));
+}
+
 static int cmd_todo(int argc, const char **argv)
 {
 	struct state s = { 0 }, hs = { 0 };
@@ -1246,7 +1315,7 @@ static int cmd_todo(int argc, const char **argv)
 	for (k = 1; k < argc; k++)
 		if (!id_shaped(argv[k]))
 			scope_shape(argv[k]);
-	t = tree_load(line1(git("write-tree")));
+	t = index_tree();
 	me = session(0) ? agent : NULL;
 	/* spec 7.8.1: the contracts as the index T0 has them; the index block compares HEAD's with T0 */
 	state_load(&s, t);

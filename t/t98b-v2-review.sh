@@ -89,21 +89,24 @@ run git push -q origin master
 check "pre-push during a merge: E_INCOMPLETE" err_has "error: spec files do not match the contract:"
 check "the merge is finished first" err_has "hint: first finish or abort the git merge in progress ('git status')"
 
-# 7.1.8: only a current version is reopened into a new one (7.3.2), so only it gets the hint
+# 7.1.8 (user decision 47): once the commit is reverted, the commands that bring each kind back to the older version
 prep
 tick; ait future demand src/order.c src/stock.c specs/w.yaml -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
 tick; ait future offer src/stock.c specs/p.yaml as o undertake "$D" o -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \(O[^ ]*\).*/\1/p' "$T/out")
 tick; ait release "$D" "$O" -m r >/dev/null 2>&1; tick; ait undertake "$D" "$O" -m u >/dev/null 2>&1
 tick; run git revert --no-edit HEAD
 check "a link put back: the warning" err_has "warning: this commit put 'undertake/$D-$O' back to an older version; only this branch has it"
-check "no amend hint for a link" not err_has "'ait future amend undertake/"
+check "a link: release it" err_has "hint: to take it back for others too, once this commit is reverted, run 'ait release $D $O -m <why>'"
 tick; ait future amend "$O" - specs/low.yaml -m a >/dev/null 2>&1
 tick; run git revert --no-edit HEAD
-check "a future version put back: the warning" err_has "warning: this commit put '$O' back to an older version"
-check "no amend hint, which would be noop" not err_has "'ait future amend $O -m <why>'"
-tick; ait fulfill "$O" --force -m f >/dev/null 2>&1
+check "a future version: amend it to the older one" err_has "hint: to take it back for others too, once this commit is reverted, run 'ait future amend $O src/stock.c specs/p.yaml -m <why>'"
+tick; ait offer src/order.c specs/w.yaml --force -m k >"$T/out" 2>&1; K=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future amend "$K" -m r >/dev/null 2>&1
 tick; run git revert --no-edit HEAD
-check "a current version put back: the hint" err_has "hint: to take it back for others too, reopen it with ait once this commit is reverted: 'ait future amend $O -m <why>'"
+check "a current version a reopen left: fulfill it" err_has "hint: to take it back for others too, once this commit is reverted, run 'ait fulfill $K -m <why>' to get the tasks"
+tick; ait future cancel "$O" -m c >/dev/null 2>&1
+tick; run git revert --no-edit HEAD
+check "an ended version stays ended: no command" not err_has "to take it back"
 
 # 5.10: every request judges the records it writes from their base version, GOOD's when HEAD's is an accident
 prep
@@ -296,9 +299,9 @@ CMD=$(hinted "make it future")
 check "E_SCOPE's promise reopens O too" sh -c "echo \"$CMD\" | grep -q 'future amend $O'"
 tick; expect_ok "and runs" sh -c "$CMD"
 git reset -q --hard "$H"
-tick; ait amend "$D" src/order.c:1-3 - - --force -m a >/dev/null 2>&1
+# the fulfill that made D and O current is reverted: D goes back to future with its offer
 tick; run git revert --no-edit HEAD
-CMD=$(sed -n "s/^hint: to take it back for others too, reopen it with ait once this commit is reverted: '\(.*\)'\$/\1/p" "$T/err" | sed 's/<why>/x/')
+CMD=$(sed -n "s/^hint: to take it back for others too, once this commit is reverted, run '\(ait future amend $D.*\)'\$/\1/p" "$T/err" | sed 's/<why>/x/')
 check "7.1.8's reopen takes O along" sh -c "echo \"$CMD\" | grep -q 'future amend $O'"
 tick; git revert --no-edit HEAD >/dev/null 2>&1
 tick; expect_ok "and runs once the revert is reverted" sh -c "$CMD"
@@ -415,4 +418,36 @@ cp src/order.c amend; git add amend; tick; git commit -qm amend --no-verify
 run ait demand amend src/nope.c specs/p.yaml --force -m d
 CMD=$(hinted "make it future")
 check "the verb is where the clause has it" test "$CMD" = "ait future demand amend new:src/nope.c specs/p.yaml -m x"
+
+# 7.1.1-5 (user decision 46): an init file HEAD has that is not right stops ait init with 2.1.2a's E_FORMAT
+prep
+printf 'version 1\n' > .ait/init; tick; git commit -qam v1 --no-verify
+tick; run ait init
+check "E_FORMAT, not a rewrite" sh -c "[ $rc = 128 ] && [ \"\$(git show HEAD:.ait/init)\" = 'version 1' ]"
+check "5.10's hint" err_has "hint: rewrite '.ait/init' as the single line 'version 2' with mode 100644, then 'ait contract add .ait/init' and 'ait contract commit -m <why>'"
+
+# 6.1 before 6.2 (user decision 48): contract commit says the code is mixed in before it judges the records
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+sed 's/^creator a /creator b /' .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O; git add .ait/$O
+echo x >> src/order.c; git add src/order.c
+run ait contract commit -m x
+check "E_MIXED first" fails 1 "error: contract changes and code changes are mixed: 'src/order.c'"
+
+# user decision 44: contract commit's noop tells to restore what the index spells otherwise than HEAD
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+sed 's/^prev .*/prev junk/' .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O; ait contract add .ait/$O >/dev/null
+tick; run ait contract commit -m x
+check "noop with the restore hint" sh -c "grep -qx noop '$T/out' && grep -qF \"hint: restore '.ait/$O' as in 'HEAD'\" '$T/err'"
+
+# 7.8.1 (user decision 45): todo reads an unmerged path as HEAD has it, and says so
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+git branch side; git switch -q side; echo s > src/order.c; tick; git commit -qam side --no-verify
+git switch -q master; echo m > src/order.c; tick; git commit -qam m --no-verify
+tick; git merge side >/dev/null 2>&1
+run ait todo
+check "todo runs in a conflicted merge" sh -c "[ $rc = 0 ] && grep -qx 'id $O' '$T/out'"
+check "with the unmerged path named" err_has "warning: 'src/order.c' is unmerged; it is read as HEAD has it"
 done_testing

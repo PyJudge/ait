@@ -2053,16 +2053,21 @@ static struct tree *worktree_state(struct request *q, struct state *ws)
 }
 
 /*
- * 7.6.1: after contract commit's noop, the contract paths (7.5.1) the work
- * tree has otherwise than the index: what was fixed is not committed, which
- * is this command's result, not a risk (rule 6)
+ * 7.6.1: what contract commit's noop leaves: records the index spells
+ * otherwise than HEAD, which mean what HEAD's do as the noop shows (user
+ * decision 44), and the contract paths (7.5.1) the work tree has otherwise
+ * than the index: what was fixed is not committed, which is this command's
+ * result, not a risk (rule 6)
  */
-static void left_unstaged(struct request *q)
+static void noop_left(struct request *q)
 {
-	struct string_list differ = STRING_LIST_INIT_DUP, paths = STRING_LIST_INIT_DUP;
+	struct string_list differ = STRING_LIST_INIT_DUP, paths = STRING_LIST_INIT_DUP, spelled = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct state hs = { 0 }, ws = { 0 };
 
+	tree_diff(q->ht, q->v, &spelled);
+	if (spelled.nr)
+		suggest("restore %s as in 'HEAD': it means what HEAD's version means", quoted_paths(&spelled));
 	state_load(&hs, q->ht);
 	worktree_state(q, &ws);
 	z_paths(git("diff --name-only -z"), &differ);
@@ -2122,7 +2127,7 @@ static void commit_request(struct request *q, struct strbuf *results)
 		h9();
 		puts("noop");
 		if (q->direct)
-			left_unstaged(q);
+			noop_left(q);
 		return;
 	}
 	if (results->len) {
@@ -2804,7 +2809,7 @@ static int contract_commit(struct request *q)
 	struct string_list changed = STRING_LIST_INIT_DUP, staged = STRING_LIST_INIT_DUP, untracked = STRING_LIST_INIT_DUP;
 	struct string_list code = STRING_LIST_INIT_DUP, written = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct state hs = { 0 };
+	struct state hs = { 0 }, us = { 0 };
 	const char *id;
 
 	if (q->args.nr > 2)
@@ -2829,22 +2834,44 @@ static int contract_commit(struct request *q)
 		if (file_entry(q->v, item->string))
 			string_list_append(&staged, item->string);
 	bundle_complete(q, &staged, &untracked);
-	/* 6.2: each changed record as written, against its base version (5.10) */
+	/* the changed records as written (2.2.3), and U's own declarations, its definitions expanded in U */
 	for_each_string_list_item(item, &changed) {
 		struct entry *e = file_entry(q->v, item->string);
-		struct record *r, *w;
+		struct record *u;
+
+		if (!skip_prefix(item->string, ".ait/", &id) || !e)
+			continue;
+		item->util = record_from_entry(e, id, 1);
+		u = state_add(&us, id);
+		*u = *record_copy(item->util);
+		if (!u->bad && is_live(u))
+			expand_files(u, q->v);
+	}
+	/* 6.1 before 6.2 (user decision 48): only contract paths, as HEAD has them and as U declares them */
+	for_each_string_list_item(item, &changed)
+		if (!contract_path(&hs, item->string) && !contract_path(&us, item->string))
+			string_list_append(&code, item->string);
+	if (code.nr) {
+		for_each_string_list_item(item, &code)
+			printf("impl %s\n", item->string);
+		reject(1, xstrfmt("unstage the code (%s), then rerun this command; when the code is ready, stage it and run "
+				  "'ait commit -m <why>'", quoted_paths(&code)),
+		       "contract changes and code changes are mixed: %s", quoted_paths(&code));
+	}
+	/* 6.2: each changed record as written, against its base version (5.10) */
+	for_each_string_list_item(item, &changed) {
+		struct record *r, *w = item->util;
 
 		if (!skip_prefix(item->string, ".ait/", &id))
 			continue;
 		r = state_get(&q->s, id);
 		/* 2.1.5: a record stays; what is no record, the init file, or a record GOOD lacks may go (5.10) */
-		if (!e) {
+		if (!w) {
 			if (!r->mend && strcmp(id, "init") && r->old)
 				reject(1, restore_it(r), "not allowed: records are never removed: '%s'", item->string);
 			state_drop(&q->s, id);
 			continue;
 		}
-		w = record_from_entry(e, id, 1);
 		if (!r)
 			r = state_add(&q->s, id);
 		/* what does not read is refused by validate; the init file is no contract to normalize */
@@ -2854,17 +2881,6 @@ static int contract_commit(struct request *q)
 			normalize(q, r, w);
 	}
 	expand_request(q);
-	/* 6.1: only contract paths, as HEAD has them and as U declares them */
-	for_each_string_list_item(item, &changed)
-		if (!contract_path(&hs, item->string) && !contract_path(&q->s, item->string))
-			string_list_append(&code, item->string);
-	if (code.nr) {
-		for_each_string_list_item(item, &code)
-			printf("impl %s\n", item->string);
-		reject(1, xstrfmt("unstage the code (%s), then rerun this command; when the code is ready, stage it and run "
-				  "'ait commit -m <why>'", quoted_paths(&code)),
-		       "contract changes and code changes are mixed: %s", quoted_paths(&code));
-	}
 	return finish(q);
 }
 
