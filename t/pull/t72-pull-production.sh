@@ -49,6 +49,8 @@ want "range pull: the current confirmation stays unchanged" eval 'test "$(recat 
 git -c core.hooksPath=/dev/null merge --abort
 pull "$Q=$A1" --force -m why
 want "range pull: force cannot hide a code conflict" eval 'test "$rc" = 1 && grep -q "^error: --force cannot take a pull whose code conflicts:" "$T/err" && ! test -f "$(git rev-parse --git-path MERGE_HEAD)"'
+pull "$Q=$A1" amend "$D" -m why
+want "range pull with a clause to check: no --force hint, as --force takes no code conflict" eval 'test "$rc" = 1 && grep -q "^error: check results required" "$T/err" && ! grep -q -- "--force" "$T/err"'
 
 pull "$Q=$A1" -m why
 git show HEAD:src/stock.c > src/stock.c; git add src/stock.c

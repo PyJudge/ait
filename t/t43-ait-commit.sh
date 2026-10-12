@@ -92,7 +92,7 @@ check "6: stderr is the 7.1.2 block" test "$(cat "$T/err")" = "$(printf '%s\n' \
 	"warning: their receivers are notified after this commit" \
 	"hint: next time, to check and commit in one step, use 'ait commit' instead of 'git commit'" \
 	"hint: to change '$K' without a check, reopen it: 'ait future amend $K -m <why>'" \
-	"hint: check '$K' again: run 'ait amend $K -m <why>' to get the tasks")"
+	"hint: check '$K' again: run 'ait amend $K -m <why>'")"
 setl src/order.c 2 o2x; git add src/order.c
 tick; run git commit -qm raw2
 check "6: a commit of future O's provider only: no guidance" test ! -s "$T/err"

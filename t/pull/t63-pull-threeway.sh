@@ -153,6 +153,8 @@ fact "X1: merging a1 then b1 conflicts only in contract and spec files" test "$(
 want "X1: 'pull D O' stops, nothing changed" pull_unchanged "$D" "$O"
 want "X1: stops at 3: Y and Z not named" eval 'stops_re 1 "^error: taking .* also changes contracts you did not name: " && head -1 "$T/err" | grep -q "'"'$Y'"'" && head -1 "$T/err" | grep -q "'"'$Z'"'"'
 want "X1: hint names Y and Z too" err_re "^hint: name them too: 'ait contract pull $D $Y $Z $O'\$"
+pull "$D=$cA1" "$O" -m why
+want "X1: a pick in the naming hint takes its message (5.9a, 7.12.1)" err_re "^hint: name them too: 'ait contract pull $D=$cA1 $Y $Z $O -m <why>'\$"
 want "X1: 'pull D O Y Z' stops, nothing changed" pull_unchanged "$D" "$O" "$Y" "$Z"
 want "X1: stops to choose Y and Z" stops_re 1 "^error: '($Y|$Z)' has diverged between "
 want "X1: the hint chooses Y and Z once in one command" err_re "^hint: pick one: .*'ait contract pull $D $Y=[^ ']+ $Z=[^ ']+ $O -m <why>'"

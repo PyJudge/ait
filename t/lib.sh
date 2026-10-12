@@ -70,11 +70,11 @@ GIT
 	chmod +x "$T/bin/git"
 }
 
-# AIT_REPLAY=1 (5.9a 기록): each hint that gives one command, 'ait ...' and nothing to fill in, runs as given
-# in a copy of the repository; with "to get the tasks" it asks for results, and without them it succeeds
+# AIT_REPLAY=1 (5.9a, user decision 52): each hint that gives one command, 'ait ...' and nothing to fill in,
+# runs as given in a copy of the repository and is taken: it succeeds, or asks for results itself
 replay() {
 	rp_top=$(git rev-parse --show-toplevel 2>/dev/null) && [ -d "$rp_top/.git" ] || return 0
-	grep "^hint: .*'ait [^']*'\( to get the tasks\)\{0,1\}\$" "$T/err" | grep -v "then\|restore\|push\|<[^w]" >"$T/replay.hints"
+	grep "^hint: .*'ait [^']*'\$" "$T/err" | grep -v "then\|restore\|push\|<[^w]" >"$T/replay.hints"
 	while IFS= read -r rp_line; do
 		rp_cmd=$(printf '%s\n' "$rp_line" | grep -o "'ait [^']*'" | tr -d "'" | sed 's/<why>/x/')
 		[ "$(printf '%s\n' "$rp_cmd" | wc -l)" = 1 ] || continue
@@ -88,10 +88,7 @@ replay() {
 			mv "$T/replay/.git/ait/worktrees/$rp_key" "$T/replay/.git/ait/worktrees/$(printf %s "$rp_new" | git hash-object --stdin)"
 		(cd "$T/replay" && sh -c "$rp_cmd" >"$T/replay.out" 2>"$T/replay.err")
 		rp_r=$?
-		case $rp_line in
-		*"to get the tasks") grep -q '^error: check results required' "$T/replay.err" ;;
-		*) [ $rp_r = 0 ] ;;
-		esac && continue
+		[ $rp_r = 0 ] || grep -q '^error: check results required' "$T/replay.err" && continue
 		n=$((n+1)); failed=$((failed+1)); echo "not ok $n - replay: $rp_line"; sed 's/^/#   /' "$T/replay.err" | head -5
 	done <"$T/replay.hints"
 }

@@ -65,7 +65,7 @@ expect_err "4: alias is E_USAGE" E_USAGE ait fulfill "$O2" as x -m m
 expect_err "4: no message is E_USAGE" E_USAGE ait fulfill "$O2"
 expect_err "4: unknown ID is E_ID" E_ID ait fulfill O000000000000 -m m
 expect_err "4: current O is E_STATE" E_STATE ait fulfill "$O" -m m
-check "4: E_STATE hint" err_has "'$O' is already current; to check it again, run 'ait amend $O -m <why>' to get the tasks"
+check "4: E_STATE hint" err_has "'$O' is already current; to check it again, run 'ait amend $O -m <why>'"
 tick; expect_ok "4: fulfill O2 --force" ait fulfill "$O2" --force -m m
 check "4: check O2 forced" out_has "check $O2 forced"
 check "4: O2's check line is forced pins" [ "$(check_line HEAD "$O2")" = "forced $(pins HEAD "$O2")" ]
@@ -107,7 +107,7 @@ tick; git rm -q src/stock.c; git commit -qm rm 2>"$T/err"
 check "7: no warning for a future contract" test ! -s "$T/err"
 expect_ok "7: todo" ait todo
 check "7: O provider ?missing" out_has "provider src/stock.c:1-10 ?missing"
-check "7: H10 moves O" err_has "'$O' has no code under its scope; if it was moved, run 'ait fulfill $O=<new scope> -m <why>' to get the tasks"
+check "7: H10 moves O" err_has "'$O' has no code under its scope; if it was moved, run 'ait fulfill $O=<new scope> -m <why>'"
 check "7: H10 cancels my O" err_has "if it is gone for good, run 'ait future cancel $O -m <why>'"
 
 # 7 variant: scope list (T17-7: the provider is src/stock.c:1-10,src/order.c:1-5)
@@ -119,6 +119,6 @@ check "7b: future offer with a scope list" test -n "$O"
 tick; git rm -q src/stock.c; git commit -qm rm
 expect_ok "7b: todo" ait todo
 check "7b: provider lines" sh -c "grep -qxF 'provider src/order.c:1-5' '$T/out' && grep -qxF 'provider src/stock.c:1-10 ?missing' '$T/out'"
-check "7b: H10 keeps what is found" err_has "run 'ait fulfill $O=src/order.c:1-5,<new scope> -m <why>' to get the tasks"
+check "7b: H10 keeps what is found" err_has "run 'ait fulfill $O=src/order.c:1-5,<new scope> -m <why>'"
 
 done_testing

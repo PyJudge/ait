@@ -125,7 +125,7 @@ back
 edit ".ait/$DN" 's/^state future$/state current/'
 expect_ok "e: contract add .ait/Dn" ait contract add ".ait/$DN"
 expect_err "e: contract commit" E_STATE ait contract commit -m m
-check "e: hint fulfills it instead" err_has "fulfill it instead: restore '.ait/$DN' as in 'HEAD', then 'ait fulfill $DN -m <why>' to get the tasks"
+check "e: hint fulfills it instead" err_has "fulfill it instead: restore '.ait/$DN' as in 'HEAD', then 'ait fulfill $DN -m <why>'"
 back
 # e, with another line changed too: set the state back instead of restoring
 edit ".ait/$DN" -e 's/^state future$/state current/' -e 's/^provider .*/provider src\/stock.c:1-3/'

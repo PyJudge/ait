@@ -765,28 +765,11 @@ static int names(struct request *q, struct clause *c, int i, struct record *k)
 }
 
 /*
- * 1.5b: clause C checks a contract: it makes one current, or it amends one
- * current at HEAD giving a provider or definitions again, or giving nothing
- * to have it checked again (a consumer alone is checked by no one)
- */
-static int clause_checks(struct request *q, struct clause *c)
-{
-	struct record *k = strcmp(c->verb, "amend") ? NULL : state_get(&q->s, c->k[0]);
-
-	if (c->future)
-		return 0;
-	if (!k)
-		return !strcmp(c->verb, "demand") || !strcmp(c->verb, "offer");
-	return was_current(k) && (!c->b || !keeps(c->b) || !keeps(c->f) || !c->a || keeps(c->a));
-}
-
-/*
  * 5.9a: the helper request again, with the clause of each contract in KS
  * changed: 'f' makes it a promise or reopens it ("future demand", "future
  * amend"), 'm' gives it KEPT,<new scope> as provider, 'u' puts ADD in place of
  * a link's clause; a contract no clause names gets one added, and so does the
- * clause ADD. Options give way to "-m <why>". Quoted, and run to get the
- * tasks when a clause of it checks a contract (5.9a 기록).
+ * clause ADD. Options give way to "-m <why>", and the command is quoted.
  */
 static char *again(struct request *q, struct string_list *ks, char mode, const char *add)
 {
@@ -794,7 +777,6 @@ static char *again(struct request *q, struct string_list *ks, char mode, const c
 	struct string_list done = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	size_t i;
-	int checks = mode == 'm';
 
 	strbuf_addstr(&sb, "ait");
 	if (contract_word(q->args.v[0]))
@@ -820,7 +802,6 @@ static char *again(struct request *q, struct string_list *ks, char mode, const c
 			c.a = *k->id == 'D' ? "-" : NULL;
 			c.f = "-";
 		}
-		checks |= clause_checks(q, &c);
 		clause_words(&sb, &c, k && mode == 'm' ? moved_arg(k, q->ht) : NULL);
 	}
 	for_each_string_list_item(item, ks)
@@ -829,7 +810,7 @@ static char *again(struct request *q, struct string_list *ks, char mode, const c
 				    amend_clause(item->util, moved_arg(item->util, q->ht), "-"));
 	if (add && mode != 'u')
 		strbuf_addf(&sb, " %s", add);
-	return xstrfmt("'%s -m <why>'%s", sb.buf, checks ? " to get the tasks" : "");
+	return xstrfmt("'%s -m <why>'", sb.buf);
 }
 
 /* 5.9a: reopening SET inside this request: the helper again with "future amend", or contract commit's files set so */
@@ -1187,7 +1168,7 @@ static char *direct_hint(struct request *q, struct record *r, const char *from, 
 			       written_lines(r, q->ht), restore);
 	/* 4: only a fulfil makes a promise current */
 	if (!strcmp(from, "future") && (!strcmp(to, "current") || !strcmp(to, "fulfilled")))
-		return xstrfmt("fulfill it instead: %s, then 'ait fulfill %s -m <why>' to get the tasks",
+		return xstrfmt("fulfill it instead: %s, then 'ait fulfill %s -m <why>'",
 			       as_in_base(as_was) ? restore : xstrfmt("set 'state future' back in '%s', then %s", path, through_ait(single(path))),
 			       r->id);
 	/* 5: current to ended: reopen it */
@@ -2306,7 +2287,8 @@ static int finish(struct request *q)
 		report(q, req, res, input && q->tasks.nr);
 		if (q->first.code)
 			reject(q->first.code, q->first.hint, "%s", q->first.msg);
-		if (q->pull_hint)
+		/* pull takes no -r (7.12.5): its own hint, or none */
+		if (q->pull_tree)
 			reject(1, q->pull_hint, "check results required: %d task(s)", (int)q->tasks.nr);
 		add_hint(q, xstrfmt("check each task, fill '%s', and rerun with -r %s", res, quoted(res)));
 		add_hint(q, "if it is trivial, add --force instead (recorded as forced)");
@@ -2362,7 +2344,7 @@ static void select_promise(struct request *q, struct record *r)
 {
 	if (!in_state(r, "future"))
 		reject(1, !is_current(r) ? closed_hint(q, r) : head_first(q, r) ?:
-		       xstrfmt("'%s' is already current; to check it again, run 'ait amend %s -m <why>' to get the tasks", r->id, r->id),
+		       xstrfmt("'%s' is already current; to check it again, run 'ait amend %s -m <why>'", r->id, r->id),
 		       "not allowed: '%s' is %s", r->id, val(r, STATE));
 	put(r, STATE, "current");
 	string_list_append(&q->selected, r->id);

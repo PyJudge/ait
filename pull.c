@@ -215,11 +215,16 @@ static struct selection *selection_add(struct pull *p, const char *arg)
 	return s;
 }
 
-static char *pull_command(struct pull *p, const char *choice_id, const char *choice)
+/*
+ * 5.9a: the pull P again, with CHOICE for CHOICE_ID and EXTRA (clauses, --force)
+ * after its own clauses; a pull that picks or writes takes a message (7.12.1)
+ */
+static char *pull_command(struct pull *p, const char *choice_id, const char *choice, const char *extra)
 {
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
 	size_t i;
+	int picks = 0;
 
 	strbuf_addstr(&sb, "ait contract pull");
 	for_each_string_list_item(item, &p->selections) {
@@ -232,13 +237,20 @@ static char *pull_command(struct pull *p, const char *choice_id, const char *cho
 		if (choice_id && !strcmp(choice_id, s->id)) {
 			if (choice)
 				strbuf_addf(&sb, "=%s", choice);
-		} else if (s->pick)
+			picks += choice != NULL;
+		} else if (s->pick) {
 			strbuf_addf(&sb, "=%s", s->pick);
+			picks++;
+		}
 	}
 	for (i = 0; i < p->clauses.nr; i++) {
 		strbuf_addch(&sb, ' ');
 		sq_quote_buf_pretty(&sb, p->clauses.v[i]);
 	}
+	if (extra)
+		strbuf_addf(&sb, " %s", extra);
+	if (picks || p->clauses.nr || extra)
+		strbuf_addstr(&sb, " -m <why>");
 	return strbuf_detach(&sb, NULL);
 }
 
@@ -622,7 +634,7 @@ static void check_incoming(struct pull *p)
 		strbuf_addf(&msg, "%s'%s'%s", msg.len ? ", " : "", item->string, item->util ? xstrfmt(" (undertake '%s')", (char *)item->util) : "");
 	for_each_string_list_item(item, &sources)
 		strbuf_addf(&commits, "%s'%s'", commits.len ? " and " : "", item->string);
-	reject(1, xstrfmt("name them too: '%s'", pull_command(&trial, NULL, NULL)), "taking %s also changes contracts you did not name: %s", commits.buf, msg.buf);
+	reject(1, xstrfmt("name them too: '%s'", pull_command(&trial, NULL, NULL, NULL)), "taking %s also changes contracts you did not name: %s", commits.buf, msg.buf);
 }
 
 static struct state result_state(struct pull *p)
@@ -707,7 +719,7 @@ static void choice_commands(struct pull *p, struct string_list *commands,
 		struct verdict v;
 
 		if (!check_records(&state, &v) && (trial.ends.nr || !incompatible_pins(&state)))
-			string_list_insert(commands, pull_command(&trial, NULL, NULL));
+			string_list_insert(commands, pull_command(&trial, NULL, NULL, NULL));
 		return;
 	}
 	string_list_insert(resolved, next->id);
@@ -752,7 +764,7 @@ static char *choices_hint(struct pull *p, int all)
 	for (pass = 0; pass < 2; pass++)
 		for_each_string_list_item(item, &commands)
 			if ((choice_rank(item->string) > 1) == pass)
-				strbuf_addf(&hint, "%s'%s -m <why>'", hint.len ? " or " : "pick one: ", item->string);
+				strbuf_addf(&hint, "%s'%s'", hint.len ? " or " : "pick one: ", item->string);
 	return hint.len ? strbuf_detach(&hint, NULL) : NULL;
 }
 
@@ -796,7 +808,7 @@ static void check_choices(struct pull *p)
 				strcmp(intro, "HEAD") ? xstrfmt(" (%s)", name ? name : intro) : "");
 		}
 		if (s->invalid)
-			reject(1, !diverged ? xstrfmt("take it as it is: '%s'", pull_command(p, s->id, NULL)) : hint, "'%s' has no version of '%s' to choose: a newer one includes it", s->pick, s->id);
+			reject(1, !diverged ? xstrfmt("take it as it is: '%s'", pull_command(p, s->id, NULL, NULL)) : hint, "'%s' has no version of '%s' to choose: a newer one includes it", s->pick, s->id);
 		reject(1, hint, "'%s' has diverged between %s", s->id, message.buf);
 	}
 }
@@ -1065,7 +1077,7 @@ static int split_sequence(struct pull *p, struct string_list *left, struct strbu
 		for_each_string_list_item(item, &m.conflicts)
 			put_entry(&resolved, item->string, entry_value(head_tree(), item->string));
 		tree = tree_with(m.tree, resolved.buf, NULL);
-		strbuf_addf(hint, "%s'%s%s'", hint->len ? ", then " : "take them one at a time: ", pull_command(&trial, NULL, NULL), trial.chosen ? " -m <why>" : "");
+		strbuf_addf(hint, "%s'%s'", hint->len ? ", then " : "take them one at a time: ", pull_command(&trial, NULL, NULL, NULL));
 		head = line1(git_run("pull split preview\n", NULL, NULL, "commit-tree %s -p %s -p %s", tree, saved_head, m.commit));
 		if (split_sequence(p, &rest, hint)) {
 			head = saved_head;
@@ -1828,7 +1840,7 @@ void changes_not_in_head(struct string_list *ids)
 		blocked = blocked || local_change(&hs, item->string, &v);
 	if (blocked || (merge && staged_merge(&v)))
 		suggest("%s", v.hint);
-	suggest("%s", choices_hint(&trial, 0) ?: xstrfmt("to include them, run '%s'", pull_command(&trial, NULL, NULL)));
+	suggest("%s", choices_hint(&trial, 0) ?: xstrfmt("to include them, run '%s'", pull_command(&trial, NULL, NULL, NULL)));
 }
 
 /* Commit trailers ignore patch dividers (git v2.53.0 pretty.c:1767). */
@@ -1876,8 +1888,9 @@ static void structure_error(struct pull *p, struct verdict *v)
 			if (strcmp(ref->string, "HEAD") && bad && accident(bad) == 1)
 				reject(1, xstrfmt("'%s' has to be fixed on branch '%s' first", v->k->id, ref->string), "taking '%s' needs '%s' as '%s' has it, but '%s' at '%s' (%s) was changed outside ait's rules", p->ends.nr ? p->ends.items[0].string : head, v->k->id, ref->string, v->k->id, ref->string, (char *)ref->util);
 		}
-	if (v->o)
-		v->hint = xstrfmt("reopen it in the same request: '%s future amend %s -m <why>'", pull_command(p, NULL, NULL), v->o->id);
+	/* 5.9 d: a current offer that undertakes a promise is reopened with it */
+	if (v->o && *v->o->id == 'O')
+		v->hint = xstrfmt("reopen it in the same request: '%s'", pull_command(p, NULL, NULL, xstrfmt("future amend %s", v->o->id)));
 	reject(v->code, v->hint, "%s", v->msg);
 }
 
@@ -1921,7 +1934,8 @@ static int receive(struct pull *p)
 	if (p->clauses.nr) {
 		session(0);
 		t = tree_load(pull_helpers(t->oid, &p->clauses, p->after_option, p->force, &m.conflicts,
-			xstrfmt("if it is trivial, run '%s --force -m <why>'", pull_command(p, NULL, NULL)), &helper_out));
+			/* 7.12.5 (user decision 36): --force takes no pull whose code conflicts */
+			m.conflicts.nr ? NULL : xstrfmt("if it is trivial, run '%s'", pull_command(p, NULL, NULL, "--force")), &helper_out));
 		result = (struct state){0};
 		state_load(&result, t);
 		if (!strcmp(t->oid, head_tree()->oid)) {
@@ -1962,7 +1976,7 @@ static int receive(struct pull *p)
 				for_each_string_list_item(scope, &r->f[PROVIDER])
 					checked_path |= !strcmp(scope_path(scope->string), item->string) && scope_changed(scope->string, t);
 				if (checked_path)
-					reject(1, xstrfmt("reopen it in the same request: '%s %s -m <why>'", pull_command(p, NULL, NULL), reopen_clauses(&result, r, NULL)), "taking '%s' conflicts in what '%s' checked: '%s'", p->ends.nr ? p->ends.items[0].string : head, r->id, item->string);
+					reject(1, xstrfmt("reopen it in the same request: '%s'", pull_command(p, NULL, NULL, reopen_clauses(&result, r, NULL))), "taking '%s' conflicts in what '%s' checked: '%s'", p->ends.nr ? p->ends.items[0].string : head, r->id, item->string);
 			}
 		if (is_current(r) && (changed || unverified(r, t))) {
 			struct selection *sel = NULL;
@@ -1981,11 +1995,12 @@ static int receive(struct pull *p)
 				continue;
 			}
 			if (!p->force) {
-				char *command = pull_command(p, NULL, NULL);
-				char *hint = xstrfmt("%s: '%s %s -m <why>'", mine ? "reopen it in the same request" : "take it reopened", command, reopen_clauses(&result, r, NULL));
+				char *hint = xstrfmt("%s: '%s'", mine ? "reopen it in the same request" : "take it reopened",
+						     pull_command(p, NULL, NULL, reopen_clauses(&result, r, NULL)));
 
 				if (code_found(r, t) && !m.conflicts.nr)
-					hint = xstrfmt("%s\nor, if %s trivial for '%s': '%s --force -m <why>'", hint, mine ? "the change is" : "your changes are", r->id, command);
+					hint = xstrfmt("%s\nor, if %s trivial for '%s': '%s'", hint, mine ? "the change is" : "your changes are", r->id,
+						       pull_command(p, NULL, NULL, "--force"));
 				if (!p->ends.nr && sel && sel->incoming)
 					reject(1, hint, "'%s' at '%s' checked code your branch no longer has: '%s'", r->id, origin, path);
 				reject(1, hint, mine ? "taking '%s' changes what contract '%s' checked: '%s'" : "taking '%s' merges your changes into what '%s' checked: '%s'", sel && sel->incoming ? sel->incoming : p->ends.nr ? p->ends.items[0].string : head, r->id, path);

@@ -304,7 +304,7 @@ want "IND4: pull succeeds" test "$rc" = 0
 want "IND4: the commit takes a1" parents_are "$E1" "$A1"
 want "IND4: D is the future version W" test "$(recat HEAD D)" = "$W"
 want "IND4: reopened warning without a reason" err_line "warning: '$D' is reopened by this pull"
-want "IND4: H10" err_line "hint: when ready, stage the code and run 'ait fulfill $D -m <why>' to get the tasks"
+want "IND4: H10" err_line "hint: when ready, stage the code and run 'ait fulfill $D -m <why>'"
 
 # CP3  a1 and b1 each write the same D version by hand (Ait-Agent agent-a, agent-b) ; main: c-E
 pbase

@@ -20,13 +20,21 @@ char agent[72], sid[16];
 /* 5.9a and 7.12.6: execution hints retain a nondefault session. */
 static char *cmd_prefix;
 
+/* the next ait command a hint gives from P; 'ait hook ...' is what a hook runs (7.1.1), not one for the user */
+static const char *ait_command(const char *p)
+{
+	while ((p = strstr(p, "'ait ")) && starts_with(p + 5, "hook "))
+		p++;
+	return p;
+}
+
 static char *prefixed(const char *hint)
 {
 	struct strbuf sb = STRBUF_INIT;
 	const char *p, *hit;
 
 	for (p = hint; cmd_prefix; p = hit + 1) {
-		const char *ait = strstr(p, "'ait "), *git = strstr(p, "'git commit ");
+		const char *ait = ait_command(p), *git = strstr(p, "'git commit ");
 
 		hit = ait && git ? (ait < git ? ait : git) : ait ? ait : git;
 		if (!hit)
@@ -47,7 +55,7 @@ static int ait_writes(const char *hint)
 	static const char *const readers[] = { "todo", "peek", "session", "listen", "sub", "unsub", NULL };
 	const char *p;
 
-	for (p = hint; (p = strstr(p, "'ait ")); p++)
+	for (p = hint; (p = ait_command(p)); p++)
 		if (!one_of(xstrndup(p + 5, strcspn(p + 5, " '")), readers))
 			return 1;
 	return 0;
@@ -893,11 +901,11 @@ void recheck_hint(struct state *s, struct record *r, struct tree *h, const struc
 	const char *since;
 
 	if (code_found(r, h)) {
-		suggest("check '%s' again: run 'ait amend %s -m <why>' to get the tasks", r->id, r->id);
+		suggest("check '%s' again: run 'ait amend %s -m <why>'", r->id, r->id);
 		return;
 	}
 	since = tips ? unverified_since(r, tips) : NULL;
-	suggest("'%s' has no code under its scope%s; if it was moved, run 'ait %s -m <why>' to get the tasks",
+	suggest("'%s' has no code under its scope%s; if it was moved, run 'ait %s -m <why>'",
 		r->id, since ? xstrfmt(" (unverified since '%s')", since) : "", amend_clause(r, moved_arg(r, h), "-"));
 	suggest("%s", reopen_hint(s, r));
 }
@@ -913,7 +921,7 @@ void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 	missing_code(p, t, &missing);
 	for_each_string_list_item(item, &missing)
 		if (!starts_with(item->string, "new:")) {
-			suggest("'%s' has no code under its scope; if it was moved, run 'ait fulfill %s=%s -m <why>' to get the tasks",
+			suggest("'%s' has no code under its scope; if it was moved, run 'ait fulfill %s=%s -m <why>'",
 				p->id, p->id, moved_arg(p, t));
 			/* only who made a contract takes it back (1.4) */
 			if (made_by(p, *sid ? agent : NULL))
@@ -927,7 +935,7 @@ void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 		if (d && in_state(d, "future") && is_abstract(d))
 			strbuf_addf(&args, " %s=<scope>", d->id);
 	}
-	suggest("when ready, stage the code and run 'ait fulfill %s -m <why>' to get the tasks", args.buf);
+	suggest("when ready, stage the code and run 'ait fulfill %s -m <why>'", args.buf);
 }
 
 /*
@@ -981,11 +989,10 @@ static char *back_commands(struct state *was, struct version *then, struct versi
 	if (in_state(n, "future"))
 		cmd = xstrfmt("'ait %s -m <why>'", reopen_clauses(was, state_get(was, t->id), cmd));
 	else if (in_state(t, "future"))
-		cmd = xstrfmt("%s'ait fulfill %s -m <why>' to get the tasks",
-			      *cmd ? xstrfmt("'ait future amend %s%s -m <why>', then ", t->id, cmd) : "", t->id);
+		cmd = xstrfmt("%s'ait fulfill %s -m <why>'", *cmd ? xstrfmt("'ait future amend %s%s -m <why>', then ", t->id, cmd) : "",
+			      t->id);
 	else
-		/* 5.9a: a new provider or spec file is pinned and so checked (1.5b) */
-		cmd = xstrfmt("'ait amend %s%s -m <why>'%s", t->id, cmd, new_provider || new_files ? " to get the tasks" : "");
+		cmd = xstrfmt("'ait amend %s%s -m <why>'", t->id, cmd);
 	return xstrfmt("%srun %s", restore.nr ? xstrfmt("restore %s as in '%s', then ", quoted_paths(&restore), head) : "", cmd);
 }
 

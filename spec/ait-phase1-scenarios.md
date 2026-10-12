@@ -328,7 +328,7 @@ tick; ait offer src/stock.c:1-10 p as o1 offer src/order.c p as o4 future demand
 | b | `tests/q.sh`와 `specs/q.yaml`를 고친 뒤 `ait contract add specs/q.yaml` | `err E_INCOMPLETE`, `unstaged tests/q.sh`, stage 없음(작업 폴더에 있지만 주어진 PATH만 stage하면 어긋난다, 7.5.2). hint는 `stage them together: 'ait contract add specs/q.yaml tests/q.sh'`다(이 명령의 PATH에 더한 것, 5.8) |
 | c | `specs/q.yaml`와 `src/stock.c`를 고침, `contract add specs/q.yaml`, `git add src/stock.c`, `contract commit` | `err E_MIXED`, `impl src/stock.c`. hint는 `unstage the code ('src/stock.c'), then rerun this command; when the code is ready, stage it and run 'ait commit -m <why>'`다(5.8) |
 | d | 추적하지 않는 `.ait/D222222222222`가 있는 상태에서 `contract commit` | `err E_INCOMPLETE` |
-| e | Dn의 state를 current로 고쳐 add·commit | `err E_STATE`. state만 바꿨으므로 hint는 `fulfill it instead: restore '.ait/Dn' as in 'HEAD', then 'ait fulfill Dn -m <why>' to get the tasks`다(5.9a의 전이 hint 4. 다른 행도 바꿨으면 복원 대신 `set 'state future' back in '.ait/Dn', then 'ait contract add .ait/Dn' and 'ait contract commit -m <why>'`다) |
+| e | Dn의 state를 current로 고쳐 add·commit | `err E_STATE`. state만 바꿨으므로 hint는 `fulfill it instead: restore '.ait/Dn' as in 'HEAD', then 'ait fulfill Dn -m <why>'`다(5.9a의 전이 hint 4. 다른 행도 바꿨으면 복원 대신 `set 'state future' back in '.ait/Dn', then 'ait contract add .ait/Dn' and 'ait contract commit -m <why>'`다) |
 | f | creator를 바꿔 add·commit | `err E_STATE`. hint는 `restore '.ait/Dn' as in 'HEAD'`다 |
 | f2 | creator와 함께 provider 행도 고쳐 add·commit | `err E_STATE`. 고친 것을 잃지 않게 hint는 `restore it` 대신 `remove the 'creator' line from '.ait/Dn' (HEAD's value is kept), then 'ait contract add .ait/Dn' and 'ait contract commit -m <why>'`다(5.9a 전이 hint 2, 2.2.3). 그대로 하면 `changed Dn`이고 creator는 HEAD의 것이다 |
 | g | `git rm -q .ait/Dn` 후 `contract commit` | `err E_STATE`(`E_INCOMPLETE`가 아니다. 지운 레코드의 계약은 관련 경로 검사에서 빠지고 관문이 판정한다, 7.6.1). hint는 f와 같은 복원 명령이다(레코드는 지우지 않는다, 2.1.5, 전이 hint 2) |
@@ -535,11 +535,11 @@ export AIT_SESSION=-
 4. `git reset -q --hard` 후:
    - `ait fulfill O2 O2` → `err E_USAGE`. alias나 메시지가 없을 때도 `err E_USAGE`.
    - 없는 ID → `err E_ID`.
-   - 이미 current인 O → `err E_STATE`. hint는 `'<O>' is already current; to check it again, run 'ait amend <O> -m <why>' to get the tasks`다(5.9a의 전이 hint).
+   - 이미 current인 O → `err E_STATE`. hint는 `'<O>' is already current; to check it again, run 'ait amend <O> -m <why>'`다(5.9a의 전이 hint).
    - `tick; ait fulfill O2 --force` → `ok`, `check <O2> forced`. `rec(O2)`의 확인 행은 `check forced <pins(HEAD, O2)>`이고 결과 문단은 없다. 결과 대신 판단으로 넘긴 것이 기록된다(8.5).
 5. **확인할 코드가 없으면 이행되지 않는다**: `tick; ait future offer new:src/g.c p as o3`. `ait fulfill O3` → `err E_CODE_REQUIRED`(`E_FORMAT`이 아니다. 이행 후 상태라면 current의 provider가 `new:`여서 validate a에 걸리지만, 확인할 코드를 먼저 본다, 5.13-7, 7.7.3-3·4), `불변`. 보고에 `code-required <O3>`와 `ready no`가 있고 과제 행(`task`·`check-request`·`check-result`)은 없다(확인할 수 없다, 7.7.6). hint에 아직 쓰지 않은 `new:` 형 `write 'src/g.c'`와 `stage 'src/g.c'`(stage 규칙), 그리고 `rerun with '<O3>=<new scope>'`가 있고, O3는 내가 만든 future이므로 `ait future cancel <O3> -m <why>`가 있다. `ait future amend`와 `ait future drop`은 없다(되돌리기 안내는 current 계약에만, 철회는 current에만 쓴다, 5.8). `--force`로도 같다(5.14).
 6. 결과는 보고다. ait는 진위를 보장하지 않고 드러낸다(0.4a): `tick; ait future offer src/stock.c tests/guard.sh as o4`. stock.c 5행의 `guard`를 지워 stage(이제 guard가 없다) → `tick; ait fulfill O4 -r pass` → `ok`. `git log -1 --format=%B`에 그 결과(과제·outcome·basis)가 있다.
-7. **코드가 없는 약속의 todo**(H10): 준비를 다시 한 뒤 `tick; git rm -q src/stock.c; git commit -qm rm`(O는 future이므로 경고가 없다). `ait todo` → O 블록의 provider는 `src/stock.c:1-10 ?missing`이다. stderr의 hint(H10)는 `'<O>' has no code under its scope; if it was moved, run 'ait fulfill <O>=<new scope> -m <why>' to get the tasks`와, O가 A의 계약이므로 이어지는 `if it is gone for good, run 'ait future cancel <O> -m <why>'`다. `when ready, stage the code`로 시작하는 형은 없다(provider를 HEAD에서 찾을 수 없다, 5.9a).
+7. **코드가 없는 약속의 todo**(H10): 준비를 다시 한 뒤 `tick; git rm -q src/stock.c; git commit -qm rm`(O는 future이므로 경고가 없다). `ait todo` → O 블록의 provider는 `src/stock.c:1-10 ?missing`이다. stderr의 hint(H10)는 `'<O>' has no code under its scope; if it was moved, run 'ait fulfill <O>=<new scope> -m <why>'`와, O가 A의 계약이므로 이어지는 `if it is gone for good, run 'ait future cancel <O> -m <why>'`다. `when ready, stage the code`로 시작하는 형은 없다(provider를 HEAD에서 찾을 수 없다, 5.9a).
    - 준비를 다시 하고 provider를 `src/stock.c:1-10,src/order.c:1-5`로 둔 future offer O로 같은 일을 하면, H10의 옮김 형은 `ait fulfill <O>=src/order.c:1-5,<new scope> -m <why>`다(KEPT는 그 명령이 실행될 tree에서 찾을 수 있는 조각 `src/order.c:1-5`다. stage된 것이 없어 T0가 HEAD와 같다, 5.9a).
 
 ## T18 비대칭 ①: demand는 먼저 이행될 수 있다 (1.6, 7.7)
@@ -780,7 +780,7 @@ ait는 결과 파일을 확인 결과 단계에서 연다(8.4). 시험은 이름
    - **current였던 적이 없는 계약은 되돌리지 않는다**: 같은 충돌에서 `tests/long.sh`의 2행을 합쳐 쓴 채 같은 조작(레코드는 ours, `.ait/<O>`의 state를 current로)을 하고 `git add -A; git commit` → `err E_STATE`. O는 어느 출발 판에서도 current가 아니므로 고정이 바뀌어도 되돌리기 대상이 아니고(7.1.3-3), future에서 current로는 이행으로만 간다(7.1.3-4). `is reopened` 경고는 없다.
 10. **통합에서 고친 명세 파일은 다시 고정된다**: 충돌 없는 브랜치를 `git merge --no-commit --no-ff`하고, HEAD의 future 계약 O·D가 선언한 `tests/long.sh`를 손으로 고쳐 `git add`, `git commit` → 성공. O·D의 `file` 행이 고친 판으로 다시 고정되고, future이므로 미확인은 없다.
 11. **결과 없이 합쳐진 current 계약의 조건은 약속으로 되돌린다**(규칙 3·4, 7.1.3-3): master에 current offer K(`tick; ait offer src/stock.c:1-10 tests/long.sh as k -r pass`)를 두고, 거기서 갈라진 k1과 k2가 각자 `tests/long.sh`의 2행과 11행을 고쳐 `contract add tests/long.sh`·`tick; contract commit -r pass`(k2의 것이 Rk2). k1에서 `tick; git merge k2` → `.ait/<K>`가 충돌한다(양쪽이 각자 조건을 바꿨다. 같은 파일을 쓰는 준비의 O·D도 충돌한다). `git checkout --ours .ait/<K> .ait/<O> .ait/<D>; git add -A; tick; git commit --no-edit` → 성공(`tests/long.sh`는 자동 병합된다).
-    - stderr에 `warning: '<K>' is reopened in this merge: its pins changed without a check`와, 이 커밋의 `Ait-Agent`인 A가 되돌린 쪽이므로 H10 `when ready, stage the code and run 'ait fulfill <K> -m <why>' to get the tasks`가 있다(7.1.5). `is unverified after this merge` 경고는 없다(K는 future가 되었으므로 미확인이 아니다).
+    - stderr에 `warning: '<K>' is reopened in this merge: its pins changed without a check`와, 이 커밋의 `Ait-Agent`인 A가 되돌린 쪽이므로 H10 `when ready, stage the code and run 'ait fulfill <K> -m <why>'`가 있다(7.1.5). `is unverified after this merge` 경고는 없다(K는 future가 되었으므로 미확인이 아니다).
     - `rec(K)`: `state future`. file 행은 합쳐진 `tests/long.sh`로 다시 고정되고, provider 행은 그대로다(`src/stock.c:1-10 <고정 때의 blob>`). prev는 두 행(k1·k2 판의 blob, OID 순)이다. 확인 행은 없다(future로 되돌리면 지운다, 7.1.3-3). 메시지에 새 `Ait-Request`가 있다.
     - `ait peek now src/stock.c`에 K가 없다(ID 인자는 view와 상관없이 보이므로 범위로 본다, 7.9.3). `ait peek <K>`의 마지막 event는 `event <새 RID> agent-a reopened`다.
     - 그 뒤 stock.c 3행을 바꾸는 `git commit`의 경고에는 K가 없다(future는 걸리지 않는다).
@@ -823,7 +823,7 @@ ait는 결과 파일을 확인 결과 단계에서 연다(8.4). 시험은 이름
 22. **state만 바꾼 해결도 되돌리기다**(7.1.5): 준비를 다시 하고 master에서 `tick; ait offer src/stock.c:1-10 p as k -r pass`. 거기서 갈라진 x와 y가 각자 `tick; ait amend K src/stock.c:1-8 - -r pass`, `tick; ait amend K src/stock.c:1-9 - -r pass`. x에서 `tick; git merge y` → `.ait/<K>`가 충돌한다. `git checkout --ours .ait/<K>` 뒤 `state current`만 `state future`로 고쳐 `git add -A; tick; git commit --no-edit` → 성공.
     - stderr에 `warning: '<K>' is reopened in this merge`가 있고 그 행 끝에 이유가 없다(future인 출발 판이 없고, 고정은 current인 x 판과 같고, 떠맡은 D도 없다. 이유를 알 수 없으면 사실만 쓴다, 7.1.5). 이어서 H10(`ait fulfill <K> -m <why>`)이 있다.
 23. **기록줄의 agent가 없으면 되돌린 쪽이 없다**(1.5d, H10, H14): 11의 준비와 merge, `--ours` 정리까지 한 뒤 커밋을 `tick; AIT_SESSION=- git commit --no-edit`로 한다 → 성공. 메시지의 `Ait-Agent`는 `unknown`이다(7.1.5). stderr의 `is reopened` 경고 뒤에 H10은 없다(현재 session이 없다).
-    - A의 `ait todo`에 K 블록이 나오고 hint는 H10 `when ready, stage the code and run 'ait fulfill <K> -m <why>' to get the tasks`다. H14는 없다(되돌린 쪽이 없으므로 K는 A가 만든, 되돌린 쪽이 없는 future offer다, 5.9a).
+    - A의 `ait todo`에 K 블록이 나오고 hint는 H10 `when ready, stage the code and run 'ait fulfill <K> -m <why>'`다. H14는 없다(되돌린 쪽이 없으므로 K는 A가 만든, 되돌린 쪽이 없는 future offer다, 5.9a).
 24. **해결은 먼저 커밋하고 git의 안내로 잇는다**(7.1.3의 마치는 커밋과 마치는 hint, 7.13.1-5): 준비를 다시 하고 master에서 `tick; ait offer src/stock.c:1-10 p as k -r pass`. 거기서 브랜치 rb를 만들어 `tick; ait future amend K src/stock.c:1-5 -`(Rr). master에서 `tick; ait future amend K src/stock.c:1-6 -`. rb에서 `tick; git rebase master` → `.ait/<K>`가 충돌한다. driver의 hint는 `keep 'theirs' for '.ait/<K>' and stage it (…)`와 `then commit it through ait: 'ait contract add .ait/<K>' and 'ait contract commit -m <why>' (…)`다(서로에게 갈 수 있고 rebase 디렉터리가 있으므로 이 브랜치의 Rr 쪽인 theirs다, 7.13.1-5).
     - 이 상태에서 `ait future offer src/order.c p` → `err E_BUSY`, hint는 `a git rebase is in progress; finish or abort it as 'git status' says, then rerun this command`와 그 상태의 마치는 hint `commit the resolution first: 'git commit --allow-empty --allow-empty-message -C REBASE_HEAD', then continue as git says`다(통합 상태다, 5.8).
     - 거기서 `.ait/<O>`도 작업 폴더에서만 고쳐 둔 채 같은 명령 → 위의 hint에 `; keep your contract changes out of it, since only ait commits contract files`가 이어진다(마치는 커밋은 stage된 것만 싣는다, 5.9a). 끝나면 `git --literal-pathspecs checkout -- .ait/<O>`.
@@ -1168,7 +1168,7 @@ cleanup:
    warning: their receivers are notified after this commit
    hint: next time, to check and commit in one step, use 'ait commit' instead of 'git commit'
    hint: to change '<K>' without a check, reopen it: 'ait future amend <K> -m <why>'
-   hint: check '<K>' again: run 'ait amend <K> -m <why>' to get the tasks
+   hint: check '<K>' again: run 'ait amend <K> -m <why>'
    ```
    - `<K>` 자리에는 K의 ID가 나오고, `<why>`는 글자 그대로다. PROVIDER는 HEAD에서의 표시다.
    - future O의 provider(order.c)만 바꾼 커밋에는 안내가 없다. future는 걸리지 않는다.

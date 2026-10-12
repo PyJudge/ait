@@ -81,7 +81,7 @@ picks() {
 }
 reopened_warning() { grep -q "^warning: '$D' is reopened by this pull" "$T/err"; }
 not_reopened() { [ "$rc" = 0 ] && ! grep -q "is reopened by this pull" "$T/err"; }
-h10() { grep -qE "^hint: when ready, stage the code and run '(AIT_SESSION=[^ ]+ )?ait fulfill $D -m <why>' to get the tasks\$" "$T/err"; }
+h10() { grep -qE "^hint: when ready, stage the code and run '(AIT_SESSION=[^ ]+ )?ait fulfill $D -m <why>'\$" "$T/err"; }
 no_h10() { [ "$rc" = 0 ] && ! grep -qF "ait fulfill $D -m <why>" "$T/err"; }
 
 # U1  a1: D c-A ; main: D c-E
