@@ -701,4 +701,9 @@ P=$(printf 'line\nbreak'); B=$(git rev-parse HEAD:src/stock.c)
 { printf '0 0000000000000000000000000000000000000000\t%s\000' "$P"; printf '100644 %s 2\t%s\000' "$B" "$P"; } | git update-index -z --index-info
 run ait todo
 check "a path with LF is one warning line" sh -c "grep -qx \"warning: 'line?break' is unmerged; it is read as HEAD has it\" '$T/err'"
+# 5.10, 5.9a: a broken bundle whose spec file HEAD lost is mended by no command, so it gets no hint
+prep
+tick; ait offer src/stock.c specs/w.yaml --force -m o >/dev/null 2>&1
+git rm -q specs/w.yaml; tick; run git commit -qm gone --no-verify
+check "a lost spec file at HEAD: warned, with no hint" sh -c "grep -q 'spec files do not match the contract' '$T/err' && ! grep -q '^hint:' '$T/err'"
 done_testing

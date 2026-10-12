@@ -93,6 +93,8 @@ void suggest(const char *fmt, ...)
 	va_start(ap, fmt);
 	strbuf_vaddf(&sb, fmt, ap);
 	va_end(ap);
+	if (!sb.len)
+		return;
 	string_list_split(&lines, sb.buf, "\n", -1);
 	for_each_string_list_item(line, &lines) {
 		if (string_list_has_string(&said, line->string))
@@ -1033,7 +1035,7 @@ static int post_hook(const char *before)
 		if (string_list_has_string(&old, item->string))
 			continue;
 		warning("%s", ((struct verdict *)item->util)->msg);
-		suggest("%s", head_repair(item->util, 0));
+		suggest("%s", head_repair(item->util, 0) ?: "");
 	}
 	for (i = 0; before && i < now.nr; i++) {
 		struct version *then = version_in(before, now.r[i]->id), *v_now = version_in(head, now.r[i]->id);
@@ -1373,7 +1375,7 @@ static int cmd_todo(int argc, const char **argv)
 			warning("skipping malformed '%s' at 'index'", path);
 			/* 5.10: one HEAD has too is HEAD's error, mended as such */
 			if (!strcmp(blob_at(t, path) ?: "", blob_at(ht, path) ?: "") && malformed(&one, &v))
-				suggest("%s", head_repair(&v, 0));
+				suggest("%s", head_repair(&v, 0) ?: "");
 			continue;
 		}
 		if (unusable(r, t)) {

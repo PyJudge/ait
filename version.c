@@ -560,6 +560,13 @@ char *head_repair(struct verdict *v, int rerun)
 	} else if (strcmp(v->word, "incomplete")) {
 		/* back to GOOD; a broken bundle (5.8 E_INCOMPLETE) needs no restore, as the gate pins it again (6.2) */
 		entangled_restore(v, &hint);
+	} else if (v->k) {
+		struct string_list_item *f;
+
+		/* but not a spec file HEAD lost: no hint, as no command mends that (5.9a) */
+		for_each_string_list_item(f, &v->k->f[FILES])
+			if (!file_entry(head_tree(), scope_path(f->string)))
+				return NULL;
 	}
 	if (commit)
 		strbuf_addf(&hint, "%s%s", hint.len ? ", then " : "run ", commit);
