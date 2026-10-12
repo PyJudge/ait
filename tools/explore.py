@@ -202,10 +202,12 @@ def replay(run, line, cmd):
     it there is its own to say (5.9a local changes, user decision 52)
     """
     ok, err = taken(run, cmd, False)
-    if ok or taken(run, cmd, True)[0]:
+    first = next((l for l in err.splitlines() if l.startswith(("error:", "fatal:"))), "")
+    # local changes stop it, which it says itself (choice 228), or it runs once they are set aside
+    if ok or re.match(r"error: (uncommitted changes in|contract changes and code changes are mixed)", first) or \
+            taken(run, cmd, True)[0]:
         return None
     # a refusal about another contract than the hint's is that command's own report (user decision 52)
-    first = next((l for l in err.splitlines() if l.startswith(("error:", "fatal:"))), "")
     named = set(re.findall(r"[DOX][0-9a-f]{12}", first))
     if named and not named & set(re.findall(r"[DOX][0-9a-f]{12}", cmd)):
         return None
