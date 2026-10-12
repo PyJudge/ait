@@ -864,19 +864,19 @@ static char *location_arg(struct scope_location *place)
 }
 
 /*
- * the path of T that PATH ("DIR/" naming DIR) names on a case-insensitive
- * filesystem (core.ignorecase) without being it, or NULL: git add stages
- * nothing for such a path, and git's history would get both
+ * the path of T that PATH names on a case-insensitive filesystem
+ * (core.ignorecase) without being it, or NULL: git add stages nothing for
+ * such a path, and git's history would get both
  */
 const char *case_twin(struct tree *t, const char *path)
 {
 	static int ignorecase = -1;
-	size_t i, len = strlen(path) - ends_with(path, "/");
+	size_t i;
 
 	if (ignorecase < 0)
 		ignorecase = config_true("core.ignorecase");
 	for (i = 0; ignorecase && i < t->nr; i++)
-		if (!strncasecmp(t->e[i].path, path, len) && !t->e[i].path[len] && strncmp(t->e[i].path, path, len))
+		if (!strcasecmp(t->e[i].path, path) && strcmp(t->e[i].path, path))
 			return t->e[i].path;
 	return NULL;
 }
@@ -1163,7 +1163,7 @@ char *moved_arg(struct record *r, struct tree *t)
 }
 
 /*
- * spec 5.9a and 5.9 d: what reopening K reopens with it, as HEAD has them: K,
+ * spec 5.9a and 5.9 d: what reopening K reopens with it, as S has them: K,
  * and when K is a current demand, each current offer that undertakes it
  */
 void reopen_set(struct state *s, struct record *k, struct string_list *out)
@@ -1176,8 +1176,6 @@ void reopen_set(struct state *s, struct record *k, struct string_list *out)
 		for (i = 0; i < s->nr; i++) {
 			struct record *o = partner(s, s->r[i], k);
 
-			if (!o)
-				o = partner(s, s->r[i]->old, k);
 			if (o && (was_current(o) || is_current(o)) && !unsorted_string_list_has_string(out, o->id))
 				string_list_append(out, o->id)->util = o;
 		}

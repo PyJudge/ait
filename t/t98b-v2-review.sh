@@ -663,4 +663,41 @@ B=$(ait session open --agent b 2>/dev/null)
 printf '#!/bin/sh\necho mine\n' > "$(git rev-parse --git-path hooks)/pre-commit"
 run env AIT_SESSION="$B" ait init
 check "the hook line of a non-default session's hint has no prefix" sh -c "grep -qF \"run 'ait hook pre-commit'\" '$T/err' && ! grep -q \"'AIT_SESSION=[^ ']* ait hook\" '$T/err'"
+# 5.9 d as the request has it: a link the request releases takes no offer along when the demand is reopened
+prep
+tick; ait future demand src/order.c src/stock.c specs/w.yaml -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future offer src/stock.c specs/p.yaml as o undertake "$D" o -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \(O[^ ]*\) o$/\1/p' "$T/out")
+tick; ait fulfill "$O" --force -m both >/dev/null 2>&1
+run ait release "$D" "$O" future amend "$D" - src/nope.c - -m change
+check "a reopen after a release in the same request: the offer stays" sh -c "grep -q 'if it does not exist yet' '$T/err' && ! grep -q 'future amend $O' '$T/err'"
+
+# 7.1.8: an older version whose scope the tree no longer has is not reached, so no command
+prep
+printf 'a\n' > a.c; printf 'b\n' > b.c; git add a.c b.c; tick; git commit -qm callers --no-verify
+tick; ait demand a.c src/stock.c specs/w.yaml --force -m old >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future amend "$D" b.c - - -m reopen >/dev/null 2>&1; REOPEN=$(git rev-parse HEAD)
+git rm -q a.c b.c; tick; git commit -qm removed --no-verify
+tick; run git revert --no-edit "$REOPEN"
+check "the older consumer is gone: told, with no command" sh -c "grep -qF \"put '$D' back\" '$T/err' && ! grep -q 'take it back' '$T/err'"
+
+# 7.6.1: contract commit's noop names every contract path the work tree has otherwise, untracked inputs too
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >/dev/null 2>&1
+printf 'body: changed\ninputs: [tests/new.sh]\n' > specs/p.yaml; mkdir -p tests; echo t > tests/new.sh
+run ait contract commit -m noop
+check "noop names the new input" sh -c "grep -qx noop '$T/out' && grep -qx 'unstaged tests/new.sh' '$T/out'"
+check "and its stage hint is taken" follows "stage it"
+
+# 7.3.3: a case twin is a path as git lists it, so a directory scope gets no file-shaped hint
+prep
+git config core.ignorecase true
+run ait future offer SRC/ specs/p.yaml -m d
+check "a directory spelled otherwise: refused with no hint" sh -c "[ $rc = 128 ] && ! grep -q 'give it as git has it' '$T/err'"
+
+# 5.6: a message is one line, whatever a value in it holds, a warning too
+prep
+P=$(printf 'line\nbreak'); B=$(git rev-parse HEAD:src/stock.c)
+{ printf '0 0000000000000000000000000000000000000000\t%s\000' "$P"; printf '100644 %s 2\t%s\000' "$B" "$P"; } | git update-index -z --index-info
+run ait todo
+check "a path with LF is one warning line" sh -c "grep -qx \"warning: 'line?break' is unmerged; it is read as HEAD has it\" '$T/err'"
 done_testing

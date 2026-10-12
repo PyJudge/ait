@@ -2080,7 +2080,7 @@ static void noop_left(struct request *q)
 	state_load(&hs, q->ht);
 	worktree_state(q, &ws);
 	z_paths(git("diff --name-only -z"), &differ);
-	z_paths(git("ls-files --others --exclude-standard -z -- .ait"), &differ);
+	z_paths(git("ls-files --others --exclude-standard -z"), &differ);
 	for_each_string_list_item(item, &differ)
 		if (contract_path(&hs, item->string) || contract_path(&ws, item->string)) {
 			printf("unstaged %s\n", item->string);

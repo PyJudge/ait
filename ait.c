@@ -106,31 +106,42 @@ void suggest(const char *fmt, ...)
 	}
 }
 
-/* git's error()/die() routines and a hint, with the exit code of spec 5.7 */
 /* warnings a command decided before it ends, written before its error when it refuses, as git writes warnings first */
 void (*before_error)(void);
 
-void reject(int code, const char *hint, const char *fmt, ...)
+/*
+ * 5.6: a message is one line, whatever a value in it holds; git's vreportf
+ * (usage.c:27) keeps LF and TAB, so ait's errors and warnings are written here
+ */
+static void report_line(const char *prefix, const char *fmt, va_list ap)
 {
 	struct strbuf msg = STRBUF_INIT;
+	size_t i;
+
+	strbuf_vaddf(&msg, fmt, ap);
+	for (i = 0; i < msg.len; i++)
+		if ((unsigned char)msg.buf[i] < 0x20)
+			msg.buf[i] = '?';
+	fprintf(stderr, "%s%s\n", prefix, msg.buf);
+}
+
+static void warn_line(const char *fmt, va_list ap)
+{
+	report_line("warning: ", fmt, ap);
+}
+
+/* git's fatal: and error: forms and a hint, with the exit code of spec 5.7 */
+void reject(int code, const char *hint, const char *fmt, ...)
+{
 	void (*warn)(void) = before_error;
 	va_list ap;
-	size_t i;
 
 	before_error = NULL;
 	if (warn)
 		warn();
 	va_start(ap, fmt);
-	strbuf_vaddf(&msg, fmt, ap);
+	report_line(code == 128 ? "fatal: " : "error: ", fmt, ap);
 	va_end(ap);
-	/* 5.6: a message is one line, whatever a value in it holds; git's vreportf does so for other controls */
-	for (i = 0; i < msg.len; i++)
-		if ((unsigned char)msg.buf[i] < 0x20)
-			msg.buf[i] = '?';
-	if (code == 128)
-		die_message("%s", msg.buf);
-	else
-		error("%s", msg.buf);
 	if (code == 129)
 		fputs("usage: ait <command> [<args>]\n", stderr);
 	if (hint)
@@ -944,7 +955,8 @@ void fulfill_hint(struct state *s, struct record *p, struct tree *t)
  * WAS (the state before) has K's partners and AT its code: the spec files NOW
  * pins restored as HEAD has them, then the ait commands; NULL when no rule
  * leads there: an ended contract stays ended (2.3.2), a drop changes only by
- * future drop (choice 161), and versions that mean the same leave nothing
+ * future drop (choice 161), a scope AT no longer has is not given again, and
+ * versions that mean the same leave nothing
  */
 static char *back_commands(struct state *was, struct version *then, struct version *now, struct tree *at)
 {
@@ -968,7 +980,8 @@ static char *back_commands(struct state *was, struct version *then, struct versi
 		return xstrfmt("run 'ait %s %s %s -m <why>'", in_state(n, "released") ? "release" : "undertake",
 			       link_end_id(t, 0), link_end_id(t, 1));
 	}
-	if (*t->id == 'X' || !is_live(t) || !is_live(n) || !files_match(n, head_tree()))
+	if (*t->id == 'X' || !is_live(t) || !is_live(n) || !files_match(n, head_tree()) || strstr(consumer, "<scope>") ||
+	    strstr(provider, "<scope>"))
 		return NULL;
 	for_each_string_list_item(item, &n->f[FILES]) {
 		struct entry *e = file_entry(at, scope_path(item->string));
@@ -1465,6 +1478,7 @@ int main(int argc, const char **argv)
 
 	/* the standard descriptors are open before anything, as in git's common main (common-init.c:45) */
 	sanitize_stdfds();
+	set_warn_routine(warn_line);
 
 	if (argc < 2) {
 		puts("usage: ait <command> [<args>]");
