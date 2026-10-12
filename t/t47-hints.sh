@@ -195,7 +195,7 @@ check "9: unchanged" test "$(snapshot)" = "$before"
 check "9: touch K" out_has "touch $K"
 check "9: tasks K:nobroken and O9:p" test "$(grep '^task ' "$T/out" | sort)" = "$(printf 'task %s:specs/nobroken.yaml exec\ntask %s:specs/p.yaml prompt\n' $K $O9 | sort)"
 check "9: warning: K has changes not in HEAD" err_has "warning: '$K' has changes not in HEAD: '$RAC' on 'refs/heads/a'"
-check "9: hint: first commit or set aside your changes" err_has "first commit or set aside your changes"
+check "9: H9 says nothing of the staged change; the pull does (choice 228)" not err_has "first commit or set aside your changes"
 check "9: hint: ait contract pull K" err_has "ait contract pull $K"
 before=$(snapshot)
 tick; run ait contract pull $K
@@ -224,7 +224,7 @@ check "11: A's R2" test $rc = 0
 cd "$T/wb"; echo 'body: other' >specs/low.yaml; git add specs/low.yaml
 setl src/stock.c 1 s1x; git add src/stock.c
 expect_err "11: B fulfills D" E_NEEDS_RESULTS ait fulfill $D -m m
-check "11: H9 hint: commit or set aside your changes to specs/low.yaml" err_has "commit or set aside your changes to 'specs/low.yaml' before you pull"
+check "11: H9 says nothing of the staged specs/low.yaml (choice 228)" not err_has "before you pull"
 check "11: H9 hint: ait contract pull D" err_has "hint: to include them, run 'ait contract pull $D'"
 before=$(snapshot)
 tick; run ait contract pull $D
@@ -232,7 +232,7 @@ check "11: pull: E_DIRTY, your local changes would be overwritten" fails 1 "erro
 check "11: unchanged" test "$(snapshot)" = "$before"
 git rm -q --cached specs/low.yaml
 expect_err "11: B fulfills D (untracked specs/low.yaml)" E_NEEDS_RESULTS ait fulfill $D -m m
-check "11: H9 hint: move or remove specs/low.yaml" err_has "move or remove 'specs/low.yaml' before you pull"
+check "11: H9 says nothing of the untracked specs/low.yaml (choice 228)" not err_has "before you pull"
 check "11: H9 hint: ait contract pull D (untracked)" err_has "ait contract pull $D"
 before=$(snapshot)
 tick; run ait contract pull $D

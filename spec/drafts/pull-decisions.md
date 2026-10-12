@@ -736,4 +736,5 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
 225. **noop의 `unstaged` 목록은 추적되지 않는 계약 경로를 모두 넣는다**(7.6.1 "7.5.1의 집합", 검수 B5): `.ait/` 아래로 제한하던 조건을 지웠다. 그래서 정의가 새로 선언한 input도 그 stage hint에 들어간다.
 226. **메시지는 경고까지 한 행이다**(5.6, 검수 B5): `reject()`에만 있던 한 행 처리를 fatal·error·warning이 함께 쓰는 한 함수로 옮겼다. git의 vreportf는 LF와 TAB을 그대로 둔다(usage.c:27).
 227. **환경 정의(2.5.3)는 기능을 얼리는 동안 `not supported`로 둔다**(검수 B5가 지적한 명세와의 차이). ait-mini에서 온 제한이고, v15는 1단계에서 형식을 검사해 확인 요청에 싣는다. 얼림을 푼 뒤의 일로 남긴다(사용자 확인 필요).
+228. **5.9a의 로컬 변경 규칙을 지웠다**(상태 탐색기의 반례: 거절된 contract commit이 남긴 stage 위에서 todo의 H5 명령이 `E_DIRTY`에 막혔다). 그 규칙은 다른 명령이 로컬 변경 때문에 거절될지를 미리 맞히는 약속이어서 결정 52와 어긋났다. 그래서 `unstage … first`·`stage … again` 접두어(E_GUARD, `E_DIRTY`의 hint, 5.10 복원, 코드 먼저 형)와 H9 앞의 로컬 변경 hint를 지웠고, 그 명령이 `E_DIRTY`·`E_MIXED`로 스스로 알린다. 거절 자신의 이유를 고치는 hint(E_GUARD의 `unstage 'PATH' and commit the rest`, E_MIXED의 `unstage the code`)는 남는다. contract commit에는 코드 먼저 형을 쓰지 않는다(그 요청이 stage한 것 때문에 `ait commit`이 받지 않는다). 선택 183·205·208의 해당 부분을 대신한다. C·헤더 65행이 줄었다.
 

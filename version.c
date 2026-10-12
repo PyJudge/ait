@@ -540,11 +540,10 @@ static void entangled_restore(struct verdict *v, struct strbuf *hint)
 
 /*
  * 5.10: the hint that mends HEAD's error V, then contract commit: what is no
- * record goes, the init file is written again, records go back to GOOD. The
- * staged CODE of a command that checks it is set aside for that commit and
- * staged again (5.9a local changes); RERUN runs the command again.
+ * record goes, the init file is written again, records go back to GOOD;
+ * RERUN runs the command again.
  */
-char *head_repair(struct verdict *v, struct string_list *code, int rerun)
+char *head_repair(struct verdict *v, int rerun)
 {
 	struct strbuf hint = STRBUF_INIT;
 	const char *commit = "'ait contract commit -m <why>'";
@@ -562,12 +561,8 @@ char *head_repair(struct verdict *v, struct string_list *code, int rerun)
 		/* back to GOOD; a broken bundle (5.8 E_INCOMPLETE) needs no restore, as the gate pins it again (6.2) */
 		entangled_restore(v, &hint);
 	}
-	if (commit && code && code->nr)
-		strbuf_addf(&hint, "%sunstage %s first", hint.len ? ", " : "", quoted_paths(code));
 	if (commit)
 		strbuf_addf(&hint, "%s%s", hint.len ? ", then " : "run ", commit);
-	if (commit && code && code->nr)
-		strbuf_addf(&hint, ", stage %s again", quoted_paths(code));
 	if (rerun)
 		strbuf_addstr(&hint, ", then rerun this command");
 	return strbuf_detach(&hint, NULL);
@@ -595,7 +590,7 @@ int accident_at_head(struct record *r, struct verdict *out)
 {
 	if (!accident_verdict(head, r, out))
 		return 0;
-	out->hint = head_repair(out, NULL, 0);
+	out->hint = head_repair(out, 0);
 	return 1;
 }
 
@@ -665,7 +660,7 @@ int head_error(struct verdict *v)
 
 	state_load(&s, head_tree());
 	if (check_state(&s, head_tree(), v)) {
-		v->hint = head_repair(v, NULL, 0);
+		v->hint = head_repair(v, 0);
 		return v->code;
 	}
 	for (i = 0; i < s.nr; i++)

@@ -139,9 +139,7 @@ static void status_paths(const char *out, struct string_list *paths)
  */
 void precondition(int allow_unborn, int contracts_staged)
 {
-	struct string_list paths = STRING_LIST_INIT_DUP, code = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	struct state hs = { 0 };
+	struct string_list paths = STRING_LIST_INIT_DUP;
 	const char *op = git_op();
 
 	if (op)
@@ -157,34 +155,9 @@ void precondition(int allow_unborn, int contracts_staged)
 	status_paths(git("status --porcelain -z --untracked-files=all -- .ait"), &paths);
 	if (!paths.nr)
 		return;
-	/* 5.9a, local changes: contract commit takes no staged code, so it is unstaged first */
-	state_load(&hs, head_tree());
-	z_paths(git("diff --cached --name-only -z HEAD"), &code);
-	for (item = code.items; item < code.items + code.nr; )
-		if (contract_path(&hs, item->string))
-			string_list_remove(&code, item->string, 0);
-		else
-			item++;
-	reject(1, xstrfmt("%scommit them through ait: %s\nor drop them: restore '.ait/' to HEAD's version and remove the new files there",
-			  code.nr ? xstrfmt("unstage %s first; then ", quoted_paths(&code)) : "", through_ait(&paths)),
+	reject(1, xstrfmt("commit them through ait: %s\nor drop them: restore '.ait/' to HEAD's version and remove the new files there",
+			  through_ait(&paths)),
 	       "uncommitted changes in .ait/");
-}
-
-/*
- * 5.10 for fulfill and commit: HEAD's error V is mended first by contract
- * commit, which takes no code, so the staged code is set aside for it and
- * staged again for this command to check (5.9a local changes)
- */
-static char *mend_first(struct request *q, struct verdict *v)
-{
-	struct string_list paths = STRING_LIST_INIT_DUP, code = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-
-	tree_diff(q->ht, q->noted, &paths);
-	for_each_string_list_item(item, &paths)
-		if (!contract_path(&q->s, item->string))
-			string_list_append(&code, item->string);
-	return head_repair(v, &code, 1);
 }
 
 /* 5.10: a malformed record cannot be read; the request stops with its error, mended as from this request */
@@ -194,7 +167,7 @@ static struct record *readable(struct request *q, struct record *r)
 	struct verdict v;
 
 	if (malformed(&one, &v))
-		reject(v.code, q->gate ? head_repair(&v, NULL, 0) : mend_first(q, &v), "%s", v.msg);
+		reject(v.code, head_repair(&v, !q->gate), "%s", v.msg);
 	return r;
 }
 
@@ -585,26 +558,14 @@ static void word(struct strbuf *sb, const char *w)
 }
 
 /*
- * 5.9a, code first for the gate: commit code that meets the condition with ait
- * commit, which would be E_MIXED while spec files are staged; so they go first
+ * 5.9a, code first for a helper, whose request takes no code (rule 3): commit
+ * code that meets the condition with ait commit; contract commit gets none, as
+ * ait commit takes nothing while that request is staged (5.2-3)
  */
 static char *code_first(struct request *q, const char *code)
 {
-	struct string_list paths = STRING_LIST_INIT_DUP, staged = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-
-	tree_diff(q->ht, q->noted, &paths);
-	for_each_string_list_item(item, &paths)
-		if (contract_path(&q->s, item->string))
-			string_list_append(&staged, item->string);
-	if (!q->direct)
-		return xstrfmt("%scommit code that meets it first: stage %s and run 'ait commit -m <why>', then rerun this command",
-			       staged.nr ? xstrfmt("unstage %s first; then ", quoted_paths(&staged)) : "", code);
-	/* contract commit: ait commit takes no change under .ait/ (5.2-3), so only the spec files step aside */
-	if (*git("status --porcelain -- .ait"))
-		return NULL;
-	return xstrfmt("unstage %s first; then commit code that meets it first: stage %s and run 'ait commit -m <why>', then %s",
-		       quoted_paths(&staged), code, through_ait(&staged));
+	return q->direct ? NULL :
+	       xstrfmt("commit code that meets it first: stage %s and run 'ait commit -m <why>', then rerun this command", code);
 }
 
 /* the words of clause C as a helper takes them; MOVED, when given, is its provider argument as it stands */
@@ -1015,7 +976,7 @@ static char *head_first(struct request *q, struct record *k)
 {
 	struct verdict v;
 
-	return accident_at_head(k, &v) ? mend_first(q, &v) : NULL;
+	return accident_at_head(k, &v) ? head_repair(&v, 1) : NULL;
 }
 
 /*
@@ -1188,10 +1149,10 @@ static char *gate_hint(struct request *q, struct verdict *v)
 	struct string_list set = STRING_LIST_INIT_DUP;
 
 	if (at_head(v))
-		return head_repair(v, NULL, !strcmp(v->word, "state"));
+		return head_repair(v, !strcmp(v->word, "state"));
 	/* 5.10: a malformed record that only this request has is fixed in it; what is no record goes */
 	if (!strcmp(v->word, "format") && v->k)
-		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v, NULL, 0) :
+		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v, 0) :
 		       xstrfmt("fix it in this request (see the error line), then %s", through_ait(single(xstrfmt(".ait/%s", v->k->id))));
 	if (!v->k)
 		return v->hint;
@@ -2255,20 +2216,20 @@ static int finish(struct request *q)
 	if (q->gate && (q->pull_tree ? check_records(&q->s, &v) : check_state(&q->s, q->v, &v)))
 		reject(v.code, gate_hint(q, &v), "%s", v.msg);
 	if (!q->gate && malformed(&q->s, &v)) {
-		v.hint = mend_first(q, &v);
+		v.hint = head_repair(&v, 1);
 		invalid(q, v);
 	}
 	/* an accident the request leaves is HEAD's; what it writes was judged from its base (5.10) */
 	for (k = 0; k < q->s.nr && !q->pull_tree; k++)
 		if (unchanged(q->s.r[k]) && accident_at_head(q->s.r[k], &v)) {
 			if (!q->gate)
-				v.hint = mend_first(q, &v);
+				v.hint = head_repair(&v, 1);
 			invalid(q, v);
 		}
 	code_present(q);
 	if (!q->gate && !q->missing.nr && check_state(&q->s, q->v, &v)) {
 		if (at_head(&v))
-			v.hint = mend_first(q, &v);
+			v.hint = head_repair(&v, 1);
 		invalid(q, v);
 	}
 	/* 5.13-8: commit asks for its session right before the results */

@@ -769,7 +769,7 @@ static int cmd_init(int argc, const char **argv)
 		struct state one = { 1, 1, &r };
 
 		if (malformed(&one, &v))
-			reject(v.code, head_repair(&v, NULL, 0), "%s", v.msg);
+			reject(v.code, head_repair(&v, 0), "%s", v.msg);
 		puts("init exists");
 		return 0;
 	}
@@ -862,7 +862,7 @@ static int pre_push(void)
 		if (!check_state(&s, tree_load(commit), &v))
 			continue;
 		if (!detached && (!strcmp(local, "HEAD") || !strcmp(local, branch)))
-			reject(v.code, head_repair(&v, NULL, 0), "%s", v.msg);
+			reject(v.code, head_repair(&v, 0), "%s", v.msg);
 		reject(v.code, xstrfmt("'%s' (%s) cannot be fixed here; where that commit is HEAD on a branch, run "
 				       "'ait contract commit -m <why>' to get the fix", local, commit), "%s", v.msg);
 	}
@@ -1033,7 +1033,7 @@ static int post_hook(const char *before)
 		if (string_list_has_string(&old, item->string))
 			continue;
 		warning("%s", ((struct verdict *)item->util)->msg);
-		suggest("%s", head_repair(item->util, NULL, 0));
+		suggest("%s", head_repair(item->util, 0));
 	}
 	for (i = 0; before && i < now.nr; i++) {
 		struct version *then = version_in(before, now.r[i]->id), *v_now = version_in(head, now.r[i]->id);
@@ -1097,10 +1097,9 @@ char *through_ait(struct string_list *paths)
  */
 static void guard(struct state *hs, struct string_list *paths)
 {
-	struct string_list blocked = STRING_LIST_INIT_DUP, code = STRING_LIST_INIT_DUP, staged = STRING_LIST_INIT_DUP;
-	struct string_list held = STRING_LIST_INIT_DUP, aside = STRING_LIST_INIT_DUP, none = STRING_LIST_INIT_DUP, *first;
+	struct string_list blocked = STRING_LIST_INIT_DUP, code = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	const char *through, *step;
+	const char *through;
 	char *index;
 	int plain;
 
@@ -1108,19 +1107,13 @@ static void guard(struct state *hs, struct string_list *paths)
 		string_list_append(contract_path(hs, item->string) ? &blocked : &code, item->string);
 	if (!blocked.nr)
 		return;
-	z_paths(git("diff --cached --name-only -z %s", head ? head : EMPTY_TREE), &staged);
-	for_each_string_list_item(item, &staged)
-		string_list_append(contract_path(hs, item->string) ? &held : &aside, item->string);
 	through = xstrfmt("commit them through ait: %s", through_ait(&blocked));
 	/* a plain commit runs its hooks on this worktree's index, -a, -i and paths on another (git v2.53.0 builtin/commit.c:476) */
 	index = realpath(line1(git("rev-parse --path-format=absolute --git-path index")), NULL);
 	plain = !hook_index || (index && !strcmp(hook_index, index));
 	/* with only contract paths in it, the commit goes through ait whatever index it took (5.8) */
-	step = !code.nr ? through : plain ? xstrfmt("unstage %s and commit the rest; then %s", quoted_paths(&blocked), through) :
-	       xstrfmt("commit without -a or paths: stage the code (%s) and commit it, then %s", quoted_paths(&code), through);
-	/* 5.9a, local changes: what this worktree's index has staged in the way of that step goes first */
-	first = !code.nr ? &aside : plain ? &none : &held;
-	reject(1, first->nr ? xstrfmt("unstage %s first; %s", quoted_paths(first), step) : step,
+	reject(1, !code.nr ? through : plain ? xstrfmt("unstage %s and commit the rest; then %s", quoted_paths(&blocked), through) :
+	       xstrfmt("commit without -a or paths: stage the code (%s) and commit it, then %s", quoted_paths(&code), through),
 	       "contract files cannot be changed by a plain commit: %s", quoted_paths(&blocked));
 }
 
@@ -1380,7 +1373,7 @@ static int cmd_todo(int argc, const char **argv)
 			warning("skipping malformed '%s' at 'index'", path);
 			/* 5.10: one HEAD has too is HEAD's error, mended as such */
 			if (!strcmp(blob_at(t, path) ?: "", blob_at(ht, path) ?: "") && malformed(&one, &v))
-				suggest("%s", head_repair(&v, NULL, 0));
+				suggest("%s", head_repair(&v, 0));
 			continue;
 		}
 		if (unusable(r, t)) {

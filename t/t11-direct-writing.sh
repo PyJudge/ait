@@ -228,13 +228,13 @@ tick; expect_err "m: git commit from src/" E_GUARD sh -c 'cd src && exec git com
 check "m: hint unstages the spec file" err_has "unstage 'specs/q.yaml' and commit the rest; "
 back
 
-# n: a dirty .ait/ blocks ait commit; the staged code goes first (5.9a local changes)
+# n: a dirty .ait/ blocks ait commit; its hint is E_DIRTY's own (5.9a local changes: no prediction)
 edit ".ait/$DN" 's/^consumer .*/consumer src\/order.c:1-6/'
 echo s51 >> src/stock.c; git add src/stock.c
 desc="n: ait commit with .ait/Dn dirty"
 expect_unchanged expect_err "$desc" E_DIRTY ait commit -m x
 check "n: uncommitted changes in .ait/" err_has "error: uncommitted changes in .ait/"
-check "n: unstage the code before the keep hint" err_before "unstage 'src/stock.c' first" "ait contract add .ait/$DN"
+check "n: the keep hint alone" sh -c "grep -q \"commit them through ait: 'ait contract add .ait/$DN'\" '$T/err' && ! grep -q 'unstage' '$T/err'"
 back
 
 # o: a file taken out of the definition is no related path (7.5.2) but is in the commit (6.1)
@@ -268,7 +268,7 @@ edit ".ait/$DN" 's/^consumer .*/consumer src\/order.c:1-6/'
 git add ".ait/$DN"
 q_def q2; echo s51 >> src/stock.c
 tick; expect_err "q2: git commit -qam x" E_GUARD git commit -qam x
-check "q2: unstage .ait/Dn before commit without -a" err_before "unstage '.ait/$DN' first" "commit without -a or paths"
+check "q2: the -a form, as q" sh -c "grep -q 'commit without -a or paths' '$T/err' && ! grep -q \"unstage '.ait/$DN' first\" '$T/err'"
 ADD=$(sed -n "s/.*then commit them through ait: 'ait contract add \([^']*\)'.*/\1/p" "$T/err" | head -1)
 git reset -q -- ".ait/$DN"
 git add src/stock.c; tick; run git commit -qm code

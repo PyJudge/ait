@@ -158,8 +158,8 @@ check "9: future offer gives the restore hint" restore_hint "$O" "$G"
 echo s51 >> src/stock.c; git add src/stock.c
 desc="9: fulfill O"
 expect_unchanged expect_err "$desc" E_FORMAT ait fulfill "$O" -m m
-# T13-9 (5.9a, local changes): contract commit takes no code, and the fulfill to rerun checks it
-check "9: fulfill O hints restore, unstage, contract commit, stage again, rerun" err_in_order "restore '.ait/$O' as in '$G'" "unstage 'src/stock.c' first" "ait contract commit -m <why>" "stage 'src/stock.c' again" "then rerun this command"
+# T13-9 (5.9a): the repair, then the fulfill again; staged code that stops contract commit is its E_MIXED's to say
+check "9: fulfill O hints restore, contract commit, rerun" err_in_order "restore '.ait/$O' as in '$G'" "ait contract commit -m <why>" "then rerun this command"
 git reset -q --hard
 check "9: HEAD is still Cb" [ "$(git rev-parse HEAD)" = "$CB" ]
 # T13-9 (7.1.6): pre-push checks what is pushed; only HEAD's branch is fixed here

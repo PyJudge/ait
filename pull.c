@@ -1787,11 +1787,8 @@ static char *first_ref(const char *commit)
 void changes_not_in_head(struct string_list *ids)
 {
 	struct pull p = PULL_INIT, trial;
-	struct string_list sources = STRING_LIST_INIT_DUP, written = STRING_LIST_INIT_DUP;
+	struct string_list sources = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *l;
-	struct state hs = { 0 };
-	struct verdict v;
-	int merge = 0, blocked = 0;
 
 	if (!head || !ids->nr)
 		return;
@@ -1829,17 +1826,6 @@ void changes_not_in_head(struct string_list *ids)
 	if (!trial.selections.nr)
 		return;
 	complete_names(&p, &trial, &sources);
-	for_each_string_list_item(item, &trial.ends) {
-		const char *base = line1(git("merge-base %s %s", head, item->string));
-
-		merge |= strcmp(base, head) || trial.ends.nr > 1;
-		tree_diff(tree_load(base), tree_load(item->string), &written);
-	}
-	state_load(&hs, head_tree());
-	for_each_string_list_item(item, &written)
-		blocked = blocked || local_change(&hs, item->string, &v);
-	if (blocked || (merge && staged_merge(&v)))
-		suggest("%s", v.hint);
 	suggest("%s", choices_hint(&trial, 0) ?: xstrfmt("to include them, run '%s'", pull_command(&trial, NULL, NULL, NULL)));
 }
 

@@ -153,7 +153,7 @@ void reopeners(const char *id, struct string_list *agents);
 int my_promise(struct record *r, const char *me, struct string_list *by);
 int newly_unverified(struct record *r, struct tree *t, const struct string_list *parents);
 const char *unverified_since(struct record *r, const struct string_list *tips);
-char *head_repair(struct verdict *v, struct string_list *code, int rerun);
+char *head_repair(struct verdict *v, int rerun);
 void base_versions(struct state *s, struct string_list *written);
 int accident_at(const char *commit, const char *id);
 int accident_at_head(struct record *r, struct verdict *out);

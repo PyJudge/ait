@@ -39,11 +39,11 @@ tick; ait future offer src/stock.c specs/p.yaml -m o >/dev/null 2>&1
 echo 'body: updated' > specs/p.yaml; git add specs/p.yaml; setl src/order.c 1 o1x
 tick; run git commit -qam combined
 check "git commit -a: E_GUARD" fails 1 "error: contract files cannot be changed by a plain commit: 'specs/p.yaml'"
-check "the hint is the -a form, after unstaging what this index staged" err_has "hint: unstage 'specs/p.yaml' first; commit without -a or paths: stage the code ('src/order.c') and commit it, then commit them through ait: 'ait contract add specs/p.yaml' and 'ait contract commit -m <why>'"
+check "the hint is the -a form" err_has "hint: commit without -a or paths: stage the code ('src/order.c') and commit it, then commit them through ait: 'ait contract add specs/p.yaml' and 'ait contract commit -m <why>'"
 check "no 'and commit the rest'" not err_has "and commit the rest"
 git add src/order.c
 tick; run git commit -qam all-staged
-check "git commit -a with everything staged is still -a" err_has "hint: unstage 'specs/p.yaml' first; commit without -a or paths:"
+check "git commit -a with everything staged is still -a" err_has "hint: commit without -a or paths:"
 tick; run git commit -qm plain
 check "a plain commit runs on this index: unstage and commit the rest" err_has "hint: unstage 'specs/p.yaml' and commit the rest;"
 
@@ -72,7 +72,7 @@ check "pull: E_INCOMPLETE at HEAD" fails 1 "error: spec files do not match the c
 check "the same hint" err_has "hint: run 'ait contract commit -m <why>'"
 echo x >> src/stock.c; git add src/stock.c
 run ait fulfill "$O" -m f
-check "fulfill sets the staged code aside around it" err_has "hint: unstage 'src/stock.c' first, then 'ait contract commit -m <why>', stage 'src/stock.c' again, then rerun this command"
+check "fulfill: the repair, then the fulfill again" err_has "hint: run 'ait contract commit -m <why>', then rerun this command"
 git reset -q src/stock.c
 tick; expect_ok "as the hint says, the gate pins it again" ait contract commit -m pin
 check "the bundle is whole" test "$(git show HEAD:.ait/$O | grep -c "$(git rev-parse HEAD:specs/p.yaml)")" = 1
@@ -127,7 +127,7 @@ tick; git commit -qam revive --no-verify
 echo x >> src/stock.c; git add src/stock.c
 tick; run ait fulfill "$O" --force -m f
 check "fulfill of a contract revived by hand: E_STATE from GOOD's cancelled version" fails 1 "error: not allowed: '$O' cannot go from cancelled to current"
-check "hint 1: HEAD's accident is restored first, then the fulfill is run again" err_has "hint: restore '.ait/$O' as in '$G', unstage 'src/stock.c' first, then 'ait contract commit -m <why>', stage 'src/stock.c' again, then rerun this command"
+check "hint 1: HEAD's accident is restored first, then the fulfill is run again" err_has "hint: restore '.ait/$O' as in '$G', then 'ait contract commit -m <why>', then rerun this command"
 git reset -q src/stock.c; git checkout -q src/stock.c
 git checkout "$G" -- .ait/$O
 tick; run ait contract commit -m fix
@@ -547,14 +547,15 @@ ait contract add specs/p.yaml tests/new.sh >/dev/null
 tick; expect_ok "contract commit of a definition declaring a new input" ait contract commit -m declare
 check "which it pins" sh -c "git show HEAD:.ait/$O | grep -q '^file tests/new.sh .* input'"
 
-# 5.8 E_GUARD, 5.9a local changes: code this worktree's index staged goes first, as contract commit takes no code
+# 5.8 E_GUARD, 5.9a local changes: the hint is E_GUARD's own; code staged here is contract commit's E_MIXED to say
 prep
 tick; ait future offer src/stock.c specs/p.yaml -m o >/dev/null 2>&1
 echo x >> src/order.c; git add src/order.c; echo 'body: changed' > specs/p.yaml
 tick; run git commit -qm only specs/p.yaml
-check "only contract paths with code staged here: unstage it first" err_has "hint: unstage 'src/order.c' first; commit them through ait: 'ait contract add specs/p.yaml' and 'ait contract commit -m <why>'"
-git restore --staged src/order.c; ait contract add specs/p.yaml >/dev/null
-tick; expect_ok "and the rest of the hint runs" ait contract commit -m x
+check "only contract paths: through ait, nothing predicted" err_has "hint: commit them through ait: 'ait contract add specs/p.yaml' and 'ait contract commit -m <why>'"
+ait contract add specs/p.yaml >/dev/null
+tick; run ait contract commit -m x
+check "and contract commit says the staged code itself" fails 1 "error: contract changes and code changes are mixed: 'src/order.c'"
 # 2.1.2a: the init file is no record, so contract commit keeps it as written, and only what is there is removed
 prep
 rm .ait/init; mkdir .ait/init; echo x > .ait/init/x; git add -A; tick; git -c core.hooksPath=/dev/null commit -qm directory

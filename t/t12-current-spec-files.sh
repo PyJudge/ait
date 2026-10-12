@@ -33,7 +33,7 @@ tick; expect_unchanged expect_err "$desc" E_NEEDS_RESULTS ait contract commit -m
 check "1: the task is O:specs/c.yaml" [ "$(tasks_of)" = "task $O:specs/c.yaml exec" ]
 tick; with_r fail ait contract commit -m m
 check "1: -r fail is E_CHECK_FAILED" sh -c "[ $rc = 1 ] && head -1 '$T/err' | grep -q '^error: check failed:'"
-check "1: code-first hint in order" err_in_order "unstage 'tests/c.sh' first" "stage <your code> and run 'ait commit -m <why>'" "ait contract add tests/c.sh" "ait contract commit -m <why>"
+check "1: no code-first hint, as ait commit takes nothing while this request is staged (5.9a)" sh -c "! grep -q 'commit code that meets it first' '$T/err'"
 check "1: reopen hint in the request" err_has "to change '$O' without a check, reopen it: set 'state future' in '.ait/$O', then 'ait contract add .ait/$O' and 'ait contract commit -m <why>'"
 check "1: no separate future amend O" sh -c "! grep -qF 'ait future amend $O' '$T/err'"
 
