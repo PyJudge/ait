@@ -25,19 +25,23 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 AIT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CODE = ["src/a.c", "src/b.c", "lib/c.c"]
-DEFS = ["specs/p.yaml", "specs/q.yaml"]
+DEFS = ["specs/p.yaml", "specs/q.yaml", "specs/x.yaml"]
 READERS = ("todo", "peek", "session")
 SETUP = """git init -q r && cd r
-mkdir src lib specs
+mkdir src lib specs tests
 for f in src/a.c src/b.c lib/c.c; do seq 1 20 | sed "s|^|$f |" > $f; done
 echo 'body: p holds' > specs/p.yaml; echo 'body: q holds' > specs/q.yaml
+printf '#!/bin/sh\nexit 0\n' > tests/x.sh; chmod +x tests/x.sh
+printf 'body: x passes\nengine: exec\ncommand: [./tests/x.sh]\ninputs: [tests/x.sh]\n' > specs/x.yaml
 git add -A && git commit -qm base
 ait init >/dev/null
-A=$(ait session open --agent a)
+SA=$(ait session open --agent a)
+SB=$(ait session open --agent b 2>/dev/null)
+echo "SA=$SA"; echo "SB=$SB"
 """
 
 
@@ -50,12 +54,14 @@ class Run:
         self.vars = {}
         self.n = 0
         self.seen = {"ok": 0, "refused": 0, "hints": 0}
-        self.env = dict(os.environ, HOME=root, GIT_CONFIG_NOSYSTEM="1", GIT_EDITOR=":",
+        self.env = dict(os.environ, HOME=root, GIT_CONFIG_NOSYSTEM="1", GIT_EDITOR=":", LC_ALL="C",
                         PATH=ait_dir + os.pathsep + os.environ["PATH"])
         self.env.pop("AIT_SESSION", None)
         with open(os.path.join(root, ".gitconfig"), "w") as f:
             f.write("[user]\n\tname = t\n\temail = t@t\n[init]\n\tdefaultBranch = master\n")
-        self.sh(SETUP, cwd=root)
+        for line in self.sh(SETUP, cwd=root)[1].splitlines():
+            name, _, value = line.partition("=")
+            self.vars[name] = value
 
     def tick(self):
         self.n += 60
@@ -64,7 +70,7 @@ class Run:
 
     def sh(self, script, cwd=None):
         self.tick()
-        script = re.sub(r"\$([DOX][0-9]+)(?![0-9])", lambda m: self.vars.get(m.group(1), m.group(0)), script)
+        script = re.sub(r"\$([DOX][0-9]+|S[AB])(?![0-9])", lambda m: self.vars.get(m.group(1), m.group(0)), script)
         p = subprocess.run(["sh", "-c", script], cwd=cwd or self.dir, env=self.env,
                            capture_output=True, text=True, errors="replace")
         return p.returncode, p.stdout, p.stderr
@@ -77,11 +83,11 @@ class Run:
             m = re.match(r"new ([DOX][0-9a-f]{12})", line)
             if m:
                 kind = m.group(1)[0]
-                k = sum(1 for v in self.vars if v[0] == kind)
+                k = len(self.ids(kind))
                 self.vars["%s%d" % (kind, k)] = m.group(1)
 
     def ids(self, kind):
-        return ["$" + v for v in sorted(self.vars) if v[0] == kind]
+        return ["$" + v for v in sorted(self.vars) if v[0] == kind and v[1:].isdigit()]
 
 
 def scope(rng):
@@ -105,6 +111,9 @@ def step(rng, run):
          rng.choice(["ait contract commit -m s", "git commit -qm s"])),
         ("", "git revert --no-edit HEAD"),
         ("", "ait todo"),
+        ("echo 'exit %d' >> tests/x.sh && ait contract add specs/x.yaml tests/x.sh >/dev/null" % (line % 2),
+         "ait contract commit -m e"),
+        ("git rm -q %s" % rng.choice(DEFS + ["tests/x.sh"]), "git commit -qm gone"),
     ]
     if k:
         x = rng.choice(k)
@@ -116,31 +125,49 @@ def step(rng, run):
             ("git add -A", "ait fulfill %s%s -m f" % (x, rng.choice(["", " --force"]))),
             ("sed -i.bak 's/^state .*/state %s/' .ait/%s && rm -f .ait/%s.bak && ait contract add .ait/%s >/dev/null"
              % (rng.choice(["future", "current", "cancelled"]), x, x, x), "ait contract commit -m w"),
+            ("sed -i.bak '%s' .ait/%s && rm -f .ait/%s.bak && ait contract add .ait/%s >/dev/null"
+             % (rng.choice(["s|^provider .*|provider src/b.c|", "s|^creator .*|creator z S000000000000|",
+                            "s|^prev .*|prev junk|", "/^file /d"]), x, x, x),
+             rng.choice(["ait contract commit -m w", "git commit -qm w --no-verify"])),
+            ("git add -A", "ait fulfill %s=%s --force -m f" % (x, rng.choice(CODE))),
+            ("", "ait contract pull %s" % x),
+            ("", "ait contract pull %s=HEAD -m p" % x),
             ("", "ait todo %s" % x),
         ]
     if d and o:
         x, y = rng.choice(d), rng.choice(o)
         choices += [("", "ait undertake %s %s -m u" % (x, y)), ("", "ait release %s %s -m r" % (x, y)),
                     ("", "ait future offer %s %s as o undertake %s o -m u" % (scope(rng), f, x))]
-    if rng.random() < 0.1:
+    if rng.random() < 0.15:
         b = "b%d" % rng.randint(0, 2)
         choices.append(("git switch -q -c %s 2>/dev/null || git switch -q %s" % (b, b), "git commit -q --allow-empty -m on"))
         choices.append(("git switch -q master", "git merge --no-edit %s || git merge --abort" % b))
-    return rng.choice(choices)
+        choices.append(("git switch -q master", "git merge --no-edit %s || { git checkout -q --theirs -- . 2>/dev/null; "
+                        "git add -A && git commit -q --no-edit; } || git merge --abort" % b))
+    setup, cmd = rng.choice(choices)
+    if cmd.startswith("ait ") and rng.random() < 0.15:
+        cmd = "AIT_SESSION=$SB " + cmd
+    return setup, cmd
 
 
 def hint_commands(err):
-    """I4's hints: one 'ait ...' command, nothing to fill in, no step before it."""
+    """
+    I4's hint: the first of an output, as the others follow it in turn (5.8),
+    when it gives one 'ait ...' command to run now with nothing to fill in;
+    advice for later or for a condition ('when ready', 'to need it again') is git's kind
+    """
     for line in err.splitlines():
-        if not line.startswith("hint: ") or re.search(r"then|restore|once|push|next time|when ready|<[^w]", line):
+        if not line.startswith("hint: "):
             continue
         cmds = re.findall(r"'(ait [^']*)'", line)
-        if len(cmds) == 1 and line.rstrip().endswith("'"):
+        if (len(cmds) == 1 and line.rstrip().endswith("'") and
+                not re.search(r"then|restore|once|push|next time|when ready|need it again|<[^w]", line)):
             yield line, cmds[0].replace("<why>", "x")
+        return
 
 
-def replay(run, line, cmd):
-    """I4: CMD run as given in a copy of the repository is taken."""
+def taken(run, cmd, clean):
+    """CMD run in a copy of the repository, its local changes set aside first when CLEAN: (taken, stderr)."""
     copy = tempfile.mkdtemp(dir=run.root)
     shutil.rmtree(copy)
     shutil.copytree(run.dir, copy, symlinks=True)
@@ -161,13 +188,23 @@ def replay(run, line, cmd):
     pointer = os.path.join(copy, ".git/ait/worktrees", key(top))
     if os.path.exists(pointer):
         os.rename(pointer, os.path.join(copy, ".git/ait/worktrees", key(new)))
+    if clean:
+        subprocess.run(["sh", "-c", "git reset -q --hard && git clean -qfdx"], cwd=copy, env=run.env,
+                       capture_output=True)
     p = subprocess.run(["sh", "-c", cmd], cwd=copy, env=run.env, capture_output=True, text=True, errors="replace")
     shutil.rmtree(copy)
-    # the command says itself that it needs results or that local changes stop it (5.9a, user decision 52)
-    if p.returncode == 0 or re.search(r"^error: (check results required|uncommitted changes in|contract changes and code "
-                                      r"changes are mixed)", p.stderr, re.M):
+    return p.returncode == 0 or "error: check results required" in p.stderr, p.stderr
+
+
+def replay(run, line, cmd):
+    """
+    I4: CMD is taken as given, or once local changes are set aside: what stops
+    it there is its own to say (5.9a local changes, user decision 52)
+    """
+    ok, err = taken(run, cmd, False)
+    if ok or taken(run, cmd, True)[0]:
         return None
-    return "I4 hint not taken: %s\n  -> exit %d\n%s" % (line, p.returncode, p.stderr)
+    return "I4 hint not taken: %s\n%s" % (line, err)
 
 
 def check(run, setup, cmd):
@@ -180,7 +217,8 @@ def check(run, setup, cmd):
     run.seen["refused" if rc else "ok"] += 1
     if rc not in (0, 1, 128, 129) or "BUG" in err or "AddressSanitizer" in err:
         return "I1 exit %d of '%s'\n%s" % (rc, cmd, err)
-    writes = cmd.startswith("ait ") and cmd.split()[1] not in READERS
+    bare = re.sub(r"^AIT_SESSION=\S+ ", "", cmd)
+    writes = bare.startswith("ait ") and bare.split()[1] not in READERS
     if writes and rc and run.snapshot() != before:
         return "I2 refused '%s' changed the repository\n%s" % (cmd, err)
     if writes and not rc and "\nrequest R" in "\n" + out:
@@ -248,15 +286,16 @@ def shrink(steps, violation, ait_dir):
 
 
 def script(steps, violation):
-    lines = ["#!/bin/sh", "# " + violation.splitlines()[0], "set -x", 'cd "$(mktemp -d)"',
-             'export HOME=$PWD GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=:',
+    lines = ["#!/bin/sh"] + ["# " + line for line in violation.splitlines()] + [
+             'cd "$(mktemp -d)"', 'export HOME=$PWD GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=: LC_ALL=C',
              "git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master",
-             SETUP.strip(), "bind() { for k in D O X; do i=$(set | grep -c \"^$k[0-9]*=\"); "
+             'N=0; tick() { N=$((N+60)); export GIT_COMMITTER_DATE="@$((1700000000+N)) +0000" GIT_AUTHOR_DATE="@$((1700000000+N)) +0000"; }',
+             "tick", SETUP.strip(), "bind() { for k in D O X; do i=$(set | grep -c \"^$k[0-9]*=\"); "
              "for id in $(sed -n \"s/^new \\($k[0-9a-f]*\\).*/\\1/p\" out); do eval \"$k$i=$id\"; i=$((i+1)); done; done; }"]
     for setup, cmd in steps:
         if setup:
-            lines.append(setup)
-        lines.append("%s > out 2> err; cat out err; bind" % cmd)
+            lines.append("tick; " + setup)
+        lines.append("tick; %s > out 2> err; cat out err; bind" % cmd)
     return "\n".join(lines) + "\n"
 
 
@@ -286,7 +325,7 @@ def main():
     with ProcessPoolExecutor(a.jobs) as pool:
         jobs = [pool.submit(explore, s, a.steps, os.path.abspath(a.ait), a.out)
                 for s in range(a.first, a.first + a.seeds)]
-        for job in jobs:
+        for job in as_completed(jobs):
             seed, found, seen = job.result()
             print("seed %d: %s" % (seed, found or "ok"), flush=True)
             bad += found is not None
