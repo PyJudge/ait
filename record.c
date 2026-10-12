@@ -298,7 +298,7 @@ int is_current(struct record *r)
 /* 1.3: R is a contract the agent ME made */
 int made_by(struct record *r, const char *me)
 {
-	return me && !strcmp(scope_path(val(r, CREATOR)), me);
+	return me && r && !strcmp(scope_path(val(r, CREATOR)), me);
 }
 
 /* current in HEAD: only such a provider shows "?changed" (spec 3.8) */
@@ -864,6 +864,59 @@ static char *location_arg(struct scope_location *place)
 }
 
 /*
+ * the path of T that PATH ("DIR/" naming DIR) names on a case-insensitive
+ * filesystem (core.ignorecase) without being it, or NULL: git add stages
+ * nothing for such a path, and git's history would get both
+ */
+const char *case_twin(struct tree *t, const char *path)
+{
+	static int ignorecase = -1;
+	size_t i, len = strlen(path) - ends_with(path, "/");
+
+	if (ignorecase < 0)
+		ignorecase = config_true("core.ignorecase");
+	for (i = 0; ignorecase && i < t->nr; i++)
+		if (!strncasecmp(t->e[i].path, path, len) && !t->e[i].path[len] && strncmp(t->e[i].path, path, len))
+			return t->e[i].path;
+	return NULL;
+}
+
+/* spec 3.3-3.4: a scope argument fixed at tree T, or NULL when T does not have it so */
+char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
+{
+	char *dir = ends_with(arg, "/") ? xstrndup(arg, strlen(arg) - 1) : scope_path(arg);
+	const char *path = dir;
+	int is_new = skip_prefix(arg, "new:", &path);
+	struct entry *e;
+
+	/* the shape of ARG was checked before (scope_shape, 5.13-1); here is what T has */
+	if (is_new && allow_new && !tree_get(t, path) && !case_twin(t, path))
+		return xstrdup(arg);
+	if (!strcmp(arg, "/") && allow_abs)
+		return xstrfmt("/ %s", t->oid);
+	e = tree_get(t, dir);
+	if (e && ends_with(arg, "/") && allow_abs && !strcmp(e->mode, "040000"))
+		return xstrfmt("%s %s", arg, e->oid);
+	if (!is_new && e && !ends_with(arg, "/") && blob_at(t, dir)) {
+		int start, end, lines = 0;
+		const char *text, *p;
+
+		if (range_of(arg, &start, &end)) {
+			text = blob_text(e->oid);
+			if (!text)
+				return NULL;
+			for (p = text; *p; p++)
+				lines += *p == '\n';
+			lines += p > text && p[-1] != '\n';
+			if (end > lines)
+				return NULL;
+		}
+		return xstrfmt("%s %s", arg, e->oid);
+	}
+	return NULL;
+}
+
+/*
  * 5.9a: the scope VALUE as a hint's command takes it at T, where it runs: a
  * new file T has is its path, a range the lines it maps to there, and one T
  * cannot find "<scope>", as its old line numbers would pin other lines (3.3)
@@ -871,12 +924,11 @@ static char *location_arg(struct scope_location *place)
 char *input_scope(const char *value, struct tree *t)
 {
 	struct scope_location place = locate_scope(value, t);
+	char *in = ends_with(place.path, "/") ? place.path : starts_with(value, "new:") ?
+		   (place.oid ? place.path : xstrfmt("new:%s", place.path)) : place.status ? NULL : location_arg(&place);
 
-	if (ends_with(place.path, "/"))
-		return place.path;
-	if (starts_with(value, "new:"))
-		return place.oid ? place.path : xstrfmt("new:%s", place.path);
-	return place.status ? xstrdup("<scope>") : location_arg(&place);
+	/* and only what T takes as that input (3.3) */
+	return in && pin(in, t, 1, 1) ? in : xstrdup("<scope>");
 }
 
 /* R's scopes of KEY as one argument at T (5.9a), each quoted for the shell when it would read it; "<scope>" stays as it is */
@@ -1029,24 +1081,6 @@ void scope_shape(const char *arg)
 }
 
 /*
- * the path of T that PATH names on a case-insensitive filesystem
- * (core.ignorecase) without being it, or NULL: git add stages nothing for
- * such a path, and git's history would get both
- */
-const char *case_twin(struct tree *t, const char *path)
-{
-	static int ignorecase = -1;
-	size_t i;
-
-	if (ignorecase < 0)
-		ignorecase = config_true("core.ignorecase");
-	for (i = 0; ignorecase && i < t->nr; i++)
-		if (!strcasecmp(t->e[i].path, path) && strcmp(t->e[i].path, path))
-			return t->e[i].path;
-	return NULL;
-}
-
-/*
  * spec 3.9: the argument scope ARG, read at T, overlaps scope R, which is
  * mapped to T; a range R cannot map there is its whole file
  */
@@ -1073,43 +1107,6 @@ int scope_changed(const char *scope, struct tree *t)
 	struct scope_location place = locate_scope(scope, t);
 
 	return place.status || place.changed;
-}
-
-/* spec 3.3-3.4: fix a scope argument at tree T */
-char *pin(const char *arg, struct tree *t, int allow_new, int allow_abs)
-{
-	char *dir = ends_with(arg, "/") ? xstrndup(arg, strlen(arg) - 1) : scope_path(arg);
-	const char *path = dir;
-	int is_new = skip_prefix(arg, "new:", &path);
-	struct entry *e;
-
-	/* the shape of ARG was checked before (scope_shape, 5.13-1); here is what T has */
-	if (is_new && allow_new && !tree_get(t, path) && !case_twin(t, path))
-		return xstrdup(arg);
-	if (!strcmp(arg, "/") && allow_abs)
-		return xstrfmt("/ %s", t->oid);
-	e = tree_get(t, dir);
-	if (e && ends_with(arg, "/") && allow_abs && !strcmp(e->mode, "040000"))
-		return xstrfmt("%s %s", arg, e->oid);
-	if (!is_new && e && !ends_with(arg, "/") && blob_at(t, dir)) {
-		int start, end, lines = 0;
-		const char *text, *p;
-
-		if (range_of(arg, &start, &end)) {
-			text = blob_text(e->oid);
-			if (!text)
-				reject(128, NULL, "bad scope: '%s'", arg);
-			for (p = text; *p; p++)
-				lines += *p == '\n';
-			lines += p > text && p[-1] != '\n';
-			if (end > lines)
-				reject(128, NULL, "bad scope: '%s'", arg);
-		}
-		return xstrfmt("%s %s", arg, e->oid);
-	}
-	if (case_twin(t, path))
-		reject(128, xstrfmt("give it as git has it: '%s'", case_twin(t, path)), "bad scope: '%s'", arg);
-	reject(128, NULL, "bad scope: '%s'", arg);
 }
 
 /* spec 3.8: where a scope is in T; "?changed" only for the provider of a current contract */

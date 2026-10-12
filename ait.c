@@ -946,9 +946,11 @@ static char *back_commands(struct state *was, struct version *then, struct versi
 	const char *args = "";
 	int checks;
 
+	/* only who made the offer releases it (5.9a, others' contracts) */
 	if (*t->id == 'u')
-		return in_state(t, val(n, STATE)) ? NULL : xstrfmt("'ait %s %s %s -m <why>'", in_state(n, "released") ?
-								    "release" : "undertake", link_end_id(t, 0), link_end_id(t, 1));
+		return in_state(t, val(n, STATE)) || (in_state(n, "released") && !made_by(link_end(was, t, 1), *sid ? agent : NULL)) ?
+		       NULL : xstrfmt("'ait %s %s %s -m <why>'", in_state(n, "released") ? "release" : "undertake",
+				      link_end_id(t, 0), link_end_id(t, 1));
 	if (*t->id == 'X' || !is_live(t) || !is_live(n) || !files_match(n, at))
 		return NULL;
 	/* the scopes and definitions NOW has, given again where their input at AT differs (5.9a) */
@@ -1097,6 +1099,8 @@ static int cmd_hook(int argc, const char **argv)
 	if (argc > 1 && !strcmp(argv[1], "pre-push"))
 		return pre_push();
 	commit_hook = 1;
+	/* 5.9a, others' contracts: whose they are is said by this worktree's session (5.1); a hook never refuses for it */
+	session(-1);
 	if (argc > 2 && !strcmp(argv[1], "commit-msg")) {
 		integration_message(argv[2]);
 		return 0;
@@ -1271,32 +1275,27 @@ static void todo_hints(struct state *s, struct state *hs, struct record *r, stru
 
 /*
  * 7.8.1: T0, the index's tree; a path left unmerged has no entry of its own
- * there, so it is read as HEAD has it, git's stage 2 (user decision 45), in a
- * copy of the index that keeps everything else as git has it (intent-to-add
- * too, 5.5-4), as git's own readers show the rest of the index
+ * there, so it is read as HEAD has it (user decision 45), in a copy of the
+ * index that keeps everything else as git has it (intent-to-add too, 5.5-4),
+ * as git's own readers show the rest of the index
  */
 static struct tree *index_tree(void)
 {
 	struct strbuf info = STRBUF_INIT;
 	struct string_list unmerged = STRING_LIST_INIT_DUP;
-	const char *p, *end;
+	struct string_list_item *item;
 
-	for (p = git("ls-files -s -z"), end = p + git_out_len; p < end; p += strlen(p) + 1) {
-		char mode[8], oid[48];
-		int stage, at;
-
-		if (sscanf(p, "%7s %47s %d\t%n", mode, oid, &stage, &at) != 3)
-			continue;
-		if (stage && !unsorted_string_list_has_string(&unmerged, p + at)) {
-			string_list_append(&unmerged, p + at);
-			warning("'%s' is unmerged; it is read as HEAD has it", p + at);
-			index_line(&info, NULL, NULL, p + at);
-		}
-		if (stage == 2)
-			index_line(&info, mode, oid, p + at);
-	}
+	z_paths(git("diff-files --name-only --diff-filter=U -z"), &unmerged);
 	if (!unmerged.nr)
 		return tree_load(line1(git("write-tree")));
+	for_each_string_list_item(item, &unmerged) {
+		struct entry *e = file_entry(head_tree(), item->string);
+
+		warning("'%s' is unmerged; it is read as HEAD has it", item->string);
+		index_line(&info, NULL, NULL, item->string);
+		if (e)
+			index_line(&info, e->mode, e->oid, item->string);
+	}
 	return tree_load(tree_with(NULL, info.buf, NULL));
 }
 

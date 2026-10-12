@@ -551,4 +551,53 @@ tick; run git commit -qm only specs/p.yaml
 check "only contract paths with code staged here: unstage it first" err_has "hint: unstage 'src/order.c' first; commit them through ait: 'ait contract add specs/p.yaml' and 'ait contract commit -m <why>'"
 git restore --staged src/order.c; ait contract add specs/p.yaml >/dev/null
 tick; expect_ok "and the rest of the hint runs" ait contract commit -m x
+# 2.1.2a: the init file is no record, so contract commit keeps it as written, and only what is there is removed
+prep
+rm .ait/init; mkdir .ait/init; echo x > .ait/init/x; git add -A; tick; git -c core.hooksPath=/dev/null commit -qm directory
+rm -r .ait/init; printf 'version 2\n' > .ait/init; ait contract add .ait/init >/dev/null
+tick; run ait contract commit -m repair
+check "the repaired init is committed as written" sh -c "[ $rc = 0 ] && [ \"\$(git show HEAD:.ait/init)\" = 'version 2' ] && ! grep -q 'not updated' '$T/err'"
+tick; expect_ok "and init accepts it" ait init
+
+# 5.9a, others' contracts: a link goes back by release only when the offer is mine
+prep
+tick; ait future demand src/order.c src/stock.c specs/w.yaml -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+B=$(ait session open --agent b 2>/dev/null)
+tick; AIT_SESSION="$B" ait future offer src/stock.c specs/p.yaml as o undertake "$D" o -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \(O[^ ]*\) o$/\1/p' "$T/out")
+tick; ait release "$D" "$O" -m r >/dev/null 2>&1; tick; ait undertake "$D" "$O" -m u >/dev/null 2>&1
+tick; run git revert --no-edit HEAD
+check "an undertake of another's offer reverted: told, with no release" sh -c "grep -qF 'back to an older version' '$T/err' && ! grep -q 'ait release' '$T/err'"
+
+# 7.8.1 (user decision 45): an unmerged path is read from HEAD, and the other paths keep their bytes
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+mkdir ' .ait'; cp .ait/$O ' .ait/O111111111111'; git add ' .ait'; tick; git commit -qm data --no-verify
+F=.ait/$O; B=$(git rev-parse HEAD:$F)
+printf '0 0000000000000000000000000000000000000000\t%s\n100644 %s 1\t%s\n100644 %s 3\t%s\n' "$F" "$B" "$F" "$B" "$F" | git update-index --index-info
+run ait todo O111111111111
+check "a path with a leading space is no contract" fails 128 "fatal: no such contract: 'O111111111111'"
+run ait todo "$O"
+check "an unmerged record without stage 2 is read as HEAD has it" sh -c "[ $rc = 0 ] && grep -qx 'id $O' '$T/out'"
+
+# 5.9a arguments: a hint's scope is one the tree where it runs takes (3.3), else <scope>
+prep
+tick; ait future offer src/ specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future cancel "$O" -m c >/dev/null 2>&1
+git rm -qr src; echo f > src; git add src; tick; git commit -qm file --no-verify
+run ait amend "$O" -m again
+check "a directory that is now a file: <scope>" err_has "make a new contract: 'ait future offer <scope> specs/p.yaml -m <why>'"
+prep
+tick; ait future offer new:src/added specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future cancel "$O" -m c >/dev/null 2>&1
+mkdir src/added; echo x > src/added/code; git add src; tick; git commit -qm dir --no-verify
+run ait amend "$O" -m again
+check "a new file that is now a directory: <scope>" err_has "make a new contract: 'ait future offer <scope> specs/p.yaml -m <why>'"
+
+# 5.9a: H9 is judged on HEAD as it is when written, after a branch moved under the request
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+git branch side; git switch -q side; tick; ait future amend "$O" src/order.c - -m side >/dev/null 2>&1; git switch -q master
+racing_git; printf 'git -C "$T/r" reset -q --hard side\n' > "$T/before-update-ref"
+tick; run env PATH="$T/bin:$PATH" ait future amend "$O" src/stock.c:10-20 - -m mine
+check "HEAD moved to the other version: no H9 for it" sh -c "[ $rc = 1 ] && grep -q 'HEAD moved while running' '$T/err' && ! grep -q 'has changes not in HEAD' '$T/err'"
 done_testing

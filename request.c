@@ -282,10 +282,11 @@ static int follow(struct string_list *paths, const char *o, struct tree *ct, con
 			break;
 		if (unsorted_string_list_has_string(&skipped, xstrfmt("S %s", item->string)))
 			continue;
+		/* a path under what is no directory is not there either (git v2.53.0 entry.c:603, wrapper.c:403) */
 		if (tree_get(ct, item->string))
 			git_run(NULL, NULL, &failed, "checkout-index -f -q -- %s", item->string);
 		else
-			failed = unlink(xstrfmt("%s/%s", top, item->string)) && errno != ENOENT;
+			failed = unlink(xstrfmt("%s/%s", top, item->string)) && errno != ENOENT && errno != ENOTDIR;
 		if (failed)
 			string_list_append(&left, item->string);
 	}
@@ -914,14 +915,17 @@ static void scope_list(struct request *q, struct record *r, struct string_list *
 
 	string_list_split(&parts, list, ",", -1);
 	for_each_string_list_item(item, &parts) {
-		char *path = scope_path(item->string);
+		char *path = scope_path(item->string), *pinned = pin(item->string, t, allow_new, allow_abs);
 
 		/* 7.3.3: a case twin in the index refuses it too, unless the index spells it so */
 		if (!tree_get(q->index, path) && case_twin(q->index, path))
 			reject(128, xstrfmt("give it as git has it: '%s'", case_twin(q->index, path)), "bad scope: '%s'", item->string);
 		if (!starts_with(item->string, "new:") && !ends_with(path, "/") && !tree_get(t, path) && !case_twin(t, path))
 			reject(128, scope_hint(q, r, list, item->string, path, allow_new), "bad scope: '%s'", item->string);
-		string_list_append(out, pin(item->string, t, allow_new, allow_abs));
+		if (!pinned)
+			reject(128, case_twin(t, path) ? xstrfmt("give it as git has it: '%s'", case_twin(t, path)) : NULL,
+			       "bad scope: '%s'", item->string);
+		string_list_append(out, pinned);
 	}
 }
 
@@ -1333,8 +1337,11 @@ static char *judged_tree(struct request *q, struct string_list *changed)
 	for (i = 0; i < q->s.nr; i++) {
 		struct record *r = q->s.r[i];
 
-		/* what means what the base means is the base, however the index spells it (contract commit, 2.2.3) */
-		if (unchanged(r) && (!r->old || !strcmp(val(r, CHECK), val(r->old, CHECK)))) {
+		/*
+		 * what means what the base means is the base, however the index spells
+		 * it (contract commit, 2.2.3); the init file is no record, kept as it is (2.1.2a)
+		 */
+		if (!strcmp(r->id, "init") || (unchanged(r) && (!r->old || !strcmp(val(r, CHECK), val(r->old, CHECK))))) {
 			if (r->base && strcmp(r->id, "init") && strcmp(blob_at(q->v, xstrfmt(".ait/%s", r->id)) ?: "", r->base))
 				index_line(&info, "100644", r->base, xstrfmt(".ait/%s", r->id));
 			continue;
@@ -2088,12 +2095,15 @@ static void noop_left(struct request *q)
 		suggest("restore %s as in 'HEAD': it means what HEAD's version means", quoted_paths(&spelled));
 }
 
-/* 6.7a H9's contracts, judged as this request ends (5.9a): on its commit, or on HEAD before a refusal's error */
+/* 6.7a H9's contracts, judged as this request ends (5.9a): on HEAD as it is then, its commit or before a refusal's error */
 static struct string_list h9_ids = STRING_LIST_INIT_DUP;
 
 static void h9(void)
 {
+	char oid[48];
+
 	before_error = NULL;
+	head = object("HEAD^{commit}", 0, oid, NULL) ? xstrdup(oid) : NULL;
 	changes_not_in_head(&h9_ids);
 	string_list_clear(&h9_ids, 0);
 }

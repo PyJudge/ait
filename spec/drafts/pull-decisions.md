@@ -711,4 +711,9 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
 208. **contract commit의 noop에서 stage할 계약 경로가 있으면 결정 44의 복원 hint를 쓰지 않는다**(명세 문장을 고쳤다, 사용자 확인 필요). 같은 레코드면 복원이 stage할 수정을 버리고, 다른 레코드여도 stage해 다시 실행하면 그 결과가 정한다. 그래서 두 hint는 함께 나오지 않는다.
 209. **contract commit의 6.1은 HEAD의 레코드 위에 쓴 레코드를 얹은 U로 본다**(결정 48, 6.1 "U의 명세 정의가 새로 선언한 inputs"). 바뀌지 않은 레코드의 정의가 새로 선언한 input도 계약 경로다(검수 뒤 고침: 바뀐 레코드만 펼쳐 그 input을 코드로 거절했다).
 210. **충돌이 남은 index의 T0는 실제 index의 사본에서 unmerged 경로만 stage 2로 바꾼다**(결정 45, 5.5-4). 사본이므로 intent-to-add 같은 플래그가 그대로이고, git의 write-tree가 그것을 stage되지 않은 것으로 다룬다(검수 뒤 고침: stage 0 행을 빈 tree에 다시 써서 `-N` 파일이 빈 파일로 stage됐다).
+211. **contract commit은 init 파일을 레코드로 쓰지 않고 index의 것을 그대로 둔다**(2.1.2a "레코드가 아니므로 레코드 규칙에 들지 않는다"). HEAD의 init이 디렉터리라 읽히지 않으면 새 레코드로 직렬화되어 `prev -`가 붙었다(검수 뒤 고침). 그 정리에서 작업 폴더의 `.ait/init/x`처럼 부모가 디렉터리가 아닌 경로는 이미 없는 것이다(git v2.53.0 entry.c:603, wrapper.c:403의 ENOTDIR).
+212. **7.1.8의 연결 hint 중 release는 그 offer가 내가 만든 계약일 때만 쓴다**(5.9a 남의 계약: "놓는 명령(release)은 그 offer가 내가 만든 계약일 때만"). 명세 문장에 넣었다. "나"는 hook에서도 이 worktree의 session(5.1)이다(검수 뒤 고침: hook은 session을 읽지 않아 내 계약을 몰랐고, H8의 철회 hint도 hook에서는 나오지 않았다). session이 없거나 쓸 수 없어도 hook은 거절하지 않는다.
+213. **충돌 중 T0의 unmerged 경로는 HEAD의 tree에서 읽는다**(결정 45 "HEAD 판", 경고 `it is read as HEAD has it`). git이 만든 충돌에서는 stage 2와 같고, 손으로 만든 index(stage 1·3만)에서도 경고대로 읽는다. 경로는 git이 고른 낱말 그대로 받는다(`diff-files --diff-filter=U -z`. 검수 뒤 고침: `ls-files -s`를 sscanf로 읽어 경로 앞의 공백을 먹었다). 명세 문장의 "(git의 stage 2)"를 고쳤다.
+214. **hint 속 범위의 입력은 지금 tree가 3.3대로 받는 것만 쓰고, 아니면 `<scope>`다**(5.9a 인자 "지금 tree에서 새 입력으로 유효한 형"). 판정은 범위를 고정하는 `pin` 하나로 한다: 사라졌거나 파일이 된 디렉터리, 디렉터리가 된 `new:PATH`, NUL이 생긴 범위의 파일. 선택 204를 이렇게 넓혔다. `case_twin`은 `DIR/`를 DIR로 읽는다(고정할 때 쓰던 형과 같게).
+215. **H9는 쓰는 순간의 HEAD로 판정한다**(5.9a "hint는 쓰는 순간의 상태로 판정한다"). 거절 직전에 HEAD가 옮겨졌으면 옮겨진 HEAD다(검수 뒤 고침: 시작 때의 HEAD로 판정해 이미 들어온 판을 들이라고 했다). 선택 201을 이렇게 고친다.
 
