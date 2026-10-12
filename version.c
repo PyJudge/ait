@@ -657,11 +657,6 @@ void base_versions(struct state *s, struct string_list *written)
 		r->base = blob;
 		r->base_at = good;
 		r->rebased = 1;
-		/* 2.2.5, 6.2: the creator never changes, so a record keeps its base's; without a base it is new, made by this session */
-		if (then)
-			r->f[CREATOR] = then->f[CREATOR];
-		else
-			put(r, CREATOR, xstrfmt("%s %s", agent, sid));
 	}
 }
 

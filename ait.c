@@ -935,39 +935,37 @@ void fulfill_hint(struct state *s, struct record *p, struct tree *t)
  * 7.1.8 (user decision 47): once the commit that put K back is reverted, so
  * that K is at THEN again, the ait commands that bring it to the older NOW
  * for others too, as WAS (the state before) has K's partners and AT its code;
- * NULL when no rule leads there: an ended contract stays ended (2.3.2)
+ * NULL when no rule leads there: an ended contract stays ended (2.3.2), a
+ * drop changes only by future drop (choice 161), a helper pins the spec files
+ * AT has, and versions that mean the same leave nothing to bring back
  */
 static char *back_commands(struct state *was, struct version *then, struct version *now, struct tree *at)
 {
 	struct record *t = then->r, *n = now->r;
-	struct string_list set = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	struct strbuf sb = STRBUF_INIT;
+	char *consumer = input_scopes(n, CONSUMER, at), *provider = input_scopes(n, PROVIDER, at);
 	const char *args = "";
+	int checks;
 
-	if (*t->id == 'u' && in_state(t, val(n, STATE)))
-		return NULL;
 	if (*t->id == 'u')
-		return xstrfmt("'ait %s %s %s -m <why>'", in_state(n, "released") ? "release" : "undertake", link_end_id(t, 0),
-			       link_end_id(t, 1));
-	if (!is_live(t) || !is_live(n))
+		return in_state(t, val(n, STATE)) ? NULL : xstrfmt("'ait %s %s %s -m <why>'", in_state(n, "released") ?
+								    "release" : "undertake", link_end_id(t, 0), link_end_id(t, 1));
+	if (*t->id == 'X' || !is_live(t) || !is_live(n) || !files_match(n, at))
 		return NULL;
-	/* the scopes and definitions NOW has, given again where they changed, as input at AT (5.9a) */
-	if (strcmp(record_text(t, (1u << CONSUMER) | PIN_KEYS), record_text(n, (1u << CONSUMER) | PIN_KEYS)))
-		args = *n->id == 'D' ? xstrfmt(" %s %s %s", input_scopes(n, CONSUMER, at), input_scopes(n, PROVIDER, at), def_paths(n)) :
-		       xstrfmt(" %s %s", input_scopes(n, PROVIDER, at), def_paths(n));
-	if (in_state(n, "future")) {
-		/* reopening a current demand takes the current offers of 5.9 d along */
-		reopen_set(was, state_get(was, t->id), &set);
-		for_each_string_list_item(item, &set)
-			strbuf_addf(&sb, " future amend %s%s", item->string, strcmp(item->string, t->id) ? "" : args);
-		return xstrfmt("'ait%s -m <why>'", sb.buf);
-	}
+	/* the scopes and definitions NOW has, given again where their input at AT differs (5.9a) */
+	checks = strcmp(provider, input_scopes(t, PROVIDER, at)) || strcmp(record_text(n, 1u << FILES), record_text(t, 1u << FILES));
+	if (checks || strcmp(consumer, input_scopes(t, CONSUMER, at)))
+		args = xstrfmt("%s%s %s %s", *consumer ? " " : "", consumer, provider, def_paths(n));
+	if (in_state(t, val(n, STATE)) && !*args)
+		return NULL;
+	/* reopening a current demand takes the current offers of 5.9 d along */
+	if (in_state(n, "future"))
+		return xstrfmt("'ait %s -m <why>'", reopen_clauses(was, state_get(was, t->id), args));
 	if (in_state(t, "future") && *args)
 		return xstrfmt("'ait future amend %s%s -m <why>', then 'ait fulfill %s -m <why>' to get the tasks", t->id, args, t->id);
 	if (in_state(t, "future"))
 		return xstrfmt("'ait fulfill %s -m <why>' to get the tasks", t->id);
-	return *args ? xstrfmt("'ait amend %s%s -m <why>' to get the tasks", t->id, args) : NULL;
+	/* 5.9a: only a changed provider or spec file is checked (1.5b) */
+	return xstrfmt("'ait amend %s%s -m <why>'%s", t->id, args, checks ? " to get the tasks" : "");
 }
 
 /*
@@ -1052,36 +1050,36 @@ char *through_ait(struct string_list *paths)
 
 /*
  * 7.1.2, 5.8 E_GUARD: a plain commit of PATHS (HEAD to the hook's index)
- * leaves the contract paths of HS alone. A commit with -a or paths commits a
- * temporary index, which shows as blocked paths this worktree's index has not
- * staged; there unstaging does nothing, so the code is committed alone.
+ * leaves the contract paths of HS alone. A commit with -a, -i or paths
+ * commits a temporary index, where unstaging does nothing, so the code is
+ * committed alone.
  */
 static void guard(struct state *hs, struct string_list *paths)
 {
 	struct string_list blocked = STRING_LIST_INIT_DUP, code = STRING_LIST_INIT_DUP, staged = STRING_LIST_INIT_DUP;
-	struct string_list held = STRING_LIST_INIT_DUP;
+	struct string_list held = STRING_LIST_INIT_DUP, aside = STRING_LIST_INIT_DUP, none = STRING_LIST_INIT_DUP, *first;
 	struct string_list_item *item;
-	const char *through;
+	const char *through, *step;
 	char *index;
+	int plain;
 
 	for_each_string_list_item(item, paths)
 		string_list_append(contract_path(hs, item->string) ? &blocked : &code, item->string);
 	if (!blocked.nr)
 		return;
 	z_paths(git("diff --cached --name-only -z %s", head ? head : EMPTY_TREE), &staged);
+	for_each_string_list_item(item, &staged)
+		string_list_append(contract_path(hs, item->string) ? &held : &aside, item->string);
 	through = xstrfmt("commit them through ait: %s", through_ait(&blocked));
 	/* a plain commit runs its hooks on this worktree's index, -a, -i and paths on another (git v2.53.0 builtin/commit.c:476) */
 	index = realpath(line1(git("rev-parse --path-format=absolute --git-path index")), NULL);
+	plain = !hook_index || (index && !strcmp(hook_index, index));
 	/* with only contract paths in it, the commit goes through ait whatever index it took (5.8) */
-	if (!code.nr || !hook_index || (index && !strcmp(hook_index, index)))
-		reject(1, code.nr ? xstrfmt("unstage %s and commit the rest; then %s", quoted_paths(&blocked), through) : through,
-		       "contract files cannot be changed by a plain commit: %s", quoted_paths(&blocked));
-	/* 5.9a, local changes: contract paths this worktree's index has staged go out of the way first */
-	for_each_string_list_item(item, &staged)
-		if (contract_path(hs, item->string))
-			string_list_append(&held, item->string);
-	reject(1, xstrfmt("%scommit without -a or paths: stage the code (%s) and commit it, then %s",
-			  held.nr ? xstrfmt("unstage %s first; ", quoted_paths(&held)) : "", quoted_paths(&code), through),
+	step = !code.nr ? through : plain ? xstrfmt("unstage %s and commit the rest; then %s", quoted_paths(&blocked), through) :
+	       xstrfmt("commit without -a or paths: stage the code (%s) and commit it, then %s", quoted_paths(&code), through);
+	/* 5.9a, local changes: what this worktree's index has staged in the way of that step goes first */
+	first = !code.nr ? &aside : plain ? &none : &held;
+	reject(1, first->nr ? xstrfmt("unstage %s first; %s", quoted_paths(first), step) : step,
 	       "contract files cannot be changed by a plain commit: %s", quoted_paths(&blocked));
 }
 
@@ -1271,11 +1269,11 @@ static void todo_hints(struct state *s, struct state *hs, struct record *r, stru
 			r->id, agents.buf, r->id);
 }
 
-/* spec 7.8: my promises and my unverified demands, with what to do next */
 /*
  * 7.8.1: T0, the index's tree; a path left unmerged has no entry of its own
- * there, so it is read as HEAD has it, git's stage 2 (user decision 45), as
- * git's own readers show the rest of the index around such a path
+ * there, so it is read as HEAD has it, git's stage 2 (user decision 45), in a
+ * copy of the index that keeps everything else as git has it (intent-to-add
+ * too, 5.5-4), as git's own readers show the rest of the index
  */
 static struct tree *index_tree(void)
 {
@@ -1292,15 +1290,17 @@ static struct tree *index_tree(void)
 		if (stage && !unsorted_string_list_has_string(&unmerged, p + at)) {
 			string_list_append(&unmerged, p + at);
 			warning("'%s' is unmerged; it is read as HEAD has it", p + at);
+			index_line(&info, NULL, NULL, p + at);
 		}
-		if (stage == 0 || stage == 2)
+		if (stage == 2)
 			index_line(&info, mode, oid, p + at);
 	}
 	if (!unmerged.nr)
 		return tree_load(line1(git("write-tree")));
-	return tree_load(tree_with(EMPTY_TREE, info.buf, NULL));
+	return tree_load(tree_with(NULL, info.buf, NULL));
 }
 
+/* spec 7.8: my promises and my unverified demands, with what to do next */
 static int cmd_todo(int argc, const char **argv)
 {
 	struct state s = { 0 }, hs = { 0 };

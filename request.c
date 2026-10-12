@@ -723,18 +723,14 @@ static void parse_clauses(struct request *q)
 			}
 		} else if (!strcmp(c->verb, "amend")) {
 			c->k[0] = arg(q, &i);
-			/* a drop's target is amended as future drop gives it (7.3.1), which is not supported here */
-			if (*c->k[0] == 'X')
-				unsupported("amend of a drop");
-			/* a demand takes A B FILES, an offer B FILES; which one is checked once K is known */
+			/* 7.3.1: a demand takes A B FILES, an offer B FILES, a drop K; which one is checked once K is known */
 			for (more = 0; i + more < n && !is_word(v[i + more]) && !q->after_option[i + more]; more++)
 				;
-			if (more == 3)
-				c->a = arg(q, &i);
-			if (more != 0 && more != 2 && more != 3)
-				reject(129, NULL, "amend '%s' takes A B FILES (a demand) or B FILES (an offer)", c->k[0]);
+			if (more > 3)
+				reject(129, NULL, "amend '%s' takes A B FILES (a demand), B FILES (an offer) or K (a drop)", c->k[0]);
+			c->a = more == 3 ? arg(q, &i) : NULL;
 			c->b = more ? arg(q, &i) : NULL;
-			c->f = more ? arg(q, &i) : NULL;
+			c->f = more > 1 ? arg(q, &i) : NULL;
 		} else if (c->future && !strcmp(c->verb, "cancel")) {
 			c->k[0] = arg(q, &i);
 		} else if (!c->future && (!strcmp(c->verb, "undertake") || !strcmp(c->verb, "release"))) {
@@ -842,14 +838,17 @@ static char *with_new(struct request *q, const char *list, const char *part, str
 	struct string_list_item *item, *d;
 	struct clause *was = q->cl, *cl = xmemdupz(q->cl, q->ncl * sizeof(*q->cl));
 	struct strbuf to = STRBUF_INIT;
-	char *command;
+	char *command, *path = scope_path(part);
 	size_t i, j;
+	int given = 0;
 
 	string_list_split(&parts, list, ",", -1);
-	/* new:PATH names a whole file (3.2) */
+	/* new:PATH names a whole file (3.2), so it stands once for all the scopes of that file (3.2a) */
 	for_each_string_list_item(item, &parts)
-		strbuf_addf(&to, "%s%s", to.len ? "," : "",
-			    strcmp(item->string, part) ? item->string : xstrfmt("new:%s", scope_path(part)));
+		if (strcmp(scope_path(item->string), path))
+			strbuf_addf(&to, "%s%s", to.len ? "," : "", item->string);
+		else if (!given++)
+			strbuf_addf(&to, "%snew:%s", to.len ? "," : "", path);
 	for (i = 0; i < q->ncl; i++) {
 		if (cl[i].a == list)
 			cl[i].a = to.buf;
@@ -893,13 +892,16 @@ static char *scope_hint(struct request *q, struct record *r, const char *list, c
 
 	if (q->direct)
 		return NULL;
+	/* a promise, or a reopen of a current one, takes the current offers of 5.9 d along; a current one is checked (5.9a) */
+	if (!allow_new || (in_state(r, "future") && was_current(r)))
+		reopen_set(&q->s, r, &set);
 	if (allow_new)
-		return xstrfmt("if it does not exist yet, run '%s'", with_new(q, list, part, &set));
+		return xstrfmt("if it does not exist yet, run '%s'%s", with_new(q, list, part, &set),
+			       is_current(r) ? " to get the tasks" : "");
 	if (!q->gate)
 		return there ? xstrfmt("stage %s, then rerun this command", quoted_paths(single(path))) : NULL;
 	if (there)
 		return code_first(q, quoted_paths(single(path)));
-	reopen_set(&q->s, r, &set);
 	return xstrfmt("if it does not exist yet, make it future: '%s'", with_new(q, list, part, &set));
 }
 
@@ -953,7 +955,6 @@ static void new_contract(struct request *q, struct clause *c)
 		scopes(q, r, CONSUMER, c->a);
 	scopes(q, r, PROVIDER, c->b);
 	defs(q, r, c->f);
-	put(r, CREATOR, xstrfmt("%s %s", agent, sid));
 	put(r, PREV, "-");
 }
 
@@ -1030,54 +1031,6 @@ static char *closed_hint(struct request *q, struct record *k)
 		return xstrfmt("'%s' is closed", k->id);
 	return xstrfmt("'%s' is closed\nto need it again, make a new contract: 'ait future %s%s %s %s -m <why>'", k->id,
 		       val(k, ROLE), *k->id == 'D' ? " <your code>" : "", input_scopes(k, PROVIDER, q->ht), def_paths(k));
-}
-
-/* spec 7.3.2: a clause applies to the records as the earlier clauses left them */
-static void apply(struct request *q, struct clause *c)
-{
-	struct record *r, *o;
-	char *id;
-
-	if (!strcmp(c->verb, "demand") || !strcmp(c->verb, "offer")) {
-		new_contract(q, c);
-	} else if (!strcmp(c->verb, "amend")) {
-		r = resolve(q, c->k[0]);
-		if (*r->id == 'u' || !is_live(r))
-			reject(1, *r->id == 'u' ? NULL : closed_hint(q, r), "not allowed: '%s' is not a future or current contract", r->id);
-		if (c->b && (*r->id == 'D') != (c->a != NULL))
-			reject(129, NULL, "amend '%s' takes A B FILES (a demand) or B FILES (an offer)", c->k[0]);
-		if (c->future)
-			put(r, STATE, "future");
-		if (c->future)
-			string_list_clear(&r->f[CHECK], 0);
-		/* 7.3.2: an amend that keeps everything checks K again */
-		r->recheck = is_current(r) && (!c->b || ((!c->a || keeps(c->a)) && keeps(c->b) && keeps(c->f)));
-		if (c->b) {
-			scopes(q, r, CONSUMER, c->a ? c->a : "-");
-			scopes(q, r, PROVIDER, c->b);
-			defs(q, r, c->f);
-		}
-	} else if (!strcmp(c->verb, "cancel")) {
-		/* 7.3.2: K is future; cancelled already is a noop */
-		r = resolve(q, c->k[0]);
-		if (!in_state(r, "future") && !in_state(r, "cancelled"))
-			reject(1, was_current(r) ? reopen_first(q, r) : NULL, "not allowed: '%s' cannot go from %s to cancelled",
-			       r->id, val(r, STATE));
-		put(r, STATE, "cancelled");
-	} else {
-		r = resolve(q, c->k[0]);
-		o = resolve(q, c->k[1]);
-		if (*r->id != 'D' || *o->id != 'O')
-			reject(128, NULL, "no such contract: '%s' must be a demand and '%s' an offer", r->id, o->id);
-		id = xstrfmt("undertake/%s-%s", r->id, o->id);
-		r = state_get(&q->s, id);
-		if (!r && *c->verb == 'u') {
-			r = state_add(&q->s, id);
-			put(r, PREV, "-");
-		}
-		if (r)
-			put(r, STATE, *c->verb == 'u' ? "undertaken" : "released");
-	}
 }
 
 /* R does not change in this request: it means what HEAD has, or it is a new link released at once (7.3.5) */
@@ -1213,9 +1166,9 @@ static char *direct_hint(struct request *q, struct record *r, const char *from, 
 			       written_lines(r, q->ht), restore);
 	/* 4: only a fulfil makes a promise current */
 	if (!strcmp(from, "future") && (!strcmp(to, "current") || !strcmp(to, "fulfilled")))
-		return xstrfmt("fulfill it instead: %s, then 'ait fulfill %s -m <why>'%s",
+		return xstrfmt("fulfill it instead: %s, then 'ait fulfill %s -m <why>' to get the tasks",
 			       as_in_base(as_was) ? restore : xstrfmt("set 'state future' back in '%s', then %s", path, through_ait(single(path))),
-			       r->id, " to get the tasks");
+			       r->id);
 	/* 5: current to ended: reopen it */
 	if (!strcmp(from, "current")) {
 		reopen_set(&q->s, r, &set);
@@ -1331,7 +1284,7 @@ static void condition_hint(struct request *q, struct record *k)
 	k = state_get(&hs, k->id);
 	reopen_set(&hs, k, &set);
 	add_hint(q, xstrfmt("to change its condition, reopen it with the new one: 'ait %s -m <why>', then %s",
-			    reopen_clauses(&hs, k, "<new defs>"), then_rerun(q, &set)));
+			    reopen_clauses(&hs, k, *k->id == 'D' ? " - - <new defs>" : " - <new defs>"), then_rerun(q, &set)));
 }
 
 /*
@@ -1765,7 +1718,6 @@ static void unpinned(struct request *q, struct record *r)
 	}
 }
 
-/* spec 2.3: every changed record took an allowed step */
 /* 5.9a: the transition hint for R's refused step FROM to TO: contract commit's form, an ended contract, or a reopen first */
 static char *step_hint(struct request *q, struct record *r, const char *from, const char *to)
 {
@@ -1778,6 +1730,57 @@ static char *step_hint(struct request *q, struct record *r, const char *from, co
 	return head_first(q, r) ?: was_current(r) ? reopen_first(q, r) : NULL;
 }
 
+/* spec 7.3.2: a clause applies to the records as the earlier clauses left them */
+static void apply(struct request *q, struct clause *c)
+{
+	struct record *r, *o;
+	char *id;
+
+	if (!strcmp(c->verb, "demand") || !strcmp(c->verb, "offer")) {
+		new_contract(q, c);
+	} else if (!strcmp(c->verb, "amend")) {
+		r = resolve(q, c->k[0]);
+		if (*r->id == 'u' || !is_live(r))
+			reject(1, *r->id == 'u' ? NULL : closed_hint(q, r), "not allowed: '%s' is not a future or current contract", r->id);
+		if (c->b && ((*r->id == 'D') != !!c->a || (*r->id == 'X') != !c->f))
+			reject(129, NULL, "amend '%s' takes A B FILES (a demand), B FILES (an offer) or K (a drop)", c->k[0]);
+		if (c->future)
+			put(r, STATE, "future");
+		if (c->future)
+			string_list_clear(&r->f[CHECK], 0);
+		/* 7.3.2: an amend that keeps everything checks K again */
+		r->recheck = is_current(r) && (!c->b || ((!c->a || keeps(c->a)) && keeps(c->b) && keeps(c->f)));
+		if (c->f) {
+			scopes(q, r, CONSUMER, c->a ? c->a : "-");
+			scopes(q, r, PROVIDER, c->b);
+			defs(q, r, c->f);
+		} else if (c->b && !keeps(c->b)) {
+			put(r, TARGET, resolve(q, c->b)->id);
+		}
+	} else if (!strcmp(c->verb, "cancel")) {
+		/* 7.3.2: K is future; cancelled already is a noop */
+		r = resolve(q, c->k[0]);
+		if (!in_state(r, "future") && !in_state(r, "cancelled"))
+			reject(1, step_hint(q, r, val(r, STATE), "cancelled"), "not allowed: '%s' cannot go from %s to cancelled",
+			       r->id, val(r, STATE));
+		put(r, STATE, "cancelled");
+	} else {
+		r = resolve(q, c->k[0]);
+		o = resolve(q, c->k[1]);
+		if (*r->id != 'D' || *o->id != 'O')
+			reject(128, NULL, "no such contract: '%s' must be a demand and '%s' an offer", r->id, o->id);
+		id = xstrfmt("undertake/%s-%s", r->id, o->id);
+		r = state_get(&q->s, id);
+		if (!r && *c->verb == 'u') {
+			r = state_add(&q->s, id);
+			put(r, PREV, "-");
+		}
+		if (r)
+			put(r, STATE, *c->verb == 'u' ? "undertaken" : "released");
+	}
+}
+
+/* spec 2.3: every changed record took an allowed step */
 static void transitions(struct request *q)
 {
 	size_t i;
@@ -2056,11 +2059,12 @@ static struct tree *worktree_state(struct request *q, struct state *ws)
 }
 
 /*
- * 7.6.1: what contract commit's noop leaves: records the index spells
- * otherwise than HEAD, which mean what HEAD's do as the noop shows (user
- * decision 44), and the contract paths (7.5.1) the work tree has otherwise
- * than the index: what was fixed is not committed, which is this command's
- * result, not a risk (rule 6)
+ * 7.6.1: what contract commit's noop leaves: the contract paths (7.5.1) the
+ * work tree has otherwise than the index, as what was fixed is not committed,
+ * which is this command's result, not a risk (rule 6); once none is left,
+ * records the index spells otherwise than HEAD, which mean what HEAD's do as
+ * the noop shows (user decision 44), as restoring them first would throw
+ * away what is to be staged
  */
 static void noop_left(struct request *q)
 {
@@ -2068,9 +2072,6 @@ static void noop_left(struct request *q)
 	struct string_list_item *item;
 	struct state hs = { 0 }, ws = { 0 };
 
-	tree_diff(q->ht, q->v, &spelled);
-	if (spelled.nr)
-		suggest("restore %s as in 'HEAD': it means what HEAD's version means", quoted_paths(&spelled));
 	state_load(&hs, q->ht);
 	worktree_state(q, &ws);
 	z_paths(git("diff --name-only -z"), &differ);
@@ -2080,8 +2081,11 @@ static void noop_left(struct request *q)
 			printf("unstaged %s\n", item->string);
 			string_list_append(&paths, item->string);
 		}
+	tree_diff(q->ht, q->v, &spelled);
 	if (paths.nr)
 		suggest("stage it: 'ait contract add %s', then rerun this command", shell_words(&paths));
+	else if (spelled.nr)
+		suggest("restore %s as in 'HEAD': it means what HEAD's version means", quoted_paths(&spelled));
 }
 
 /* 6.7a H9's contracts, judged as this request ends (5.9a): on its commit, or on HEAD before a refusal's error */
@@ -2210,6 +2214,13 @@ static int finish(struct request *q)
 			string_list_insert(&written, q->s.r[k]->id);
 	if (!q->pull_tree)
 		base_versions(&q->s, &written);
+	/* 2.2.5, 6.2: a contract's creator never changes, so it is its base's; without a base it is new, made by this session */
+	for_each_string_list_item(item, &written) {
+		struct record *r = state_get(&q->s, item->string);
+
+		if (r->f[ROLE].nr)
+			r->f[CREATOR] = r->old ? r->old->f[CREATOR] : *single(xstrfmt("%s %s", agent, sid));
+	}
 	/* 6.2, 2.4.1: an ended contract's files are not expanded or pinned again, so its base's definitions keep their lines */
 	for (k = 0; k < q->s.nr; k++) {
 		struct record *r = q->s.r[k];
@@ -2767,10 +2778,6 @@ static void normalize(struct request *q, struct record *r, struct record *w)
 	r->f[STATE] = w->f[STATE];
 	r->f[TARGET] = w->f[TARGET];
 	r->f[FILES] = w->f[FILES];
-	if (r->old)
-		r->f[CREATOR] = r->old->f[CREATOR];
-	else
-		put(r, CREATOR, xstrfmt("%s %s", agent, sid));
 	for (k = 0; k < ARRAY_SIZE(ks); k++) {
 		struct string_list vals = STRING_LIST_INIT_DUP;
 
@@ -2811,8 +2818,9 @@ static int contract_commit(struct request *q)
 	struct string_list changed = STRING_LIST_INIT_DUP, staged = STRING_LIST_INIT_DUP, untracked = STRING_LIST_INIT_DUP;
 	struct string_list code = STRING_LIST_INIT_DUP, written = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct state hs = { 0 }, us = { 0 };
+	struct state us = { 0 };
 	const char *id;
+	size_t i;
 
 	if (q->args.nr > 2)
 		reject(129, NULL, "contract commit takes no arguments but its options");
@@ -2824,7 +2832,6 @@ static int contract_commit(struct request *q)
 	q->noted = q->v = tree_load(line1(git("write-tree")));
 	q->index = index_load(q->noted);
 	state_load(&q->s, q->ht);
-	state_load(&hs, q->ht);
 	tree_diff(q->ht, q->v, &changed);
 	for_each_string_list_item(item, &changed)
 		if (skip_prefix(item->string, ".ait/", &id))
@@ -2836,22 +2843,25 @@ static int contract_commit(struct request *q)
 		if (file_entry(q->v, item->string))
 			string_list_append(&staged, item->string);
 	bundle_complete(q, &staged, &untracked);
-	/* the changed records as written (2.2.3), and U's own declarations, its definitions expanded in U */
+	/* the changed records as written (2.2.3) over HEAD's: U's, each declaring what its definitions declare in U */
+	state_load(&us, q->ht);
 	for_each_string_list_item(item, &changed) {
 		struct entry *e = file_entry(q->v, item->string);
-		struct record *u;
 
-		if (!skip_prefix(item->string, ".ait/", &id) || !e)
+		if (!skip_prefix(item->string, ".ait/", &id))
+			continue;
+		state_drop(&us, id);
+		if (!e)
 			continue;
 		item->util = record_from_entry(e, id, 1);
-		u = state_add(&us, id);
-		*u = *record_copy(item->util);
-		if (!u->bad && is_live(u))
-			expand_files(u, q->v);
+		*state_add(&us, id) = *record_copy(item->util);
 	}
+	for (i = 0; i < us.nr; i++)
+		if (!us.r[i]->bad && is_live(us.r[i]))
+			expand_files(us.r[i], q->v);
 	/* 6.1 before 6.2 (user decision 48): only contract paths, as HEAD has them and as U declares them */
 	for_each_string_list_item(item, &changed)
-		if (!contract_path(&hs, item->string) && !contract_path(&us, item->string))
+		if (!contract_path(&q->s, item->string) && !contract_path(&us, item->string))
 			string_list_append(&code, item->string);
 	if (code.nr) {
 		for_each_string_list_item(item, &code)

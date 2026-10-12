@@ -450,4 +450,105 @@ tick; git merge side >/dev/null 2>&1
 run ait todo
 check "todo runs in a conflicted merge" sh -c "[ $rc = 0 ] && grep -qx 'id $O' '$T/out'"
 check "with the unmerged path named" err_has "warning: 'src/order.c' is unmerged; it is read as HEAD has it"
+
+# 5.5-4, decision 45: todo reads a conflicted index from a copy of it, so a file added with -N stays unstaged
+prep
+tick; ait future offer new:src/z.c specs/p.yaml -m z >/dev/null 2>&1
+echo z > src/z.c; git add -N src/z.c
+B=$(git rev-parse HEAD:src/order.c); X=$(echo theirs | git hash-object -w --stdin)
+printf '0 0000000000000000000000000000000000000000\tsrc/order.c\n100644 %s 1\tsrc/order.c\n100644 %s 2\tsrc/order.c\n100644 %s 3\tsrc/order.c\n' "$B" "$B" "$X" | git update-index --index-info
+run ait todo
+check "the -N file is no staged code" sh -c "grep -qx 'provider new:src/z.c' '$T/out'"
+# 5.8 E_SCOPE's same command: one new:PATH for every scope of that file, the offers of 5.9 d, and the tasks of a current one
+newin() { sed -n "s/^hint: if it does not exist yet, run '\(ait .*\)'\( to get the tasks\)*\$/\1/p" "$T/err" | head -1 | sed 's/<why>/x/'; }
+prep
+tick; ait future demand src/order.c src/stock.c specs/w.yaml -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait future offer src/stock.c specs/p.yaml as o undertake "$D" o -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \(O[^ ]*\) o$/\1/p' "$T/out")
+echo x >> src/stock.c; git add src/stock.c; tick; ait fulfill "$O" --force -m f >/dev/null 2>&1
+H=$(git rev-parse HEAD)
+run ait future amend "$D" - src/nope.c - -m x
+CMD=$(newin)
+check "reopening a current demand to a new file takes its current offer along" sh -c "echo \"$CMD\" | grep -q 'future amend $O'"
+tick; expect_ok "and runs" sh -c "$CMD"
+git reset -q --hard "$H"
+run ait future offer src/nope.c:1-5,src/nope.c:8-9 specs/p.yaml -m o
+check "two ranges of one new file are one new:PATH" test "$(newin)" = 'ait future offer new:src/nope.c specs/p.yaml -m x'
+run ait demand src/order.c,src/nope.c src/stock.c specs/w.yaml --force -m d
+check "a current contract's same command gets the tasks" err_has "specs/w.yaml -m <why>' to get the tasks"
+CMD=$(newin); tick; run sh -c "$CMD"
+check "and it does" fails 1 "error: check results required"
+
+# 7.1.8 (user decision 47): a hint only where an ait command reaches the older version, with the tasks only for a check
+backcmd() { sed -n "s/^hint: to take it back for others too, once this commit is reverted, run '\(ait .*\)'\( to get the tasks\)*\$/\1/p" "$T/err" | sed 's/<why>/x/'; }
+prep
+tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+echo x >> src/stock.c; tick; git commit -qam code >/dev/null 2>&1
+tick; ait amend "$O" --force -m again >/dev/null 2>&1
+tick; run git revert --no-edit HEAD
+check "a re-pin reverted: told, with no command (same scope and spec files)" sh -c "grep -qF \"put '$O' back\" '$T/err' && ! grep -q 'take it back' '$T/err'"
+tick; git revert --no-edit HEAD >/dev/null 2>&1
+echo 'body: v2' > specs/p.yaml; tick; ait amend "$O" - specs/p.yaml --force -m v2 >/dev/null 2>&1
+tick; run git revert --no-edit HEAD
+check "a definition's content reverted: no command, as a helper pins what the work tree has" sh -c "grep -qF \"put '$O' back\" '$T/err' && ! grep -q 'take it back' '$T/err'"
+prep
+tick; ait demand src/order.c src/stock.c specs/w.yaml --force -m d >"$T/out" 2>&1; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait amend "$D" src/order.c:1-5 - - -m consumer >/dev/null 2>&1
+tick; run git revert --no-edit HEAD
+check "a consumer reverted: amend without the tasks (it checks nothing)" sh -c "grep -qF \"run 'ait amend $D src/order.c src/stock.c specs/w.yaml -m <why>'\" '$T/err' && ! grep -q 'to get the tasks' '$T/err'"
+CMD=$(backcmd); tick; git revert --no-edit HEAD >/dev/null 2>&1
+tick; run sh -c "$CMD"
+check "and it commits at once" sh -c "[ $rc = 0 ] && grep -q '^changed $D' '$T/out'"
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+sed "s/^prev .*/prev $(git rev-parse HEAD:.ait/$O)/" .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O; git add .ait/$O; tick; git commit -qm v1 --no-verify
+tick; run git revert --no-edit HEAD
+check "two promises that mean the same: no command" sh -c "grep -qF \"put '$O' back\" '$T/err' && ! grep -q 'take it back' '$T/err'"
+O2=Oaaaaaaaaaaaa
+tick; ait offer src/order.c specs/w.yaml --force -m o2 >"$T/out" 2>&1; O2=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+X=Xaaaaaaaaaaaa
+printf 'role drop\nstate future\ntarget %s\ncreator a %s\nprev -\n' "$O" "$A" > .ait/$X; git add .ait/$X; tick; git commit -qm drop --no-verify
+sed -e "s/^target .*/target $O2/" -e "s/^prev .*/prev $(git rev-parse HEAD:.ait/$X)/" .ait/$X > "$T/rec" && cat "$T/rec" > .ait/$X
+git add .ait/$X; tick; git commit -qm moved --no-verify
+tick; run git revert --no-edit HEAD
+check "a drop moved back: no command, as only future drop moves one (choice 161)" sh -c "grep -qF \"put '$X' back\" '$T/err' && ! grep -q 'take it back' '$T/err'"
+
+# choice 161: a drop's amend is judged as its step: an ended one is closed, a moved one not supported, none at parse
+run ait amend "$X" "$O2" -m move
+check "moving a drop: not supported" fails 128 "fatal: not supported: 'drop'"
+tick; ait future cancel "$X" -m c >/dev/null 2>&1
+run ait amend "$X" "$O2" -m move
+check "amending an ended drop: hint 3" sh -c "[ $rc = 1 ] && grep -qx \"hint: '$X' is closed\" '$T/err'"
+run ait amend "$O" a b c d -m x
+check "amend's arguments: usage" fails 129 "takes A B FILES (a demand), B FILES (an offer) or K (a drop)"
+
+# 5.9a transition hint 1: a cancel refused for HEAD's accident gives its repair first
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+sed 's/^state future/state current/' .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O; git add .ait/$O; tick; git commit -qm hand --no-verify
+run ait future cancel "$O" -m c
+check "cancel of HEAD's accident: the repair, not a reopen" sh -c "[ $rc = 1 ] && grep -q 'ait contract commit' '$T/err' && ! grep -q 'reopen it' '$T/err'"
+
+# user decision 44: the restore hint leaves out a record the work tree changed, which the stage hint stages
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+sed 's/^prev .*/prev junk/' .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O; ait contract add .ait/$O >/dev/null
+sed 's#^provider .*#provider src/order.c#' .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O
+tick; run ait contract commit -m x
+check "noop: stage the edit, do not restore it away" sh -c "grep -qx noop '$T/out' && grep -qF \"stage it: 'ait contract add .ait/$O'\" '$T/err' && ! grep -qF \"restore '.ait/$O'\" '$T/err'"
+# 6.1 (user decision 48): U's records are HEAD's with the written ones, so an input a changed definition declares is no code
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+mkdir -p tests; echo '#!/bin/sh' > tests/new.sh; printf 'body: p\ninputs: [tests/new.sh]\n' > specs/p.yaml
+ait contract add specs/p.yaml tests/new.sh >/dev/null
+tick; expect_ok "contract commit of a definition declaring a new input" ait contract commit -m declare
+check "which it pins" sh -c "git show HEAD:.ait/$O | grep -q '^file tests/new.sh .* input'"
+
+# 5.8 E_GUARD, 5.9a local changes: code this worktree's index staged goes first, as contract commit takes no code
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >/dev/null 2>&1
+echo x >> src/order.c; git add src/order.c; echo 'body: changed' > specs/p.yaml
+tick; run git commit -qm only specs/p.yaml
+check "only contract paths with code staged here: unstage it first" err_has "hint: unstage 'src/order.c' first; commit them through ait: 'ait contract add specs/p.yaml' and 'ait contract commit -m <why>'"
+git restore --staged src/order.c; ait contract add specs/p.yaml >/dev/null
+tick; expect_ok "and the rest of the hint runs" ait contract commit -m x
 done_testing

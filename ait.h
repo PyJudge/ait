@@ -186,7 +186,7 @@ void missing_code(struct record *r, struct tree *t, struct string_list *out);
 char *moved_arg(struct record *r, struct tree *t);
 void reopen_set(struct state *s, struct record *k, struct string_list *out);
 char *amend_clause(struct record *k, const char *provider, const char *files);
-char *reopen_clauses(struct state *s, struct record *k, const char *defs);
+char *reopen_clauses(struct state *s, struct record *k, const char *args);
 char *reopen_hint(struct state *s, struct record *k);
 
 /* record.c: spec definitions and the spec files they pin (2.4, 2.5) */

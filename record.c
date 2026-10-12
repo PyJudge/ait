@@ -134,7 +134,8 @@ void index_line(struct strbuf *sb, const char *mode, const char *oid, const char
 }
 
 /*
- * BASE in a throwaway index (spec 4.8), then INDEX_INFO (index_line()s), then
+ * BASE in a throwaway index (spec 4.8), or else a copy of the real index
+ * with its flags (intent-to-add), then INDEX_INFO (index_line()s), then
  * the work-tree files PATHS staged by git add as git stages them (modes,
  * symlinks, filters, a file becoming a directory; refusing paths in a
  * submodule or outside a sparse checkout); the tree, or NULL with git's
@@ -145,18 +146,22 @@ char *tree_with(const char *base, const char *index_info, struct string_list *pa
 	const char *tmp = getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
 	char *dir = xstrfmt("%s/ait-XXXXXX", tmp);
 	struct strvec add = STRVEC_INIT;
+	struct strbuf real = STRBUF_INIT;
 	struct string_list_item *item;
 	char *index, *tree = NULL;
 	int rc;
 
-	if (!paths && !*index_info)
+	if (base && !paths && !*index_info)
 		return xstrdup(base);
 	/* 5.8 E_IO: the directory 4.8 names cannot be written */
 	if (!mkdtemp(dir))
 		reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command", tmp),
 		       "write error: '%s': %s", dir, strerror(errno));
 	index = xstrfmt("%s/index", dir);
-	git_run(NULL, index, &rc, "read-tree %s", base);
+	if (base)
+		git_run(NULL, index, &rc, "read-tree %s", base);
+	else if (!(rc = strbuf_read_file(&real, line1(git("rev-parse --path-format=absolute --git-path index")), 0) < 0))
+		write_file_buf(index, real.buf, real.len);
 	if (!rc && *index_info)
 		git_run(index_info, index, &rc, "update-index --add --index-info");
 	if (!rc && paths) {
@@ -1187,8 +1192,8 @@ char *amend_clause(struct record *k, const char *provider, const char *files)
 	return xstrfmt("amend %s %s%s %s", k->id, *k->id == 'D' ? "- " : "", provider, files);
 }
 
-/* "future amend K future amend O..." reopening K and what it takes along; K gets DEFS when given (5.9a) */
-char *reopen_clauses(struct state *s, struct record *k, const char *defs)
+/* "future amend K future amend O..." reopening K and what it takes along (5.9a, 5.9 d); K's clause ends in ARGS when given */
+char *reopen_clauses(struct state *s, struct record *k, const char *args)
 {
 	struct string_list set = STRING_LIST_INIT_DUP;
 	struct strbuf sb = STRBUF_INIT;
@@ -1196,8 +1201,7 @@ char *reopen_clauses(struct state *s, struct record *k, const char *defs)
 
 	reopen_set(s, k, &set);
 	for_each_string_list_item(item, &set)
-		strbuf_addf(&sb, "%sfuture %s", sb.len ? " " : "", item->util == k && defs ? amend_clause(k, "-", defs) :
-			    xstrfmt("amend %s", item->string));
+		strbuf_addf(&sb, "%sfuture amend %s%s", sb.len ? " " : "", item->string, item->util == k && args ? args : "");
 	return strbuf_detach(&sb, NULL);
 }
 
