@@ -945,9 +945,11 @@ static char *back_commands(struct state *was, struct version *then, struct versi
 	struct strbuf sb = STRBUF_INIT;
 	const char *args = "";
 
+	if (*t->id == 'u' && in_state(t, val(n, STATE)))
+		return NULL;
 	if (*t->id == 'u')
-		return in_state(t, val(n, STATE)) ? NULL : xstrfmt("'ait %s %s %s -m <why>'", in_state(n, "released") ? "release" :
-								  "undertake", link_end_id(t, 0), link_end_id(t, 1));
+		return xstrfmt("'ait %s %s %s -m <why>'", in_state(n, "released") ? "release" : "undertake", link_end_id(t, 0),
+			       link_end_id(t, 1));
 	if (!is_live(t) || !is_live(n))
 		return NULL;
 	/* the scopes and definitions NOW has, given again where they changed, as input at AT (5.9a) */
@@ -961,9 +963,10 @@ static char *back_commands(struct state *was, struct version *then, struct versi
 			strbuf_addf(&sb, " future amend %s%s", item->string, strcmp(item->string, t->id) ? "" : args);
 		return xstrfmt("'ait%s -m <why>'", sb.buf);
 	}
+	if (in_state(t, "future") && *args)
+		return xstrfmt("'ait future amend %s%s -m <why>', then 'ait fulfill %s -m <why>' to get the tasks", t->id, args, t->id);
 	if (in_state(t, "future"))
-		return xstrfmt("%s'ait fulfill %s -m <why>' to get the tasks", *args ? xstrfmt("'ait future amend %s%s -m <why>', then ",
-										       t->id, args) : "", t->id);
+		return xstrfmt("'ait fulfill %s -m <why>' to get the tasks", t->id);
 	return *args ? xstrfmt("'ait amend %s%s -m <why>' to get the tasks", t->id, args) : NULL;
 }
 
@@ -1065,8 +1068,7 @@ static void guard(struct state *hs, struct string_list *paths)
 		string_list_append(contract_path(hs, item->string) ? &blocked : &code, item->string);
 	if (!blocked.nr)
 		return;
-	/* the empty tree (git v2.53.0 hash.h) before the first commit */
-	z_paths(git("diff --cached --name-only -z %s", head ? head : "4b825dc642cb6eb9a060e54bf8d69288fbee4904"), &staged);
+	z_paths(git("diff --cached --name-only -z %s", head ? head : EMPTY_TREE), &staged);
 	through = xstrfmt("commit them through ait: %s", through_ait(&blocked));
 	/* a plain commit runs its hooks on this worktree's index, -a, -i and paths on another (git v2.53.0 builtin/commit.c:476) */
 	index = realpath(line1(git("rev-parse --path-format=absolute --git-path index")), NULL);
@@ -1296,8 +1298,7 @@ static struct tree *index_tree(void)
 	}
 	if (!unmerged.nr)
 		return tree_load(line1(git("write-tree")));
-	/* the empty tree (git v2.53.0 hash.h) holds what the lines put in it */
-	return tree_load(tree_with("4b825dc642cb6eb9a060e54bf8d69288fbee4904", info.buf, NULL));
+	return tree_load(tree_with(EMPTY_TREE, info.buf, NULL));
 }
 
 static int cmd_todo(int argc, const char **argv)

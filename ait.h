@@ -9,6 +9,8 @@ struct strvec;
 /* ait.c: the process, git, messages and the commands that are not requests */
 /* the worktree, the hook's index, HEAD's ref and commit, the git and common directories (5.12) */
 extern const char *top, *hook_index, *headref, *head, *gitdir, *commondir;
+/* the empty tree, which every SHA-1 repository has (git v2.53.0 hash.h) */
+#define EMPTY_TREE "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 extern char agent[72], sid[16];	/* the session's agent and ID (5.1) */
 extern char *git_error;		/* the first stderr line of the last git call, without git's "fatal: " or "error: " */
 extern char *git_cmd;		/* the subcommand of the last git call */

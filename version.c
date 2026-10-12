@@ -548,7 +548,7 @@ char *head_repair(struct verdict *v, struct string_list *code, int rerun)
 {
 	struct strbuf hint = STRBUF_INIT;
 	const char *commit = "'ait contract commit -m <why>'";
-	struct version *at;
+	struct version *in_head;
 
 	if (v->k && v->k->mend) {
 		/* what is no record goes; it is committed only when HEAD has it */
@@ -561,7 +561,7 @@ char *head_repair(struct verdict *v, struct string_list *code, int rerun)
 		commit = through_ait(single(".ait/init"));
 	} else if (strcmp(v->word, "incomplete")) {
 		entangled_restore(v, &hint);
-	} else if (v->k && (at = version_in(head, v->k->id)) && !at->r->bad && is_current(at->r)) {
+	} else if (v->k && (in_head = version_in(head, v->k->id)) && !in_head->r->bad && is_current(in_head->r)) {
 		/* a broken bundle (5.8 E_INCOMPLETE) needs no restore: the gate pins it again (6.2), checking HEAD's current one */
 		commit = "'ait contract commit -m <why>' to get the tasks";
 	}

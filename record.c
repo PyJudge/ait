@@ -94,7 +94,7 @@ struct entry *file_entry(struct tree *t, const char *path)
 
 struct tree *head_tree(void)
 {
-	return tree_load(head ? head : "4b825dc642cb6eb9a060e54bf8d69288fbee4904");	/* the empty tree */
+	return tree_load(head ? head : EMPTY_TREE);
 }
 
 /* the blob of PATH in T: no tree, no submodule's commit */
@@ -859,24 +859,6 @@ static char *location_arg(struct scope_location *place)
 }
 
 /*
- * The paths of KEY joined by ',' as one helper argument, quoted for the shell
- * when it would read them (5.9a, git v2.53.0 quote.c sq_quote_buf_pretty());
- * DEFS_ONLY keeps only the definitions of FILES.
- */
-static char *join_arg(struct record *r, enum key k, int defs_only)
-{
-	struct strbuf sb = STRBUF_INIT, arg = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, &r->f[k])
-		if (!defs_only || is_def(item->string))
-			strbuf_addf(&sb, "%s%.*s", sb.len ? "," : "", (int)strcspn(item->string, " "), item->string);
-	sq_quote_buf_pretty(&arg, sb.buf);
-	strbuf_release(&sb);
-	return strbuf_detach(&arg, NULL);
-}
-
-/*
  * 5.9a: the scope VALUE as a hint's command takes it at T, where it runs: a
  * new file T has is its path, a range the lines it maps to there, and one T
  * cannot find "<scope>", as its old line numbers would pin other lines (3.3)
@@ -911,9 +893,21 @@ char *input_scopes(struct record *r, enum key k, struct tree *t)
 	return strbuf_detach(&sb, NULL);
 }
 
+/*
+ * R's definitions joined by ',' as one helper argument, quoted for the shell
+ * when it would read them (5.9a, git v2.53.0 quote.c sq_quote_buf_pretty())
+ */
 char *def_paths(struct record *r)
 {
-	return join_arg(r, FILES, 1);
+	struct strbuf sb = STRBUF_INIT, arg = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &r->f[FILES])
+		if (is_def(item->string))
+			strbuf_addf(&sb, "%s%.*s", sb.len ? "," : "", (int)strcspn(item->string, " "), item->string);
+	sq_quote_buf_pretty(&arg, sb.buf);
+	strbuf_release(&sb);
+	return strbuf_detach(&arg, NULL);
 }
 
 /* validate(state) of spec 5.9 a-d for record R of S, no parents involved; 0 when it holds */

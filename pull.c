@@ -1333,7 +1333,8 @@ static struct string_list integration_sides(struct pull *p)
 	} else if (rev && strcmp(rev, "MERGE_HEAD")) {
 		p->picked = line1(git("rev-parse %s", rev));
 		/* a revert starts from I's first parent */
-		string_list_insert(&sources, strcmp(rev, "REVERT_HEAD") ? p->picked : line1(git("rev-parse %s", xstrfmt("%s^", p->picked))));
+		string_list_insert(&sources, strcmp(rev, "REVERT_HEAD") ? p->picked :
+				   line1(git("rev-parse %s", xstrfmt("%s^", p->picked))));
 	}
 	string_list_sort(&sources);
 	string_list_remove(&sources, "", 0);

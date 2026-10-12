@@ -848,7 +848,8 @@ static char *with_new(struct request *q, const char *list, const char *part, str
 	string_list_split(&parts, list, ",", -1);
 	/* new:PATH names a whole file (3.2) */
 	for_each_string_list_item(item, &parts)
-		strbuf_addf(&to, "%s%s", to.len ? "," : "", strcmp(item->string, part) ? item->string : xstrfmt("new:%s", scope_path(part)));
+		strbuf_addf(&to, "%s%s", to.len ? "," : "",
+			    strcmp(item->string, part) ? item->string : xstrfmt("new:%s", scope_path(part)));
 	for (i = 0; i < q->ncl; i++) {
 		if (cl[i].a == list)
 			cl[i].a = to.buf;
@@ -1021,8 +1022,10 @@ static char *head_first(struct request *q, struct record *k)
  */
 static char *closed_hint(struct request *q, struct record *k)
 {
-	if (head_first(q, k))
-		return head_first(q, k);
+	char *first = head_first(q, k);
+
+	if (first)
+		return first;
 	if (*k->id == 'X')
 		return xstrfmt("'%s' is closed", k->id);
 	return xstrfmt("'%s' is closed\nto need it again, make a new contract: 'ait future %s%s %s %s -m <why>'", k->id,
@@ -1772,9 +1775,7 @@ static char *step_hint(struct request *q, struct record *r, const char *from, co
 		return NULL;
 	if (r->old && !is_live(r->old))
 		return closed_hint(q, r->old);
-	if (head_first(q, r))
-		return head_first(q, r);
-	return was_current(r) ? reopen_first(q, r) : NULL;
+	return head_first(q, r) ?: was_current(r) ? reopen_first(q, r) : NULL;
 }
 
 static void transitions(struct request *q)
@@ -1796,13 +1797,15 @@ static void transitions(struct request *q)
 		 * 2.3: a drop is made, moved and fulfilled with future drop, which is not
 		 * supported here (choice 161), so a live one only goes to cancelled
 		 */
-		if (*r->id == 'X' && (!r->old || (is_live(r->old) && (strcmp(to, "cancelled") || strcmp(val(r, TARGET), val(r->old, TARGET))))))
+		if (*r->id == 'X' && (!r->old || (is_live(r->old) && (strcmp(to, "cancelled") ||
+							       strcmp(val(r, TARGET), val(r->old, TARGET))))))
 			unsupported("drop");
 		for (j = 0; *r->id == 'u' && !strcmp(to, "undertaken") && j < 2; j++) {
 			struct record *end = link_end(&q->s, r, j), *d = link_end(&q->s, r, 0);
 
 			if (!is_live(end))
-				reject(1, j ? undertake_hint(q, d, end) : closed_hint(q, end), "not allowed: '%s' is %s", end->id, val(end, STATE));
+				reject(1, j ? undertake_hint(q, d, end) : closed_hint(q, end), "not allowed: '%s' is %s", end->id,
+				       val(end, STATE));
 		}
 		if (!record_step(r->id, from, to, q->gate))
 			reject(1, step_hint(q, r, from, to), "not allowed: '%s' cannot go from %s to %s", r->id, from, to);
@@ -2086,6 +2089,7 @@ static struct string_list h9_ids = STRING_LIST_INIT_DUP;
 
 static void h9(void)
 {
+	before_error = NULL;
 	changes_not_in_head(&h9_ids);
 	string_list_clear(&h9_ids, 0);
 }
@@ -2123,7 +2127,6 @@ static void commit_request(struct request *q, struct strbuf *results)
 	}
 	/* 6.6: checking the same content the same way leaves the record as it was */
 	if (!strcmp(tree, q->ht->oid)) {
-		before_error = NULL;
 		h9();
 		puts("noop");
 		if (q->direct)
@@ -2146,7 +2149,6 @@ static void commit_request(struct request *q, struct strbuf *results)
 		reject(129, NULL, "the message hides the trailers");
 	if (publish(tree, q->msg.buf, q->index))
 		reject(1, "rerun this command", "HEAD moved while running; nothing changed");
-	before_error = NULL;
 	head = published;
 	printf("request %s\n", rid);
 	/* 6.7 and 7.7.5: one kind after another, by ID within a kind, but new in the order made */
@@ -2320,7 +2322,7 @@ static void given_scopes(struct request *q, struct record *r, const char *list)
 static void select_promise(struct request *q, struct record *r)
 {
 	if (!in_state(r, "future"))
-		reject(1, !is_current(r) ? closed_hint(q, r) : head_first(q, r) ? head_first(q, r) :
+		reject(1, !is_current(r) ? closed_hint(q, r) : head_first(q, r) ?:
 		       xstrfmt("'%s' is already current; to check it again, run 'ait amend %s -m <why>' to get the tasks", r->id, r->id),
 		       "not allowed: '%s' is %s", r->id, val(r, STATE));
 	put(r, STATE, "current");
