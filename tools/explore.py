@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""
+State explorer for ait: random sequences of ait and git operations in a fresh
+repository, with invariants checked after every step. A sequence that breaks
+one is shrunk and written as a shell script that reproduces it.
+
+Invariants
+  I1  exit codes are 0, 1, 128 or 129, and nothing crashes
+  I2  a refused ait write command changes nothing (HEAD, index, work tree)
+  I3  an ait command that succeeds leaves HEAD no new error of 5.10
+      ('ait hook post-commit' against HEAD^ warns of none)
+  I4  a hint that gives one 'ait ...' command to run now, with nothing to fill
+      in, is taken when run as given in a copy of the repository: it succeeds,
+      or says itself that it needs results or that local changes stop it
+      (5.9a, user decision 52); advice such as 'when ready' is not checked
+  I5  'ait todo' succeeds in every state
+
+usage: tools/explore.py [--ait DIR] [--seeds N] [--first S] [--steps K] [--jobs J] [--out DIR]
+"""
+import argparse
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ProcessPoolExecutor
+
+AIT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CODE = ["src/a.c", "src/b.c", "lib/c.c"]
+DEFS = ["specs/p.yaml", "specs/q.yaml"]
+READERS = ("todo", "peek", "session")
+SETUP = """git init -q r && cd r
+mkdir src lib specs
+for f in src/a.c src/b.c lib/c.c; do seq 1 20 | sed "s|^|$f |" > $f; done
+echo 'body: p holds' > specs/p.yaml; echo 'body: q holds' > specs/q.yaml
+git add -A && git commit -qm base
+ait init >/dev/null
+A=$(ait session open --agent a)
+"""
+
+
+class Run:
+    """One sequence of steps in its own repository."""
+
+    def __init__(self, root, ait_dir):
+        self.root = root
+        self.dir = os.path.join(root, "r")
+        self.vars = {}
+        self.n = 0
+        self.seen = {"ok": 0, "refused": 0, "hints": 0}
+        self.env = dict(os.environ, HOME=root, GIT_CONFIG_NOSYSTEM="1", GIT_EDITOR=":",
+                        PATH=ait_dir + os.pathsep + os.environ["PATH"])
+        self.env.pop("AIT_SESSION", None)
+        with open(os.path.join(root, ".gitconfig"), "w") as f:
+            f.write("[user]\n\tname = t\n\temail = t@t\n[init]\n\tdefaultBranch = master\n")
+        self.sh(SETUP, cwd=root)
+
+    def tick(self):
+        self.n += 60
+        stamp = "@%d +0000" % (1700000000 + self.n)
+        self.env["GIT_COMMITTER_DATE"] = self.env["GIT_AUTHOR_DATE"] = stamp
+
+    def sh(self, script, cwd=None):
+        self.tick()
+        script = re.sub(r"\$([DOX][0-9]+)(?![0-9])", lambda m: self.vars.get(m.group(1), m.group(0)), script)
+        p = subprocess.run(["sh", "-c", script], cwd=cwd or self.dir, env=self.env,
+                           capture_output=True, text=True, errors="replace")
+        return p.returncode, p.stdout, p.stderr
+
+    def snapshot(self):
+        return self.sh("git rev-parse HEAD; git ls-files -s; git status --porcelain --untracked-files=all")[1]
+
+    def bind(self, out):
+        for line in out.splitlines():
+            m = re.match(r"new ([DOX][0-9a-f]{12})", line)
+            if m:
+                kind = m.group(1)[0]
+                k = sum(1 for v in self.vars if v[0] == kind)
+                self.vars["%s%d" % (kind, k)] = m.group(1)
+
+    def ids(self, kind):
+        return ["$" + v for v in sorted(self.vars) if v[0] == kind]
+
+
+def scope(rng):
+    return rng.choice(["src/a.c", "src/b.c", "lib/c.c", "src/a.c:2-5", "src/", "new:src/n.c", "src/a.c,lib/c.c"])
+
+
+def step(rng, run):
+    """The next step: (setup, command), both shell text; the command is the one judged."""
+    d, o = run.ids("D"), run.ids("O")
+    k = d + o
+    f = rng.choice(DEFS)
+    line = rng.randint(1, 20)
+    choices = [
+        ("", "ait future offer %s %s -m o" % (scope(rng), f)),
+        ("", "ait future demand %s %s %s -m d" % (rng.choice(CODE), scope(rng), f)),
+        ("", "ait offer %s %s --force -m o" % (rng.choice(CODE), f)),
+        ("", "ait demand %s %s %s --force -m d" % (rng.choice(CODE), rng.choice(CODE), f)),
+        ("sed -i.bak '%ds/$/ x/' %s && rm -f %s.bak && git add -A" % (line, rng.choice(CODE), rng.choice(CODE)),
+         rng.choice(["ait commit -m c", "ait commit --force -m c", "git commit -qm c"])),
+        ("echo 'body: changed %d' > %s && ait contract add %s >/dev/null" % (line, f, f),
+         rng.choice(["ait contract commit -m s", "git commit -qm s"])),
+        ("", "git revert --no-edit HEAD"),
+        ("", "ait todo"),
+    ]
+    if k:
+        x = rng.choice(k)
+        choices += [
+            ("", "ait future amend %s -m a" % x),
+            ("", "ait future amend %s %s%s %s -m a" % (x, "- " if x in d else "", scope(rng), rng.choice(DEFS + ["-"]))),
+            ("", "ait amend %s%s -m a" % (x, rng.choice(["", " --force"]))),
+            ("", "ait future cancel %s -m c" % x),
+            ("git add -A", "ait fulfill %s%s -m f" % (x, rng.choice(["", " --force"]))),
+            ("sed -i.bak 's/^state .*/state %s/' .ait/%s && rm -f .ait/%s.bak && ait contract add .ait/%s >/dev/null"
+             % (rng.choice(["future", "current", "cancelled"]), x, x, x), "ait contract commit -m w"),
+            ("", "ait todo %s" % x),
+        ]
+    if d and o:
+        x, y = rng.choice(d), rng.choice(o)
+        choices += [("", "ait undertake %s %s -m u" % (x, y)), ("", "ait release %s %s -m r" % (x, y)),
+                    ("", "ait future offer %s %s as o undertake %s o -m u" % (scope(rng), f, x))]
+    if rng.random() < 0.1:
+        b = "b%d" % rng.randint(0, 2)
+        choices.append(("git switch -q -c %s 2>/dev/null || git switch -q %s" % (b, b), "git commit -q --allow-empty -m on"))
+        choices.append(("git switch -q master", "git merge --no-edit %s || git merge --abort" % b))
+    return rng.choice(choices)
+
+
+def hint_commands(err):
+    """I4's hints: one 'ait ...' command, nothing to fill in, no step before it."""
+    for line in err.splitlines():
+        if not line.startswith("hint: ") or re.search(r"then|restore|once|push|next time|when ready|<[^w]", line):
+            continue
+        cmds = re.findall(r"'(ait [^']*)'", line)
+        if len(cmds) == 1 and line.rstrip().endswith("'"):
+            yield line, cmds[0].replace("<why>", "x")
+
+
+def replay(run, line, cmd):
+    """I4: CMD run as given in a copy of the repository is taken."""
+    copy = tempfile.mkdtemp(dir=run.root)
+    shutil.rmtree(copy)
+    shutil.copytree(run.dir, copy, symlinks=True)
+    top = run.sh("git rev-parse --show-toplevel")[1].strip()
+    new = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=copy, capture_output=True,
+                         text=True, env=run.env).stdout.strip()
+    sessions = os.path.join(copy, ".git/ait/sessions")
+    for name in os.listdir(sessions) if os.path.isdir(sessions) else []:
+        path = os.path.join(sessions, name)
+        with open(path) as f:
+            text = f.read()
+        with open(path, "w") as f:
+            f.write(text.replace("worktree %s\n" % top, "worktree %s\n" % new))
+
+    def key(path):
+        return subprocess.run(["git", "hash-object", "--stdin"], input=path, capture_output=True,
+                              text=True, env=run.env).stdout.strip()
+    pointer = os.path.join(copy, ".git/ait/worktrees", key(top))
+    if os.path.exists(pointer):
+        os.rename(pointer, os.path.join(copy, ".git/ait/worktrees", key(new)))
+    p = subprocess.run(["sh", "-c", cmd], cwd=copy, env=run.env, capture_output=True, text=True, errors="replace")
+    shutil.rmtree(copy)
+    # the command says itself that it needs results or that local changes stop it (5.9a, user decision 52)
+    if p.returncode == 0 or re.search(r"^error: (check results required|uncommitted changes in|contract changes and code "
+                                      r"changes are mixed)", p.stderr, re.M):
+        return None
+    return "I4 hint not taken: %s\n  -> exit %d\n%s" % (line, p.returncode, p.stderr)
+
+
+def check(run, setup, cmd):
+    """Run one step; the first broken invariant, or None."""
+    if setup:
+        run.sh(setup)
+    before = run.snapshot()
+    rc, out, err = run.sh(cmd)
+    run.bind(out)
+    run.seen["refused" if rc else "ok"] += 1
+    if rc not in (0, 1, 128, 129) or "BUG" in err or "AddressSanitizer" in err:
+        return "I1 exit %d of '%s'\n%s" % (rc, cmd, err)
+    writes = cmd.startswith("ait ") and cmd.split()[1] not in READERS
+    if writes and rc and run.snapshot() != before:
+        return "I2 refused '%s' changed the repository\n%s" % (cmd, err)
+    if writes and not rc and "\nrequest R" in "\n" + out:
+        prc, _, perr = run.sh("ait hook post-commit")
+        if "warning:" in perr:
+            return "I3 '%s' left HEAD a new error\n%s" % (cmd, perr)
+    for line, hinted in hint_commands(err):
+        run.seen["hints"] += 1
+        broken = replay(run, line, hinted)
+        if broken:
+            return broken
+    trc, _, terr = run.sh("ait todo")
+    if trc:
+        return "I5 ait todo exit %d\n%s" % (trc, terr)
+    return None
+
+
+def play(steps, ait_dir):
+    """Steps from scratch; (index, violation) of the first broken invariant, or None."""
+    root = tempfile.mkdtemp(prefix="ait-explore-")
+    try:
+        run = Run(root, ait_dir)
+        for i, (setup, cmd) in enumerate(steps):
+            broken = check(run, setup, cmd)
+            if broken:
+                return i, broken
+        return None
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def generate(seed, count, ait_dir):
+    """A random sequence played as it is made; (steps, index, violation or None, what was seen)."""
+    rng = random.Random(seed)
+    root = tempfile.mkdtemp(prefix="ait-explore-")
+    try:
+        run = Run(root, ait_dir)
+        steps = []
+        for _ in range(count):
+            steps.append(step(rng, run))
+            broken = check(run, *steps[-1])
+            if broken:
+                return steps, len(steps) - 1, broken, run.seen
+        return steps, None, None, run.seen
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def kind(violation):
+    return violation.split()[0]
+
+
+def shrink(steps, violation, ait_dir):
+    """Drop steps while the same invariant still breaks at the last one."""
+    want = kind(violation)
+    i = 0
+    while i < len(steps) - 1:
+        trial = steps[:i] + steps[i + 1:]
+        got = play(trial, ait_dir)
+        if got and got[0] == len(trial) - 1 and kind(got[1]) == want:
+            steps, violation = trial, got[1]
+        else:
+            i += 1
+    return steps, violation
+
+
+def script(steps, violation):
+    lines = ["#!/bin/sh", "# " + violation.splitlines()[0], "set -x", 'cd "$(mktemp -d)"',
+             'export HOME=$PWD GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=:',
+             "git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master",
+             SETUP.strip(), "bind() { for k in D O X; do i=$(set | grep -c \"^$k[0-9]*=\"); "
+             "for id in $(sed -n \"s/^new \\($k[0-9a-f]*\\).*/\\1/p\" out); do eval \"$k$i=$id\"; i=$((i+1)); done; done; }"]
+    for setup, cmd in steps:
+        if setup:
+            lines.append(setup)
+        lines.append("%s > out 2> err; cat out err; bind" % cmd)
+    return "\n".join(lines) + "\n"
+
+
+def explore(seed, count, ait_dir, out):
+    steps, index, violation, seen = generate(seed, count, ait_dir)
+    if not violation:
+        return seed, None, seen
+    steps, violation = shrink(steps[: index + 1], violation, ait_dir)
+    path = os.path.join(out, "seed%d.sh" % seed)
+    with open(path, "w") as f:
+        f.write(script(steps, violation))
+    return seed, "%s (%d steps): %s" % (path, len(steps), violation.splitlines()[0]), seen
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ait", default=AIT_DIR)
+    ap.add_argument("--seeds", type=int, default=20)
+    ap.add_argument("--first", type=int, default=1)
+    ap.add_argument("--steps", type=int, default=30)
+    ap.add_argument("--jobs", type=int, default=os.cpu_count())
+    ap.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "ait-explore"))
+    a = ap.parse_args()
+    os.makedirs(a.out, exist_ok=True)
+    bad = 0
+    total = {"ok": 0, "refused": 0, "hints": 0}
+    with ProcessPoolExecutor(a.jobs) as pool:
+        jobs = [pool.submit(explore, s, a.steps, os.path.abspath(a.ait), a.out)
+                for s in range(a.first, a.first + a.seeds)]
+        for job in jobs:
+            seed, found, seen = job.result()
+            print("seed %d: %s" % (seed, found or "ok"), flush=True)
+            bad += found is not None
+            for k in total:
+                total[k] += seen[k]
+    print("# %d of %d seeds broke an invariant; commands %d taken, %d refused; %d hints run" %
+          (bad, a.seeds, total["ok"], total["refused"], total["hints"]))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
