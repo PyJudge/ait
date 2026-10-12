@@ -1782,7 +1782,7 @@ static char *first_ref(const char *commit)
  * each a latest version (7.12) HEAD's does not include and that means
  * otherwise (9.2), warned with the commit that brings it in and the first ref
  * holding it. The hint is the pull that takes them, named as 7.12.3 names
- * them, after what its local changes need first (5.9a, 7.12.0).
+ * them; what stops that pull is its own to say (choice 228).
  */
 void changes_not_in_head(struct string_list *ids)
 {

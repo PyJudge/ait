@@ -951,6 +951,41 @@ void fulfill_hint(struct state *s, struct record *p, struct tree *t)
 	suggest("when ready, stage the code and run 'ait fulfill %s -m <why>'", args.buf);
 }
 
+/* PATHS as shell words, each quoted only when the shell would read it (5.9a) */
+char *shell_words(struct string_list *paths)
+{
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, paths) {
+		if (sb.len)
+			strbuf_addch(&sb, ' ');
+		sq_quote_buf_pretty(&sb, item->string);
+	}
+	return strbuf_detach(&sb, NULL);
+}
+
+/* "'A' 'B'": the paths named in a message or a hint's prose, as git names them */
+char *quoted_paths(struct string_list *paths)
+{
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, paths)
+		strbuf_addf(&sb, "%s'%s'", sb.len ? " " : "", item->string);
+	return strbuf_detach(&sb, NULL);
+}
+
+/* hints name their paths as one list (5.9a), even when there is one path */
+struct string_list *single(const char *s)
+{
+	struct string_list *list = xcalloc(1, sizeof(*list));
+
+	string_list_init_dup(list);
+	string_list_append(list, s);
+	return list;
+}
+
 /*
  * 7.1.8 (user decision 47): once the commit that put K back is reverted, so
  * that K is at THEN again, what brings it to the older NOW for others too, as
@@ -1048,41 +1083,6 @@ static int post_hook(const char *before)
 			suggest("to take it back for others too, once this commit is reverted, %s", back);
 	}
 	return 0;
-}
-
-/* PATHS as shell words, each quoted only when the shell would read it (5.9a) */
-char *shell_words(struct string_list *paths)
-{
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, paths) {
-		if (sb.len)
-			strbuf_addch(&sb, ' ');
-		sq_quote_buf_pretty(&sb, item->string);
-	}
-	return strbuf_detach(&sb, NULL);
-}
-
-/* "'A' 'B'": the paths named in a message or a hint's prose, as git names them */
-char *quoted_paths(struct string_list *paths)
-{
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, paths)
-		strbuf_addf(&sb, "%s'%s'", sb.len ? " " : "", item->string);
-	return strbuf_detach(&sb, NULL);
-}
-
-/* hints name their paths as one list (5.9a), even when there is one path */
-struct string_list *single(const char *s)
-{
-	struct string_list *list = xcalloc(1, sizeof(*list));
-
-	string_list_init_dup(list);
-	string_list_append(list, s);
-	return list;
 }
 
 /* 5.9a, the stage rule: contract PATHS are staged and committed through ait */
