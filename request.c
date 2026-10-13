@@ -2017,33 +2017,145 @@ static struct tree *worktree_state(struct request *q, struct state *ws)
 }
 
 /*
+ * 5.8 E_INCOMPLETE "missing": restore PATH from HEAD, or create it, or stop
+ * declaring it in DECL, what declares it; a record path is declared by nothing
+ */
+static char *missing_hint(struct request *q, const char *path, struct string_list *decl)
+{
+	const char *stop = decl && decl->nr ? xstrfmt("stop declaring it in %s", quoted_paths(decl)) : NULL;
+
+	if (blob_at(q->ht, path))
+		return xstrfmt("restore '%s' from HEAD%s%s", path, stop ? ", or " : "", stop ?: "");
+	return stop ? xstrfmt("create it or %s", stop) : NULL;
+}
+
+/* PATH into OUT, with WHO among what declares it (5.8 DECL) */
+static void declared_by(struct string_list *out, const char *path, const char *who)
+{
+	struct string_list_item *item = string_list_insert(out, path);
+
+	if (!item->util)
+		item->util = xcalloc(1, sizeof(struct string_list));
+	if (who)
+		string_list_insert(item->util, who);
+}
+
+/*
+ * spec 7.5.2: into OUT, the related paths of the contracts PATHS touch: each
+ * record, and what the work tree's record (HEAD's when it has none) declares:
+ * its definitions and what those declare as the work tree has them (6.2). A
+ * contract that has ended declares nothing (2.4.1), and a record gone from
+ * the work tree brings none: whether it may go is the gate's (2.3.1).
+ */
+static void related_paths(struct state *hs, struct state *ws, struct tree *w, struct string_list *paths,
+			  struct string_list *out)
+{
+	struct string_list_item *p, *f;
+	size_t i, j;
+
+	for_each_string_list_item(p, paths)
+		for (j = 0; j < 2; j++)
+			for (i = 0; i < (j ? hs : ws)->nr; i++) {
+				struct record *r = (j ? hs : ws)->r[i];
+				struct string_list defs = STRING_LIST_INIT_DUP, declared = STRING_LIST_INIT_DUP;
+
+				/* a record is read as the work tree has it; one removed there has none (7.5.2) */
+				if ((j && (state_get(ws, r->id) || !in_work_tree(xstrfmt(".ait/%s", r->id)))) || !is_live(r) ||
+				    (strcmp(p->string, xstrfmt(".ait/%s", r->id)) && !declares(r, p->string)))
+					continue;
+				declared_by(out, xstrfmt(".ait/%s", r->id), NULL);
+				for_each_string_list_item(f, &r->f[FILES])
+					if (is_def(f->string))
+						string_list_insert(&defs, scope_path(f->string));
+				def_inputs(w, &defs, &declared);
+				for_each_string_list_item(f, &defs)
+					declared_by(out, f->string, xstrfmt(".ait/%s", r->id));
+				for_each_string_list_item(f, &declared)
+					declared_by(out, f->string, f->util);
+			}
+}
+
+/* 7.5.2: into OUT, the PATHS the work tree has otherwise than the index, an untracked file too */
+static void unstaged_of(struct string_list *paths, struct string_list *out)
+{
+	struct strvec diff = STRVEC_INIT, others = STRVEC_INIT;
+	struct string_list_item *item;
+
+	strvec_pushl(&diff, "diff", "--name-only", "-z", "--", NULL);
+	strvec_pushl(&others, "ls-files", "--others", "--exclude-standard", "-z", "--", NULL);
+	for_each_string_list_item(item, paths) {
+		strvec_push(&diff, item->string);
+		strvec_push(&others, item->string);
+	}
+	z_paths(git_args(&diff, NULL, NULL, NULL), out);
+	z_paths(git_args(&others, NULL, NULL, NULL), out);
+}
+
+/*
+ * 7.5.2: the lines for the contract PATHS, each with what declares it in
+ * RELATED: one the work tree lacks or has as no regular file (2.1.4) is
+ * "missing", with its hint; one it has otherwise than the index is
+ * "unstaged", into UNSTAGED too, unless STAGING stages it now. Each goes
+ * into WRONG.
+ */
+static void work_tree_lines(struct request *q, struct string_list *paths, struct string_list *related,
+			    struct string_list *staging, struct string_list *unstaged, struct string_list *wrong)
+{
+	struct string_list differ = STRING_LIST_INIT_DUP, missing = STRING_LIST_INIT_DUP;
+	struct string_list_item *item, *decl;
+
+	unstaged_of(paths, &differ);
+	for_each_string_list_item(item, paths) {
+		decl = string_list_lookup(related, item->string);
+		if (spec_file_why(item->string))
+			string_list_insert(&missing, item->string)->util = decl ? decl->util : NULL;
+		else if (string_list_has_string(&differ, item->string) && !unsorted_string_list_has_string(staging, item->string))
+			string_list_insert(unstaged, item->string);
+	}
+	for_each_string_list_item(item, &missing) {
+		printf("missing %s\n", item->string);
+		string_list_insert(wrong, item->string);
+		add_hint(q, missing_hint(q, item->string, item->util));
+	}
+	for_each_string_list_item(item, unstaged) {
+		printf("unstaged %s\n", item->string);
+		string_list_insert(wrong, item->string);
+	}
+}
+
+/*
  * 7.6.1: what contract commit's noop leaves: the contract paths (7.5.1) the
- * work tree has otherwise than the index, as what was fixed is not committed,
- * which is this command's result, not a risk (rule 6); once none is left,
- * records the index spells otherwise than HEAD, which mean what HEAD's do as
- * the noop shows (user decision 44), as restoring them first would throw
- * away what is to be staged
+ * work tree has otherwise than the index, judged as 7.5.2 judges them, as
+ * what was fixed is not committed, which is this command's result, not a
+ * risk (rule 6); once none is left, records the index spells otherwise than
+ * HEAD, which mean what HEAD's do as the noop shows (user decision 44), as
+ * restoring them first would throw away what is to be staged
  */
 static void noop_left(struct request *q)
 {
 	struct string_list differ = STRING_LIST_INIT_DUP, paths = STRING_LIST_INIT_DUP, spelled = STRING_LIST_INIT_DUP;
+	struct string_list related = STRING_LIST_INIT_DUP, unstaged = STRING_LIST_INIT_DUP, wrong = STRING_LIST_INIT_DUP;
+	struct string_list none = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct state hs = { 0 }, ws = { 0 };
+	struct tree *w;
 
 	state_load(&hs, q->ht);
-	worktree_state(q, &ws);
+	w = worktree_state(q, &ws);
 	z_paths(git("diff --name-only -z"), &differ);
 	z_paths(git("ls-files --others --exclude-standard -z"), &differ);
 	for_each_string_list_item(item, &differ)
-		if (contract_path(&hs, item->string) || contract_path(&ws, item->string)) {
-			printf("unstaged %s\n", item->string);
+		if (contract_path(&hs, item->string) || contract_path(&ws, item->string))
 			string_list_append(&paths, item->string);
-		}
+	related_paths(&hs, &ws, w, &paths, &related);
+	work_tree_lines(q, &paths, &related, &none, &unstaged, &wrong);
 	tree_diff(q->ht, q->v, &spelled);
-	if (paths.nr)
-		suggest("stage it: 'ait contract add %s', then rerun this command", shell_words(&paths));
-	else if (spelled.nr)
-		suggest("restore %s as in 'HEAD': it means what HEAD's version means", quoted_paths(&spelled));
+	if (unstaged.nr)
+		add_hint(q, xstrfmt("stage it: 'ait contract add %s', then rerun this command", shell_words(&unstaged)));
+	else if (!wrong.nr && spelled.nr)
+		add_hint(q, xstrfmt("restore %s as in 'HEAD': it means what HEAD's version means", quoted_paths(&spelled)));
+	if (q->hints.nr)
+		suggest("%s", hints(q));
 }
 
 /* 6.7a H9's contracts, judged as this request ends (5.9a): on its commit, else on HEAD as it is then, before a refusal's error too */
@@ -2390,19 +2502,6 @@ int cmd_fulfill(int argc, const char **argv)
 }
 
 /*
- * 5.8 E_INCOMPLETE "missing": restore PATH from HEAD, or create it, or stop
- * declaring it in DECL, what declares it; a record path is declared by nothing
- */
-static char *missing_hint(struct request *q, const char *path, struct string_list *decl)
-{
-	const char *stop = decl && decl->nr ? xstrfmt("stop declaring it in %s", quoted_paths(decl)) : NULL;
-
-	if (blob_at(q->ht, path))
-		return xstrfmt("restore '%s' from HEAD%s%s", path, stop ? ", or " : "", stop ?: "");
-	return stop ? xstrfmt("create it or %s", stop) : NULL;
-}
-
-/*
  * spec 7.3.3: PATH is a spec file git can stage as it is in the work tree: no
  * case twin in HEAD or the index, a file there and not reached through a
  * symlink, and not under a file git has (rule 3: a contract commit changes no code)
@@ -2526,68 +2625,6 @@ const char *pull_helpers(const char *tree, struct strvec *clauses, char *after_o
 	return tree;
 }
 
-/* PATH into OUT, with WHO among what declares it (5.8 DECL) */
-static void declared_by(struct string_list *out, const char *path, const char *who)
-{
-	struct string_list_item *item = string_list_insert(out, path);
-
-	if (!item->util)
-		item->util = xcalloc(1, sizeof(struct string_list));
-	if (who)
-		string_list_insert(item->util, who);
-}
-
-/*
- * spec 7.5.2: into OUT, the related paths of the contracts PATHS touch: each
- * record, and what the work tree's record (HEAD's when it has none) declares:
- * its definitions and what those declare as the work tree has them (6.2). A
- * contract that has ended declares nothing (2.4.1), and a record gone from
- * the work tree brings none: whether it may go is the gate's (2.3.1).
- */
-static void related_paths(struct state *hs, struct state *ws, struct tree *w, struct string_list *paths,
-			  struct string_list *out)
-{
-	struct string_list_item *p, *f;
-	size_t i, j;
-
-	for_each_string_list_item(p, paths)
-		for (j = 0; j < 2; j++)
-			for (i = 0; i < (j ? hs : ws)->nr; i++) {
-				struct record *r = (j ? hs : ws)->r[i];
-				struct string_list defs = STRING_LIST_INIT_DUP, declared = STRING_LIST_INIT_DUP;
-
-				/* a record is read as the work tree has it; one removed there has none (7.5.2) */
-				if ((j && (state_get(ws, r->id) || !in_work_tree(xstrfmt(".ait/%s", r->id)))) || !is_live(r) ||
-				    (strcmp(p->string, xstrfmt(".ait/%s", r->id)) && !declares(r, p->string)))
-					continue;
-				declared_by(out, xstrfmt(".ait/%s", r->id), NULL);
-				for_each_string_list_item(f, &r->f[FILES])
-					if (is_def(f->string))
-						string_list_insert(&defs, scope_path(f->string));
-				def_inputs(w, &defs, &declared);
-				for_each_string_list_item(f, &defs)
-					declared_by(out, f->string, xstrfmt(".ait/%s", r->id));
-				for_each_string_list_item(f, &declared)
-					declared_by(out, f->string, f->util);
-			}
-}
-
-/* 7.5.2: into OUT, the PATHS the work tree has otherwise than the index, an untracked file too */
-static void unstaged_of(struct string_list *paths, struct string_list *out)
-{
-	struct strvec diff = STRVEC_INIT, others = STRVEC_INIT;
-	struct string_list_item *item;
-
-	strvec_pushl(&diff, "diff", "--name-only", "-z", "--", NULL);
-	strvec_pushl(&others, "ls-files", "--others", "--exclude-standard", "-z", "--", NULL);
-	for_each_string_list_item(item, paths) {
-		strvec_push(&diff, item->string);
-		strvec_push(&others, item->string);
-	}
-	z_paths(git_args(&diff, NULL, NULL, NULL), out);
-	z_paths(git_args(&others, NULL, NULL, NULL), out);
-}
-
 /*
  * spec 7.5.2 and 7.6.1: the related paths of what PATHS touch are in the work
  * tree, and those PATHS leave out are as the index has them; else the
@@ -2597,7 +2634,7 @@ static void unstaged_of(struct string_list *paths, struct string_list *out)
  */
 static void bundle_complete(struct request *q, struct string_list *paths, struct string_list *untracked)
 {
-	struct string_list related = STRING_LIST_INIT_DUP, differ = STRING_LIST_INIT_DUP, missing = STRING_LIST_INIT_DUP;
+	struct string_list related = STRING_LIST_INIT_DUP, differ = STRING_LIST_INIT_DUP;
 	struct string_list unstaged = STRING_LIST_INIT_DUP, all = STRING_LIST_INIT_DUP, wrong = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct state hs = { 0 }, ws = { 0 };
@@ -2606,25 +2643,11 @@ static void bundle_complete(struct request *q, struct string_list *paths, struct
 
 	state_load(&hs, q->ht);
 	related_paths(&hs, &ws, w, paths, &related);
-	unstaged_of(&related, &differ);
-	for_each_string_list_item(item, &related)
-		if (spec_file_why(item->string))
-			string_list_insert(&missing, item->string)->util = item->util;
-		else if (string_list_has_string(&differ, item->string) && !unsorted_string_list_has_string(paths, item->string))
-			string_list_insert(&unstaged, item->string);
 	for_each_string_list_item(item, untracked)
 		string_list_insert(&unstaged, item->string);
-	if (!missing.nr && !unstaged.nr)
+	work_tree_lines(q, &related, &related, paths, &unstaged, &wrong);
+	if (!wrong.nr)
 		return;
-	for_each_string_list_item(item, &missing) {
-		printf("missing %s\n", item->string);
-		string_list_insert(&wrong, item->string);
-		add_hint(q, missing_hint(q, item->string, item->util));
-	}
-	for_each_string_list_item(item, &unstaged) {
-		printf("unstaged %s\n", item->string);
-		string_list_insert(&wrong, item->string);
-	}
 	/* 5.8: the paths staged together, grown until 7.5.2 holds for them */
 	for_each_string_list_item(item, paths)
 		string_list_insert(&all, item->string);
