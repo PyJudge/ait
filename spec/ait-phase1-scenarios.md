@@ -379,7 +379,7 @@ tick; ait offer src/stock.c:1-10 p as o1 offer src/order.c p as o4 future demand
 1. `echo '# x' >> tests/pass.sh; tick; git commit -qam raw` → exit ≠ 0, stderr에 `error: contract files cannot be changed by a plain commit:`와 `hint: … ait contract add …`, HEAD 불변.
 2. `tick; git commit -q --no-verify -am raw` → 커밋된다(규칙 9: 의도적 우회는 막지 않는다). post-commit이 `warning: spec files do not match the contract:`로 시작하는 행과 `E_INCOMPLETE`의 HEAD 형 hint(`ait contract commit -m <why>`, 5.8)를 쓴다(고정과 다른 명세 파일은 사고다, 7.1.8). `ait peek <O>`의 이력 마지막 행은 `event - ? edited tests/pass.sh`다.
 3. `ait contract push origin` → exit ≠ 0. stderr 첫 행이 `error: spec files do not match the contract:`로 시작하고(7.10.1-3. raw 커밋은 명세 파일만 바꿨으므로 계약 커밋이라 `E_EMPTY`가 아니다), origin은 그대로다. 그냥 `git push origin master`도 pre-push hook이 같은 이유로 거절한다(7.1.6).
-4. stock.c를 바꿔 stage → `ait fulfill O` → `err E_INCOMPLETE`. stdout 보고에 `invalid incomplete …`과 `ready no`가 있다. 끝나면 되돌린다.
+4. stock.c를 바꿔 stage → `ait fulfill O` → `err E_INCOMPLETE`. HEAD의 오류라 보고 없이 먼저 멈추고(5.10, 사용자 결정 55), hint는 `run 'ait contract commit -m <why>', then rerun this command`다. 끝나면 되돌린다.
 5. 복구: `tick; ait contract commit -m "판 다시 고정"` → `changed <O>`. 이력에 `event <R> agent-a respecified tests/pass.sh`가 더해진다. 이후 `ait contract push origin` → `ok`.
 6. 위조: `.ait/<O>`의 state를 손으로 current로 바꾸고 `tick; git commit -q --no-verify -am forge`(Cf).
    - 커밋된다. post-commit이 `warning: '<O>' at HEAD was changed outside ait's rules`와 `hint: restore '.ait/<O>' as in '<Cf^>', then 'ait contract commit -m <why>'`를 쓴다(확인 행이 없는 current는 사고 판이다, 1.5a, 2.3.3, 7.1.8).

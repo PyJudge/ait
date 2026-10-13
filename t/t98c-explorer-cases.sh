@@ -63,7 +63,7 @@ tick; printf 'body: b\nfoo: 1\n' > specs/q.yaml && git add specs/q.yaml
 tick; git commit -q --no-verify -m nv > out 2> err
 tick; git add -A
 tick; ait fulfill $D0 -m f > out 2> err
-check "seed 892: the bundle no command pins again gets no hint a helper refuses" sh -c "grep -q \"^error: spec files do not match the contract: '$D0'\" err && ! grep -q '^hint:' err"
+check "seed 892: fulfill stops on HEAD's first error, with no hint, as no command mends it (user decision 55)" sh -c "grep -q \"^fatal: bad format: '.ait/$D0'\" err && ! grep -q '^hint:' err"
 
 # 5.10 (seed 818): the same for a broken bundle entangled with another error of HEAD
 explorer_repo

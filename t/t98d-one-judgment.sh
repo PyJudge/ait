@@ -89,4 +89,22 @@ tick; AIT_SESSION=$SA run ait contract pull "$D"
 check "told to whose demand it is" err_has "warning: '$D' comes in unverified"
 check "with its hint" err_has "hint: check '$D' again"
 
+# 5.10 (user decision 55): HEAD's error stops a helper first, as git's commands stop on unmerged entries; its repair, or none, is the hint
+prep
+tick; ait demand src/order.c src/stock.c specs/p.yaml --force -m d >"$T/out" 2>"$T/err"; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+tick; ait offer src/order.c specs/w.yaml --force -m o >"$T/out" 2>"$T/err"; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+printf 'body: b\ninputs: [tests/none.sh]\n' > specs/p.yaml; git add specs/p.yaml; tick; git commit -q --no-verify -m nv 2>/dev/null
+tick; run ait future cancel "$D" -m c
+check "HEAD broke D's bundle beyond repair: the cancel stops on it before its transition" sh -c "grep -q \"^error: spec files do not match the contract: '$D'\" '$T/err' && ! grep -q 'cannot go from' '$T/err'"
+check "with no hint, as no command mends it" not err_has "hint:"
+sed -i.bak 's|^provider src/order.c |provider src/stock.c |' ".ait/$O" && rm -f ".ait/$O.bak"; git add ".ait/$O"; tick; git commit -q --no-verify -m nv 2>/dev/null
+run ait todo
+check "todo shows each of HEAD's errors, as git status shows unmerged paths" sh -c "grep -q \"warning: '$O' at HEAD was changed outside ait's rules\" '$T/err' && grep -q \"warning: spec files do not match the contract: '$D'\" '$T/err'"
+check "and no empty hint where no command mends one" not err_has "(null)"
+echo 'body: 재고가 0이면 예약 요청을 거절한다.' > specs/p.yaml; git add specs/p.yaml; tick; git commit -q --no-verify -m nv 2>/dev/null
+git checkout -q HEAD~3 -- ".ait/$O"; git add ".ait/$O"; tick; git commit -q --no-verify -m nv 2>/dev/null
+echo 'body: changed' > specs/p.yaml; git add specs/p.yaml; tick; git commit -q --no-verify -m nv 2>/dev/null
+tick; run ait future cancel "$D" -m c
+check "a bundle the gate pins again: its repair, then the cancel again" err_has "hint: run 'ait contract commit -m <why>', then rerun this command"
+
 done_testing

@@ -1327,10 +1327,10 @@ static struct tree *index_tree(void)
 static int cmd_todo(int argc, const char **argv)
 {
 	struct state s = { 0 }, hs = { 0 };
-	struct string_list touched = STRING_LIST_INIT_DUP;
-	struct verdict v;
+	struct string_list touched = STRING_LIST_INIT_DUP, none = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct tree *t, *ht = head_tree();
+	struct string_list *broken = head ? &judge(head)->errors : &none;
 	const char *me;
 	size_t i;
 	int k;
@@ -1347,25 +1347,23 @@ static int cmd_todo(int argc, const char **argv)
 	for (k = 1; k < argc; k++)
 		if (id_shaped(argv[k]) && !state_get(&s, argv[k]))
 			reject(128, NULL, "no such contract: '%s'", argv[k]);
-	/* 5.10: HEAD's accidents are shown as they are, their error as a warning */
-	for (i = 0; i < hs.nr; i++)
-		if (accident_at_head(hs.r[i], &v, 0)) {
-			warning("%s", v.msg);
-			suggest("%s", v.hint);
-		}
+	/*
+	 * 5.10 (user decision 55): HEAD's errors are shown as they are, each a
+	 * warning with its repair, as git status shows unmerged paths; while there
+	 * are any, the commands a block would name stop on them, so no block names one
+	 */
+	for_each_string_list_item(item, broken) {
+		warning("%s", ((struct verdict *)item->util)->msg);
+		suggest("%s", head_repair(item->util, 0) ?: "");
+	}
 	for (i = 0; i < s.nr; i++) {
 		struct record *r = s.r[i], *target;
 		struct string_list by = STRING_LIST_INIT_DUP;
 		int mine, future, unver, pick = 0;
 
+		/* one HEAD has too is HEAD's error, shown above */
 		if (format_error(r)) {
-			struct state one = { 1, 1, &r };
-			const char *path = xstrfmt(".ait/%s", r->id);
-
-			warning("skipping malformed '%s' at 'index'", path);
-			/* 5.10: one HEAD has too is HEAD's error, mended as such */
-			if (!strcmp(blob_at(t, path) ?: "", blob_at(ht, path) ?: "") && check_records(&one, &v))
-				suggest("%s", head_repair(&v, 0) ?: "");
+			warning("skipping malformed '.ait/%s' at 'index'", r->id);
 			continue;
 		}
 		/* links and the init file are no contracts */
@@ -1400,7 +1398,8 @@ static int cmd_todo(int argc, const char **argv)
 		file_lines("file", r, t);
 		link_lines(&s, r, t);
 		putchar('\n');
-		todo_hints(&s, &hs, r, t, me, &by);
+		if (!broken->nr)
+			todo_hints(&s, &hs, r, t, me, &by);
 	}
 	/* 7.8.2: the index block, the touch set of 7.7.6: the current contracts of HEAD whose provider the staged change touches */
 	for (i = 0; i < hs.nr; i++)

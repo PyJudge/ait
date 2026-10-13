@@ -683,17 +683,21 @@ char *head_repair(struct verdict *v, int rerun)
 	return strbuf_detach(&hint, NULL);
 }
 
-/* 5.10: R of HEAD is an accident (2.3.3), as HEAD's verdict whose repair reruns the command when RERUN */
-int accident_at_head(struct record *r, struct verdict *out, int rerun)
+/*
+ * 5.10: HEAD's first error that points to R, of WORD when given (a structure
+ * error, an accident or a broken bundle), as HEAD's verdict with its repair;
+ * contract commit, which runs on such a HEAD, asks it (5.9a hint 1)
+ */
+int error_at_head(struct record *r, const char *word, struct verdict *out)
 {
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &judge(head)->errors) {
 		struct verdict *e = item->util;
 
-		if (!strcmp(e->word, "accident") && !strcmp(e->k->id, r->id)) {
+		if ((!word || !strcmp(e->word, word)) && (!strcmp(e->k->id, r->id) || (e->o && !strcmp(e->o->id, r->id)))) {
 			*out = *e;
-			out->hint = head_repair(out, rerun);
+			out->hint = head_repair(out, 0);
 			return 1;
 		}
 	}
@@ -730,14 +734,20 @@ void base_versions(struct state *s, struct string_list *written)
 	}
 }
 
-/* 5.10: HEAD's first error (validate's, then an accident), with the hint that mends it before the command runs again; 0 when none */
-int head_error(struct verdict *v)
+/*
+ * 5.10 (user decision 55): HEAD's first error (validate's, then an accident)
+ * stops a command that judges records before it judges anything else, with
+ * the repair and a rerun, as git stops commit, merge, pull and the sequencer
+ * on unmerged entries with one function (advice.c error_resolve_conflict).
+ * Only contract add and commit, which mend it, run on such a HEAD.
+ */
+void head_stops(void)
 {
 	struct judgment *j = judge(head);
+	struct verdict v;
 
 	if (!j->errors.nr)
-		return 0;
-	*v = *(struct verdict *)j->errors.items[0].util;
-	v->hint = head_repair(v, 1);
-	return v->code;
+		return;
+	v = *(struct verdict *)j->errors.items[0].util;
+	reject(v.code, head_repair(&v, 1), "%s", v.msg);
 }

@@ -108,14 +108,17 @@ tick; ait future cancel "$O" -m c >/dev/null 2>&1
 tick; run git revert --no-edit HEAD
 check "an ended version stays ended: no command" not err_has "to take it back"
 
-# 5.10: every request judges the records it writes from their base version, GOOD's when HEAD's is an accident
+# 5.10 (user decision 55): a helper stops on HEAD's accident first, as git's commands stop on unmerged entries; the repair, then the helper again
 prep
-tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out"); GB=$(git rev-parse HEAD:.ait/$O)
+tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out"); G=$(git rev-parse HEAD)
 grep -v '^check ' .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O
 tick; git commit -qam hand --no-verify
 tick; run ait future amend "$O" -m reopen
-check "a helper reopens an accident from GOOD's version" test $rc = 0
-check "its prev is GOOD's blob" test "$(git show HEAD:.ait/$O | sed -n 's/^prev //p')" = "$GB"
+check "a helper stops on HEAD's accident before anything else" sh -c "[ $rc = 1 ] && grep -q \"^error: '$O' at HEAD was changed outside ait's rules\" '$T/err'"
+check "with the repair and a rerun" err_has "hint: restore '.ait/$O' as in '$G', then 'ait contract commit -m <why>', then rerun this command"
+git checkout -q "$G" -- ".ait/$O"; tick; ait contract commit -m mend >/dev/null 2>&1
+tick; run ait future amend "$O" -m reopen
+check "then the helper runs" test $rc = 0
 run ait todo
 check "the accident is gone" not err_has "changed outside ait's rules"
 
@@ -126,7 +129,7 @@ sed -e 's/^state cancelled/state future/' -e "s/^prev .*/prev $CB/" .ait/$O > "$
 tick; git commit -qam revive --no-verify
 echo x >> src/stock.c; git add src/stock.c
 tick; run ait fulfill "$O" --force -m f
-check "fulfill of a contract revived by hand: E_STATE from GOOD's cancelled version" fails 1 "error: not allowed: '$O' cannot go from cancelled to current"
+check "fulfill of a contract revived by hand stops on HEAD's accident first (user decision 55)" fails 1 "error: '$O' at HEAD was changed outside ait's rules"
 check "hint 1: HEAD's accident is restored first, then the fulfill is run again" err_has "hint: restore '.ait/$O' as in '$G', then 'ait contract commit -m <why>', then rerun this command"
 git reset -q src/stock.c; git checkout -q src/stock.c
 git checkout "$G" -- .ait/$O
@@ -134,7 +137,7 @@ tick; run ait contract commit -m fix
 check "restoring GOOD's ended version commits (no transition)" test $rc = 0
 check "the record is GOOD's again, prev GOOD's blob" test "$(git show HEAD:.ait/$O | sed -n 's/^state //p;s/^prev //p' | tr '\n' ' ')" = "cancelled $CB "
 
-# 7.7.6: a HEAD accident that refuses commit is the report's 'invalid' line, and the commit is not ready
+# 5.10 (user decision 55): a commit with something to check stops on HEAD's accident before its report
 prep
 tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
 tick; ait offer src/order.c specs/w.yaml --force -m p >/dev/null 2>&1
@@ -143,8 +146,8 @@ tick; git commit -qam hand --no-verify
 echo x >> src/order.c; git add src/order.c
 run ait commit -m code
 check "E_ACCIDENT" fails 1 "error: '$O' at HEAD was changed outside ait's rules"
-check "the invalid line" grep -qx "invalid accident '$O' at HEAD was changed outside ait's rules" "$T/out"
-check "ready no" grep -qx "ready no" "$T/out"
+check "before any report" sh -c "! grep -q '^ready ' '$T/out'"
+check "with the repair and a rerun" err_has "then 'ait contract commit -m <why>', then rerun this command"
 
 # 8.1: contract commit's new records have their IDs already, so each gets its own tasks
 prep
@@ -256,13 +259,16 @@ check "E_CODE_REQUIRED" fails 1 "error: no code under the contract's scope:"
 if [ "$OA" \< "$OB" ]; then K1=$OA P2=src/b.c; else K1=$OB P2=src/a.c; fi
 check "the first contract's cancel comes before the second one's write (ID order)" err_before "ait future cancel $K1 -m <why>" "write '$P2'"
 
-# 2.2.5, 5.10: a helper writing over a hand-changed creator keeps GOOD's, so it writes no accident (2.3.3)
+# 2.2.5, 5.10 (user decision 55): a hand-changed creator stops a helper first; GOOD's record comes back, then the helper runs
 prep
-tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out"); B0=$(git rev-parse HEAD:.ait/$O)
+tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out"); B0=$(git rev-parse HEAD:.ait/$O); G=$(git rev-parse HEAD)
 sed -e 's/^creator a /creator b /' -e "s/^prev .*/prev $B0/" .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O
 tick; git commit -qam hand --no-verify
 tick; run ait future amend "$O" -m r
-check "the helper writes GOOD's creator" sh -c "[ $rc = 0 ] && git show HEAD:.ait/$O | grep -q '^creator a '"
+check "the helper stops on HEAD's accident" sh -c "[ $rc = 1 ] && grep -q \"hint: restore '.ait/$O' as in '$G', then 'ait contract commit -m <why>', then rerun this command\" '$T/err'"
+git checkout -q "$G" -- ".ait/$O"; tick; ait contract commit -m mend >/dev/null 2>&1
+tick; run ait future amend "$O" -m r
+check "then it writes GOOD's creator" sh -c "[ $rc = 0 ] && git show HEAD:.ait/$O | grep -q '^creator a '"
 run ait todo
 check "and no accident" not err_has "changed outside ait's rules"
 
@@ -377,13 +383,13 @@ tick; git revert --no-edit "$IN" >/dev/null 2>&1
 git checkout -q --ours .ait/$O; git add .ait/$O
 tick; expect_ok "the revert's finishing commit" git commit -q --allow-empty --no-edit --cleanup=strip
 
-# 6.2: a record a helper writes without a base version is new, made by this session
+# 5.10 (user decision 55): a record no rule made, with no GOOD version, stops a helper; it goes, then the helper runs
 prep
 B=$(ait session open --agent b 2>/dev/null)
 printf 'role offer\nstate current\nprovider src/stock.c %s\nfile specs/p.yaml 100644 %s def\ncreator b %s\nprev -\n' "$(git rev-parse HEAD:src/stock.c)" "$(git rev-parse HEAD:specs/p.yaml)" "$B" > .ait/O111111111111
 git add .ait/O111111111111; tick; git commit -qm raw --no-verify
 tick; run ait future amend O111111111111 -m reopen
-check "the helper's new record is the session's" sh -c "[ $rc = 0 ] && git show HEAD:.ait/O111111111111 | grep -q '^creator a '"
+check "the helper stops on it, and the hint removes it" sh -c "[ $rc = 1 ] && grep -q \"hint: remove '.ait/O111111111111', then 'ait contract commit -m <why>', then rerun this command\" '$T/err'"
 
 # H9: two latest versions of one contract elsewhere are one contract to pull, and do not refuse the command
 prep
@@ -395,13 +401,15 @@ git switch -q master
 tick; run ait future amend "$O" src/stock.c:20-25 - -m m
 check "the amend runs with H9's warnings" sh -c "[ $rc = 0 ] && [ \$(grep -c 'has changes not in HEAD' '$T/err') = 2 ]"
 
-# 6.2: a helper returning an ended contract to GOOD's version takes GOOD's file lines, so there is no transition
+# 5.10 (user decision 55): an ended contract revived by hand stops a helper; GOOD's version comes back with its file lines
 prep
 tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
-tick; ait future cancel "$O" -m c >/dev/null 2>&1; CB=$(git rev-parse HEAD:.ait/$O)
+tick; ait future cancel "$O" -m c >/dev/null 2>&1; CB=$(git rev-parse HEAD:.ait/$O); G=$(git rev-parse HEAD)
 sed -e 's/^state cancelled/state future/' -e "s/^prev .*/prev $CB/" -e "s#^file specs/p.yaml .*#file specs/p.yaml 100644 $(git rev-parse HEAD:specs/w.yaml) def#" .ait/$O > "$T/rec" && cat "$T/rec" > .ait/$O
 tick; git commit -qam revive --no-verify
-tick; expect_ok "future cancel puts it back" ait future cancel "$O" -m c
+tick; run ait future cancel "$O" -m c
+check "the cancel stops on it, and the hint restores GOOD's version" sh -c "[ $rc = 1 ] && grep -q \"hint: restore '.ait/$O' as in '$G', then 'ait contract commit -m <why>', then rerun this command\" '$T/err'"
+git checkout -q "$G" -- ".ait/$O"; tick; ait contract commit -m mend >/dev/null 2>&1
 check "with GOOD's file line" test "$(git show HEAD:.ait/$O | grep '^file ')" = "$(git show "$CB" | grep '^file ')"
 
 # 7.5.2: a definition gone from the work tree declares nothing there

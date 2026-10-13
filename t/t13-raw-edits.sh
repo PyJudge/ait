@@ -58,8 +58,8 @@ expect_err "3: contract push origin" UNSUPPORTED ait contract push origin
 echo s51 >> src/stock.c; git add src/stock.c
 desc="4: fulfill O with the raw-edited spec file"
 expect_unchanged expect_err "$desc" E_INCOMPLETE ait fulfill "$O" -m m
-check "4: report has invalid incomplete" out_matches '^invalid incomplete '
-check "4: report has ready no" out_has "ready no"
+check "4: HEAD's error stops it before any report (5.10, user decision 55)" sh -c "! grep -q '^ready ' '$T/out'"
+check "4: with the repair, then the fulfill again" err_has "hint: run 'ait contract commit -m <why>', then rerun this command"
 git reset -q --hard
 # T13-5 (6.2, 7.6.1): the contract commit with nothing staged re-pins the raw-edited spec file
 tick; expect_ok "5: contract commit" ait contract commit -m "판 다시 고정"

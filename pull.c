@@ -2034,7 +2034,6 @@ static int receive(struct pull *p)
 int cmd_pull(int argc, const char **argv)
 {
 	struct pull p = PULL_INIT;
-	struct verdict v;
 	int i, helper = 0;
 	char *after_option;
 	struct strvec args = STRVEC_INIT;
@@ -2058,8 +2057,7 @@ int cmd_pull(int argc, const char **argv)
 		reject(129, NULL, "a message is required: give -m <msg> or -F <file>");
 	precondition(0, 0);
 	/* 7.12.0: HEAD's error stops it first (5.10) */
-	if (head_error(&v))
-		reject(v.code, v.hint, "%s", v.msg);
+	head_stops();
 	snapshot_refs(&p);
 	plan(&p);
 	check_incoming(&p);

@@ -160,17 +160,6 @@ void precondition(int allow_unborn, int contracts_staged)
 	       "uncommitted changes in .ait/");
 }
 
-/* 5.10: a malformed record cannot be read; the request stops with its error, mended as from this request */
-static struct record *readable(struct request *q, struct record *r)
-{
-	struct state one = { 1, 1, &r };
-	struct verdict v;
-
-	if (malformed(&one, &v))
-		reject(v.code, head_repair(&v, !q->direct), "%s", v.msg);
-	return r;
-}
-
 /* HEAD is still the branch R, and R is the commit C */
 static int at(const char *c)
 {
@@ -395,6 +384,9 @@ static void text_or_die(struct strbuf *sb, const char *path)
 static void load(struct request *q)
 {
 	precondition(0, 0);
+	/* 5.13-3, 5.10: a helper and fulfill stop on HEAD's error first; commit once it has something to check */
+	if (q->gate || q->fulfill)
+		head_stops();
 	q->ht = head_tree();
 	/* spec 5.5-1: the index as the request found it */
 	q->noted = tree_load(line1(git("write-tree")));
@@ -545,7 +537,7 @@ static struct record *resolve(struct request *q, const char *k)
 	if (!state_get(&q->s, k) || !strcmp(k, "init"))
 		reject(128, islower(*k) ? "aliases are local to one command; use the ID printed on its 'new' line" : NULL,
 		       "no such contract: '%s'", k);
-	return readable(q, state_get(&q->s, k));
+	return state_get(&q->s, k);
 }
 
 /* a word of a hint command, if there is one: quoted for the shell when it holds a character the shell reads (5.9a) */
@@ -1125,8 +1117,8 @@ static char *transition_hint(struct request *q, struct record *r, const char *fr
 	struct verdict v;
 
 	as_was->f[STATE] = r->old ? r->old->f[STATE] : r->f[STATE];
-	/* 1 (choice 203): what refused is HEAD's accident, whose repair comes first */
-	if (!(q->direct && !end) && accident_at_head(end ? end : r, &v, !q->direct))
+	/* 1: HEAD's error on a link end is mended first; only contract commit runs on such a HEAD, and its own records carry their fix */
+	if (q->direct && end && error_at_head(end, NULL, &v))
 		return v.hint;
 	/* 2: another role, or a new contract neither future nor current (a link has its own states) */
 	if (q->direct && *r->id != 'u' && ((r->old && strcmp(val(r->old, ROLE), val(r, ROLE))) ||
@@ -1178,9 +1170,9 @@ static char *transition_hint(struct request *q, struct record *r, const char *fr
 static char *gate_hint(struct request *q, struct verdict *v)
 {
 	if (at_head(v))
-		return head_repair(v, !q->direct);
+		return head_repair(v, 0);
 	if (!strcmp(v->word, "format"))
-		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v, !q->direct) :
+		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v, 0) :
 		       xstrfmt("fix it in this request (see the error line), then %s", through_ait(single(xstrfmt(".ait/%s", v->k->id))));
 	if (!strcmp(v->word, "incomplete"))
 		return xstrfmt("make the spec files of '%s' match it, or reopen it with them: %s", v->k->id, reopen_inside(q, v->k));
@@ -2316,23 +2308,19 @@ static int finish(struct request *q)
 			reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 		return 0;
 	}
-	/* 5.13-6: the state is valid and HEAD holds no accident (5.10); fulfill and commit judge the records they found */
+	/* 5.10: a commit with something to check stops on HEAD's error as the others did */
+	if (!q->gate && !q->fulfill)
+		head_stops();
+	/* 5.13-6: the state is valid; HEAD's errors reach this only in contract commit, which may mend them (5.10) */
 	if (q->gate && (q->pull_tree ? check_records(&q->s, &v) : check_state(&q->s, q->v, &v)))
 		reject(v.code, gate_hint(q, &v), "%s", v.msg);
-	if (!q->gate && malformed(&q->s, &v)) {
-		v.hint = head_repair(&v, !q->direct);
-		invalid(q, v);
-	}
-	/* an accident the request leaves is HEAD's; what it writes was judged from its base (5.10) */
-	for (k = 0; k < q->s.nr && !q->pull_tree; k++)
-		if (unchanged(q->s.r[k]) && accident_at_head(q->s.r[k], &v, !q->direct))
+	/* an accident contract commit leaves is HEAD's; what it writes was judged from its base (5.10) */
+	for (k = 0; k < q->s.nr && q->direct; k++)
+		if (unchanged(q->s.r[k]) && error_at_head(q->s.r[k], "accident", &v))
 			invalid(q, v);
 	code_present(q);
-	if (!q->gate && !q->missing.nr && check_state(&q->s, q->v, &v)) {
-		if (at_head(&v))
-			v.hint = head_repair(&v, !q->direct);
+	if (!q->gate && !q->missing.nr && check_state(&q->s, q->v, &v))
 		invalid(q, v);
-	}
 	/* 5.13-8: commit asks for its session right before the results */
 	if (!q->gate && !q->fulfill && !q->first.code)
 		session(1);
@@ -2460,7 +2448,6 @@ int cmd_fulfill(int argc, const char **argv)
 
 		if (!r || *item->string == 'u')
 			reject(128, NULL, "no such contract: '%s'", item->string);
-		readable(&q, r);
 	}
 	if (q.fulfill)
 		carry(&q, &ids);

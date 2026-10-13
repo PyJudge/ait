@@ -158,7 +158,7 @@ const char *unverified_since(struct record *r, const struct string_list *tips);
 char *head_repair(struct verdict *v, int rerun);
 void base_versions(struct state *s, struct string_list *written);
 int accident_at(const char *commit, const char *id);
-int accident_at_head(struct record *r, struct verdict *out, int rerun);
+int error_at_head(struct record *r, const char *word, struct verdict *out);
 /* 5.10: a commit's state judged once (judge()): its records and errors; for HEAD, GOOD and what its errors entangle */
 struct judgment {
 	struct state s;
@@ -170,7 +170,7 @@ struct judgment {
 };
 struct judgment *judge(const char *commit);
 int at_head(struct verdict *v);
-int head_error(struct verdict *v);
+void head_stops(void);
 
 /* record.c: names: paths, scopes, object, session and agent IDs (3, 1.10, 7.2.1) */
 int path_ok(const char *p);
