@@ -41,14 +41,14 @@ install: ait
 	install -d $(prefix)/bin
 	install ait $(prefix)/bin/ait
 
-# the experiment bundle: ait, its skill and bundle/'s scripts, as dist/ait-v2.tar.gz
+# the experiment bundle: ait, its skill and bundle/'s scripts, as dist/ait.tar.gz
 bundle: ait
-	rm -rf dist/ait-v2
-	mkdir -p dist/ait-v2/bin dist/ait-v2/skills
-	cp ait dist/ait-v2/bin/
-	cp -R spec/skills/ait-v2 dist/ait-v2/skills/
-	cp bundle/README.md bundle/install.sh bundle/setup.sh bundle/try.sh bundle/ait-graph.sh dist/ait-v2/
-	tar -czf dist/ait-v2.tar.gz -C dist ait-v2
+	rm -rf dist/ait
+	mkdir -p dist/ait/bin dist/ait/skills
+	cp ait dist/ait/bin/
+	cp -R spec/skills/ait dist/ait/skills/
+	cp bundle/README.md bundle/install.sh bundle/setup.sh bundle/try.sh bundle/ait-graph.sh dist/ait/
+	tar -czf dist/ait.tar.gz -C dist ait
 
 clean:
 	rm -f ait $(YAML)
