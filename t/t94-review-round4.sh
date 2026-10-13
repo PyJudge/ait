@@ -16,11 +16,11 @@ printf 'body: x\nengine: exec\ncommand:\n  - !tag sh\n' > specs/m.yaml
 tick; expect_err "a tag in a block list" E_FORMAT ait future offer src/stock.c specs/m.yaml -m m
 rm specs/m.yaml
 
-# 5.4: only "ID reported|forced PINS" is a check
+# 2.2.2: only "check reported|forced PINS" is a check line
 tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out"; O=$(new_id)
-tick; git commit -q --amend --no-verify -m "$(git log -1 --format=%B | sed 's/ forced / bogus /')"
-run ait todo $O
-check "a check with another word does not count" out_has "unverified yes"
+sed -i.bak 's/^check forced /check bogus /' .ait/$O && rm .ait/$O.bak && git add .ait && tick && git commit -q --no-verify -m bad
+run ait todo
+check "a check line with another word is malformed" err_has "warning: skipping malformed '.ait/$O'"
 git reset -q --hard "$H"
 
 # 7.8.1: todo reads the contracts and their definitions in the index T0

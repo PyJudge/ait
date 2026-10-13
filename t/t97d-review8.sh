@@ -52,12 +52,12 @@ run env AIT_SESSION=- ait fulfill "$O=-" -m m
 check "fulfill: '-' is no scope, before the session" sh -c "[ $rc = 128 ] && grep -q \"bad scope: '-'\" '$T/err'"
 git reset -q --hard "$H"
 
-# 5.9a: a spec file staged apart from HEAD is to be staged again once fixed
+# 5.9a (choice 243): fixing a spec file staged apart from HEAD; what the rerun finds staged is its to say
 tick; ait offer specs/p.yaml specs/p.yaml --force -m o >"$T/out"; O=$(new_id)
 echo 'body: changed' > specs/p.yaml && git add specs/p.yaml
 tick; run ait amend $O - specs/p.yaml -m a; fill "$(out_value check-result)" fail
 tick; run ait amend $O - specs/p.yaml -m a -r "$(git rev-parse --git-path ait/check-result.yaml)"
-check "the hint says to stage it again" err_has "fix 'specs/p.yaml' and stage it again, then rerun this command"
+check "the hint says to fix it and rerun" err_has "fix 'specs/p.yaml', then rerun this command"
 git reset -q --hard "$H"
 
 # 5.5-5: a refresh that fails after the commit is warned about

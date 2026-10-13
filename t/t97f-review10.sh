@@ -53,7 +53,8 @@ git reset -q --hard "$H"; rm -rf specs/y
 # 7.1.1: a user's hook in the work tree that git does not ignore is to be committed with ait
 git config core.hooksPath .githooks && mkdir -p .githooks && printf '#!/bin/sh\nexit 0\n' > .githooks/pre-commit && chmod +x .githooks/pre-commit
 run ait init
-check "init names how to commit the hook" err_has "then commit it: stage '.githooks/pre-commit' and run 'ait commit -m <why>'"
+# 7.1.1-1: PATH is the file's absolute path, as in the error line
+check "init names how to commit the hook" err_has "then commit it: stage '$(pwd -P)/.githooks/pre-commit' and run 'ait commit -m <why>'"
 printf '#!/bin/sh\nexit 0\n' > .githooks/pre-push && chmod +x .githooks/pre-push
 run ait init
 check "the pre-push lines are the three of 7.1.1" sh -c "grep -qxF 'hint: if command -v ait >/dev/null 2>&1; then ait hook pre-push \"\$@\" < \"\$t\" || { s=\$?; rm -f \"\$t\"; exit \$s; }; fi' '$T/err'"

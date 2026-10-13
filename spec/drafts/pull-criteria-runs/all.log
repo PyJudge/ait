@@ -60,13 +60,14 @@
      latest: ['a5956e6', '9f4845a']  distinct bodies: 2
      introducing commits of a5956e6: [('bM', 3)]  (name, new commits)
      introducing commits of 9f4845a: [('fM', 3)]  (name, new commits)
+  bundle (2.4.1) at b: ok  at f: ok
 
 ======== U3  a: fulfils D (current, pins new stock.c) ; main: D cond c-E
   [D] candidates:
-     339f6e5 at a  rule1=True  demand/current cond=c0 stock.c@77339  prev=['b614d4d']
+     70d5fa2 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
      376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
-     latest: ['339f6e5', '376595c']  distinct bodies: 2
-     introducing commits of 339f6e5: [('a1', 1)]  (name, new commits)
+     latest: ['70d5fa2', '376595c']  distinct bodies: 2
+     introducing commits of 70d5fa2: [('a1', 1)]  (name, new commits)
      376595c is contained in HEAD's version
 
 ======== U4  a: cancels D ; main: D cond c-E
@@ -79,20 +80,20 @@
 
 ======== U6  D current ; a and b each change the code and re-check (same condition) ; main: D0
   [D] candidates:
-     4807bb5 at a  rule1=True  demand/current cond=c0 stock.c@77339  prev=['ceae763']
-     b3ac3d3 at b  rule1=True  demand/current cond=c0 stock.c@e3dea  prev=['ceae763']
-     ceae763 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0  prev=[]
-     latest: ['4807bb5', 'b3ac3d3']  distinct bodies: 2
-     introducing commits of 4807bb5: [('a1', 1)]  (name, new commits)
-     introducing commits of b3ac3d3: [('b1', 1)]  (name, new commits)
+     d1314a9 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['5b1b0e3']
+     cfce40b at b  rule1=True  demand/current cond=c0 stock.c@e3dea check=reported  prev=['5b1b0e3']
+     5b1b0e3 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=[]
+     latest: ['d1314a9', 'cfce40b']  distinct bodies: 2
+     introducing commits of d1314a9: [('a1', 1)]  (name, new commits)
+     introducing commits of cfce40b: [('b1', 1)]  (name, new commits)
 
 ======== U7  D current ; a: drop X on D, fulfils X (D withdrawn) ; main: reopens D (future)
   [D] candidates:
-     7ea9212 at a  rule1=True  demand/withdrawn cond=c0 stock.c@8e9b0  prev=['ceae763']
-     0668b69 at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['ceae763']
-     latest: ['7ea9212', '0668b69']  distinct bodies: 2
-     introducing commits of 7ea9212: [('a2', 2)]  (name, new commits)
-     0668b69 is contained in HEAD's version
+     3295a54 at a  rule1=True  demand/withdrawn cond=c0 stock.c@8e9b0  prev=['5b1b0e3']
+     2e1dae6 at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['5b1b0e3']
+     latest: ['3295a54', '2e1dae6']  distinct bodies: 2
+     introducing commits of 3295a54: [('a2', 2)]  (name, new commits)
+     2e1dae6 is contained in HEAD's version
   merge-tree HEAD a2 (for pull D=a2): exit=1 conflicts=['.ait/D']
      paths that differ from HEAD: ['.ait/D', '.ait/X']
 
@@ -111,9 +112,10 @@
      6619123 at main,HEAD  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
      latest: ['a5956e6']  distinct bodies: 1
      introducing commits of a5956e6: [('bM', 2)]  (name, new commits)
+  bundle (2.4.1) at bM: ok
   git merge a (the commit of D@A): exit=1 unmerged=['.ait/D', 'specs/d.yaml']
   merge-tree HEAD bM: exit=0 conflicts=[]
-     paths that differ from HEAD: ['.ait/D', 'specs/d.yaml']
+     paths that differ from HEAD: ['.ait/D']
 
 ======== G2  a: D@A ; b: D@B, resolves a to A side (D@B') ; f: D@F, resolves a to A side (D@F') ; main: D0
   [D] candidates:
@@ -125,7 +127,7 @@
      introducing commits of 9b36e15: [('bM', 4)]  (name, new commits)
      introducing commits of e7598ef: [('fM', 3)]  (name, new commits)
   git merge b then f (main):
-     merge b exit=0 ; merge f exit=1 unmerged=['.ait/D', 'specs/d.yaml']
+     merge b exit=0 ; merge f exit=1 unmerged=['.ait/D']
   -- simulate pull D: one body; take the introducing commit with fewest new commits (fM), prev {D@B', D@F'}
   [D after pull] candidates:
      2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
@@ -134,6 +136,7 @@
      b7d5d81 at main,HEAD  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['9b36e15', 'e7598ef']
      latest: ['b7d5d81']  distinct bodies: 1
      b7d5d81 is contained in HEAD's version
+  bundle (2.4.1) at bM: ok  fM: ok  after pull: ok
 
 ======== G3  main has D@A (from a) ; b: D@B then resolves a to B side (D@B')
   [D] candidates:
@@ -141,6 +144,7 @@
      a5956e6 at b  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['2ace12d', '6619123']
      latest: ['a5956e6']  distinct bodies: 1
      introducing commits of a5956e6: [('bM', 2)]  (name, new commits)
+  bundle (2.4.1) at bM: ok
   git merge b1 (the commit of D@B): exit=1 unmerged=['.ait/D', 'specs/d.yaml']
   git merge bM (the commit of D@B'): exit=0 unmerged=[]
 
@@ -173,11 +177,11 @@
 
 ======== K1  a: makes offer O and undertakes D with it, then fulfils O ; main pulls O
   [O] candidates:
-     918dfeb at a  rule1=True  offer/current cond=o o.c@58185  prev=['163068e']
-     latest: ['918dfeb']  distinct bodies: 1
-     introducing commits of 918dfeb: [('a2', 2)]  (name, new commits)
+     f83bfac at a  rule1=True  offer/current cond=o o.c@58185 check=reported  prev=['163068e']
+     latest: ['f83bfac']  distinct bodies: 1
+     introducing commits of f83bfac: [('a2', 2)]  (name, new commits)
   merge-tree HEAD a2: exit=0 conflicts=[]
-     paths that differ from HEAD: ['.ait/O', '.ait/undertake/D-O', 'specs/o.yaml', 'src/o.c']
+     paths that differ from HEAD: ['.ait/D', '.ait/O', '.ait/undertake/D-O', 'specs/o.yaml', 'src/o.c']
 
 ======== K6  O is main's offer (future in base) ; a undertakes D with O and changes D ; main fulfils O ; main pulls D
   [D] candidates:
@@ -205,10 +209,10 @@
 
 ======== N5  D current, main's O_E current undertakes D ; a reopens D
   [D] candidates:
-     0668b69 at a  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['ceae763']
-     ceae763 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0  prev=[]
-     latest: ['0668b69']  distinct bodies: 1
-     introducing commits of 0668b69: [('a1', 1)]  (name, new commits)
+     2e1dae6 at a  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['5b1b0e3']
+     5b1b0e3 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=[]
+     latest: ['2e1dae6']  distinct bodies: 1
+     introducing commits of 2e1dae6: [('a1', 1)]  (name, new commits)
   merge-tree HEAD a1: exit=0 conflicts=[]
      paths that differ from HEAD: ['.ait/D']
 
@@ -280,7 +284,7 @@
 
 ======== MH1/MH2  pull D Q: D from a, Q from b (two heads)
   MH1: git merge a b (octopus) exit=0 [' 4 files changed, 6 insertions(+), 6 deletions(-)'] []
-  MH2: git merge a b (octopus) exit=1 ['자동 병합이 실패했습니다. 충돌을 바로잡고 결과물을 커밋하십시오.'] ['fatal: merge program failed']
+  MH2: git merge a b (octopus) exit=1 ['Automatic merge failed; fix conflicts and then commit the result.'] ['fatal: merge program failed']
 
 ======== M1  a: D@B then D@B2 (prev D@B); a's history rewritten so no commit holds D@B ; main: D0
   [D (same repository; the blob of D@B is still in the object store)] candidates:

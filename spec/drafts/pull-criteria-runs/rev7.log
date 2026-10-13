@@ -1,0 +1,55 @@
+
+======== REV4  main holds cancelled C ; b: A (future by hand from C, accident), then a hand merge V with prev {A, M} (M valid, from init)
+  A rule1=False ; M rule1=True ; V contains cancelled C? True ; V rule1=False
+  [D on main]
+     41add63 at b  rule1=False  demand/future cond=c-M stock.c@8e9b0  prev=['94e1d7e', 'eef51e8']
+     cee379a at main,HEAD  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     skipped (accident): ['41add63']
+     latest: ['cee379a']
+     after 3-way: ['cee379a']  remaining: ['cee379a']
+     => nothing to take
+
+======== SP2  a's D newly declares tests/d.sh and edits its line 1 ; main edits line 9 of it as code ; 'pull D'
+  merge-tree exit=0 ; merged has both edits? True ; D's pin == merged? False ; my side declares tests/d.sh? False
+
+======== SP3  a's D declares tests/d.sh without changing it ; main edits it as code ; 'pull D'
+  merge-tree exit=0 ; merged == HEAD's (main's edit)? True ; D's pin == merged? False
+
+======== SP4  tests/f.sh is code at init ; a's D newly pins it and edits line 1 ; main's K newly pins it and edits line 9 ; 'pull D'
+  merge-tree exit=0 conflicts=[] ; merged has both edits? True ; a's D pin == merged? False ; my K pin == merged? False
+  [D]
+     568cbcd at a  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['568cbcd']
+     after 3-way: ['568cbcd']  remaining: ['568cbcd']
+     => take 568cbcd as is
+     introducing commits of 568cbcd: [('a1', 1)]
+  [K]
+     e0b6291 at a  rule1=True  demand/future cond=k0 stock.c@8e9b0  prev=[]
+     e64adfa at main,HEAD  rule1=True  demand/future cond=k0 stock.c@8e9b0  prev=['e0b6291']
+     latest: ['e64adfa']
+     after 3-way: ['e64adfa']  remaining: ['e64adfa']
+     => nothing to take
+
+======== DL1  tests/d.sh is code at init ; main's D newly pins it (input) ; a deletes it as code and changes Q ; 'pull Q'
+  merge-tree exit=0 ; tests/d.sh deleted in the merged tree? True ; main's D pins it? True ; a's side declares it? none
+
+======== HD1  main edits its own D's pinned spec in a plain commit (no re-pin) ; then 'pull Q'
+  HEAD's D pins specs/d.yaml at a2ee635 ; HEAD's specs/d.yaml is 48d03a1 (a bundle error in HEAD, 2.4.1)
+
+======== U1d  a1 fulfils D (C) ; main changes D's condition (H) ; main 'pull D=HEAD future amend D (consumer)'
+  V1 (future, contains C) in any commit? no ; the pull commit reopens: ['70d5fa2'] (C = 70d5fa2)
+
+======== RP3  main took D=a1 (V1: a's current body, prev {C, mine}) ; then a reopened C (R) ; main pulls D
+  [D on main]
+     8753b59 at a  rule1=True  demand/future cond=c0 stock.c@77339  prev=['70d5fa2']
+     932ac90 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['376595c', '70d5fa2']
+     latest: ['8753b59', '932ac90']  3-way: ['8753b59 moved forward from 932ac90']
+     after 3-way: ['8753b59']  remaining: ['8753b59']
+     => new version: body of 8753b59, prev = latest ['8753b59', '932ac90']
+     introducing commits of 8753b59: [('a2', 1)]
+  main's pull commit reopens: [] (expected none: it carried a's reopen)
+
+======== HK2  'pull D Q' stops on a code conflict ; b1 (Q's end) also holds Y made current by hand (an accident)
+  start versions of Y: HEAD 9410779 (rule1=True), b1 6e6a290 (rule1=False) ; pull keeps Y as mine
+  the kept Y contains every start version? False ; ... every start version that is not an accident? True

@@ -30,6 +30,10 @@ libyaml/%.o: libyaml/%.c libyaml/yaml.h libyaml/yaml_private.h
 
 test: ait
 	@sh t/run.sh
+	@sh t/pull/run.sh
+
+test-pull: ait
+	@sh t/pull/run.sh
 
 # a copy, not a link: the hooks of this repository run the installed ait, not the one being built
 prefix ?= $(HOME)/.local
@@ -37,16 +41,16 @@ install: ait
 	install -d $(prefix)/bin
 	install ait $(prefix)/bin/ait
 
-# the experiment bundle: ait, the ait-mini skill and bundle/'s scripts, as dist/ait-mini.tar.gz
+# the experiment bundle: ait, its skill and bundle/'s scripts, as dist/ait-v2.tar.gz
 bundle: ait
-	rm -rf dist/ait-mini
-	mkdir -p dist/ait-mini/bin dist/ait-mini/skills
-	cp ait dist/ait-mini/bin/
-	cp -R spec/skills/ait-mini dist/ait-mini/skills/
-	cp bundle/README.md bundle/install.sh bundle/try.sh bundle/ait-graph.sh dist/ait-mini/
-	tar -czf dist/ait-mini.tar.gz -C dist ait-mini
+	rm -rf dist/ait-v2
+	mkdir -p dist/ait-v2/bin dist/ait-v2/skills
+	cp ait dist/ait-v2/bin/
+	cp -R spec/skills/ait-v2 dist/ait-v2/skills/
+	cp bundle/README.md bundle/install.sh bundle/setup.sh bundle/try.sh bundle/ait-graph.sh dist/ait-v2/
+	tar -czf dist/ait-v2.tar.gz -C dist ait-v2
 
 clean:
 	rm -f ait $(YAML)
 
-.PHONY: test install bundle clean
+.PHONY: test test-pull install bundle clean

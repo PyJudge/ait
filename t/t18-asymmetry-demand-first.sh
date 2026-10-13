@@ -39,8 +39,10 @@ run ait_b fulfill "$O" -m m
 W=$(out_value check-result)
 fill "$W" pass "$D:specs/lowest.yaml=fail"
 expect_err "4: broken D blocks O" E_CHECK_FAILED ait_b fulfill "$O" -m m -r "$W"
-# mini: the per-contract E_CHECK_FAILED hints of 5.8 (release D from O, change D's condition with
-# 'AIT_SESSION=<B> ait future amend <D> - - <new defs>') are not the basic form; not checked
+# T18-4 (5.8 E_CHECK_FAILED, 5.9a): B made O, so release D from O; D is current, so change its condition.
+# The default session of this worktree is A, so B's commands carry AIT_SESSION
+check "4: hint releases D from O" err_has "to fulfill '$O' without '$D', release it first: 'AIT_SESSION=$B ait release $D $O -m <why>', then rerun this command"
+check "4: hint changes D's condition" err_has "to change its condition, reopen it with the new one: 'AIT_SESSION=$B ait future amend $D - - <new defs> -m <why>', then rerun this command"
 check "4: no plain reopen hint for D" sh -c "! grep -qF 'ait future amend $D -m <why>' '$T/err'"
 
 # 3
@@ -54,11 +56,11 @@ check "3: check O reported" out_has "check $O reported"
 check "3: no fulfilled D line" sh -c "! grep -q '^fulfilled $D' '$T/out'"
 check "3: D re-pinned" sh -c "git show HEAD:.ait/$D | grep -qxF 'provider src/stock.c $(blob HEAD:src/stock.c)'"
 
-# 5 mini: no peek; the events are read from the commits' trailers (the facts peek would show)
+# 5: the events, read from each commit's trailers and records (peek is not implemented)
 c1=$(git log --format=%H --grep="^Ait-Request: $R1\$")
 c3=$(git log --format=%H --grep="^Ait-Request: $R3\$")
-check "5: R1 is a FULFILL by agent-a with D reported" sh -c "git log -1 --format=%B $c1 | grep -qxF 'Ait-Agent: agent-a' && git log -1 --format=%B $c1 | grep -qxF 'Ait-Check: $D reported $(pins "$c1" "$D")' && git log -1 --format=%s $c1 | grep -q '^\[FULFILL\]'"
+check "5: R1 is a FULFILL by agent-a with D reported" sh -c "git log -1 --format=%B $c1 | grep -qxF 'Ait-Agent: agent-a' && [ \"\$(git show $c1:.ait/$D | sed -n 's/^check //p')\" = 'reported $(pins "$c1" "$D")' ] && git log -1 --format=%s $c1 | grep -q '^\[FULFILL\]'"
 check "5: R1 commit makes D current itself (no via)" sh -c "git show $c1:.ait/$D | grep -qxF 'state current' && git show $c1:.ait/$O | grep -qxF 'state future'"
-check "5: R3 is by agent-b with D reported (verified)" sh -c "git log -1 --format=%B $c3 | grep -qxF 'Ait-Agent: agent-b' && git log -1 --format=%B $c3 | grep -qxF 'Ait-Check: $D reported $(pins "$c3" "$D")'"
+check "5: R3 is by agent-b with D reported (verified)" sh -c "git log -1 --format=%B $c3 | grep -qxF 'Ait-Agent: agent-b' && [ \"\$(git show $c3:.ait/$D | sed -n 's/^check //p')\" = 'reported $(pins "$c3" "$D")' ]"
 
 done_testing

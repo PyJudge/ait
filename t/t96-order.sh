@@ -23,10 +23,10 @@ run ait fulfill $O=a//b -m x
 check "a fulfill scope's shape before uncommitted .ait/" err_has "fatal: bad scope: 'a//b'"
 rm .ait/junk
 
-# 4 before 6: a malformed record in HEAD does not hide the clause's own error
+# 3 before 4: HEAD's error stops a fulfill before the clause's own error (5.10, user decision 55)
 git rm -q --cached .ait/$O && echo bogus > .ait/$O && git add .ait/$O && tick && git commit -q --no-verify -m bogus
-tick; expect_err "fulfill an ID that is not there" E_ID ait fulfill O000000000000 -m x
-tick; expect_err "then the malformed record" E_FORMAT ait fulfill $O -m x
+tick; expect_err "fulfill an ID that is not there: HEAD's malformed record first" E_FORMAT ait fulfill O000000000000 -m x
+tick; expect_err "and for its own ID too" E_FORMAT ait fulfill $O -m x
 
 # 5.10: a commit with nothing to check skips the malformed record
 echo z >> src/order.c && git add src/order.c

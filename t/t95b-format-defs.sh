@@ -38,7 +38,7 @@ def 'body: x\ninputs: tests/pass.sh\n' "inputs that are not a list"
 def 'body: x\ninputs: [../x]\n' "an input that is not a path"
 def '' "an empty definition"
 printf 'body: x\nenvironment: [a]\n' > specs/f.yaml
-bad MINI "environment" ait future offer src/order.c specs/f.yaml -m m
+bad UNSUPPORTED "environment" ait future offer src/order.c specs/f.yaml -m m
 rm -f specs/f.yaml
 # YAML 1.2: a flow map may be the whole document, and keys may be quoted scalars
 for ok in '{"body":"x"}\n' '{body: x, inputs: []}\n' '# a note\n{"body": "x"}\n' "'body': x\n" '"body": x\ninputs: [tests/pass.sh]\n' \

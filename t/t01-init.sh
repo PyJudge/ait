@@ -19,12 +19,26 @@ setup_noinit() {
 again() { cd /; [ "$failed" = 0 ] && rm -rf "$T"; setup_noinit; }
 hook_body() { printf '#!/bin/sh\ncommand -v ait >/dev/null 2>&1 || exit 0\nexec ait hook %s "$@"\n' "$1"; }
 out_is() { printf '%s\n' "$@" | cmp -s - "$T/out"; }
-hookstate() { for h in pre-commit pre-merge-commit commit-msg pre-push; do ls -l "$1/$h" 2>&1; cat "$1/$h" 2>&1; done; }
+hookstate() { for h in pre-commit pre-merge-commit commit-msg pre-push post-commit post-merge; do ls -l "$1/$h" 2>&1; cat "$1/$h" 2>&1; done; }
 LINE='if command -v ait >/dev/null 2>&1; then ait hook pre-commit "$@" || exit $?; fi'
-# hint of 7.1.1-1 for hook NAME at PATH
+# the insertion lines of 7.1.1-1 for hook NAME, as hint lines
+hook_lines() {
+	case $1 in
+	pre-push)
+		echo 'hint: t=$(mktemp) && cat > "$t" || exit 1'
+		echo 'hint: if command -v ait >/dev/null 2>&1; then ait hook pre-push "$@" < "$t" || { s=$?; rm -f "$t"; exit $s; }; fi'
+		echo 'hint: exec < "$t"; rm -f "$t"' ;;
+	*) echo "hint: if command -v ait >/dev/null 2>&1; then ait hook $1 \"\$@\" || exit \$?; fi" ;;
+	esac
+}
+# hint of 7.1.1-1 for hook NAME at PATH: the line naming it followed by the lines to insert, and
+# "then rerun this command" (written once for all hooks, 5.9a)
 has_hook_hint() {
-	err_has "hint: make '$1' run 'ait hook $2' with its arguments and its stdin, and stop when that fails" &&
-	err_has "then rerun this command"
+	case $(cat "$T/err") in
+	*"hint: make '$1' run 'ait hook $2' with its arguments and its stdin, and stop when that fails; git runs a hook only if it is executable. In a shell hook, these lines after the first line do it ('#!/bin/sh' first if the file is new):
+$(hook_lines "$2")"*) err_has "hint: then rerun this command" ;;
+	*) false ;;
+	esac
 }
 
 setup_noinit
@@ -38,15 +52,15 @@ OID=$(git rev-parse HEAD)
 check "1: stdout is exactly 'init created <new HEAD>'" out_is "init created $OID"
 check "1: the new commit's parent is base" test "$(git rev-parse HEAD^)" = "$BASE"
 check "1: the commit adds only .ait/init" test "$(git diff-tree -r --no-commit-id --name-status HEAD)" = "A	.ait/init"
-check "1: .ait/init is 'version 1\\n'" test "$(git cat-file blob HEAD:.ait/init | od -c | head -1)" = "$(printf 'version 1\n' | od -c | head -1)"
+check "1: .ait/init is 'version 2\\n'" test "$(git cat-file blob HEAD:.ait/init | od -c | head -1)" = "$(printf 'version 2\n' | od -c | head -1)"
 check "1: .ait/init mode 100644" sh -c "git ls-tree HEAD .ait/init | grep -q '^100644 '"
 check "1: subject is [CONTRACT] ait init" test "$(git log -1 --format=%s)" = "[CONTRACT] ait init"
 check "1: no trailers (message is the subject only)" test "$(git log -1 --format=%B | git stripspace)" = "[CONTRACT] ait init"
-for h in pre-commit pre-merge-commit commit-msg pre-push; do
+for h in pre-commit pre-merge-commit commit-msg pre-push post-commit post-merge; do
 	check "1: hook $h has the 7.1.1-1 body" sh -c "hook_body() { printf '#!/bin/sh\ncommand -v ait >/dev/null 2>&1 || exit 0\nexec ait hook %s \"\$@\"\n' \"\$1\"; }; hook_body $h | cmp -s - '$H/$h'"
 	check "1: hook $h is executable" test -x "$H/$h"
 done
-# mini: `ait init` does not install the merge driver; the attributes line and merge.ait.* config are not checked
+# not yet: `ait init` does not install the merge driver; the attributes line and merge.ait.* config are not checked
 
 # 2
 before=$(hookstate "$H"; git config --list --local)
@@ -64,11 +78,12 @@ B=$(git rev-parse HEAD)
 tick; expect_err "3: existing pre-commit is E_STATE" E_STATE ait init
 check "3: first line names the hook" sh -c "head -1 '$T/err' | grep -qxF \"error: not allowed: hook '$P' is not set up for ait\""
 check "3: hint to make it run ait hook" has_hook_hint "$P" pre-commit
-# mini: basic hint only; the 'In a shell hook, these lines ...' part with the line to insert is not checked
+# 3 (7.1.1-1): '.git/hooks' is in the git common directory, not in the worktree: nothing to commit
+check "3: no 'then commit it' for a hook in the git directory" sh -c "! grep -qF 'then commit it' '$T/err'"
 check "3: stdout empty" test ! -s "$T/out"
 check "3: no init commit" test "$(git rev-parse HEAD)" = "$B"
 check "3: existing file untouched" test "$(cat "$H/pre-commit")" = "$legacy"
-for h in pre-merge-commit commit-msg pre-push; do
+for h in pre-merge-commit commit-msg pre-push post-commit post-merge; do
 	check "3: other hook $h installed" sh -c "printf '#!/bin/sh\ncommand -v ait >/dev/null 2>&1 || exit 0\nexec ait hook %s \"\$@\"\n' $h | cmp -s - '$H/$h' && test -x '$H/$h'"
 done
 
@@ -95,7 +110,7 @@ tick; run git commit -qm code
 check "3: plain code commit ok" test "$rc" = 0
 check "3: legacy ran" err_has legacy
 # ait rejects (.ait/ in a plain commit): the hook ends with ait's exit code
-echo 'version 2' > .ait/init; git add .ait/init
+echo 'version 3' > .ait/init; git add .ait/init
 B=$(git rev-parse HEAD)
 tick; run git commit -qm bad
 check "3: ait's E_GUARD stops the commit" sh -c "[ $rc = 1 ] && grep -qF 'error: contract files cannot be changed by a plain commit:' '$T/err'"
@@ -124,8 +139,8 @@ H=$(git rev-parse --git-path hooks); RT=$(pwd -P); P="$RT/.git/hooks/pre-push"
 printf '#!/bin/sh\ncat > "$T/legacy.in"\n' > "$H/pre-push"; chmod 755 "$H/pre-push"
 tick; expect_err "3: existing pre-push is E_STATE" E_STATE ait init
 check "3: pre-push first line" sh -c "head -1 '$T/err' | grep -qxF \"error: not allowed: hook '$P' is not set up for ait\""
+# 3 (7.1.1-1): the hint has the three pre-push lines to insert
 check "3: pre-push hint" has_hook_hint "$P" pre-push
-# mini: basic hint only; the three pre-push lines to insert are not checked
 {
 	echo '#!/bin/sh'
 	echo 't=$(mktemp) && cat > "$t" || exit 1'
@@ -155,11 +170,12 @@ mkdir .husky; printf '#!/bin/sh\necho husky\n' > .husky/pre-commit; chmod 755 .h
 git config core.hooksPath .husky
 tick; expect_err "3: .husky: E_STATE" E_STATE ait init
 check "3: .husky: nothing written under .husky" test "$(ls -A .husky)" = "pre-commit"
-for h in pre-commit pre-merge-commit commit-msg pre-push; do
+for h in pre-commit pre-merge-commit commit-msg pre-push post-commit post-merge; do
 	check "3: .husky: error for $h" err_has "error: not allowed: hook '$RT/.husky/$h' is not set up for ait"
+	# 3 (7.1.1-1): '.husky' is in the worktree and not ignored, so the hint ends with "then commit it"
 	check "3: .husky: hint for $h" has_hook_hint "$RT/.husky/$h" "$h"
+	check "3: .husky: then commit it for $h" err_has "hint: then commit it: stage '$RT/.husky/$h' and run 'ait commit -m <why>'"
 done
-# mini: basic hint only; the trailing "then commit it: stage '<path>' and run 'ait commit -m <why>'" is not checked
 check "3: .husky: no init commit" test "$(git log --format=%s -1)" = base
 
 # 3: core.hooksPath .husky/_ that is ignored
@@ -168,7 +184,7 @@ RT=$(pwd -P)
 mkdir -p .husky/_; echo '*' > .husky/_/.gitignore
 git config core.hooksPath .husky/_
 tick; expect_err "3: .husky/_: E_STATE" E_STATE ait init
-for h in pre-commit pre-merge-commit commit-msg pre-push; do
+for h in pre-commit pre-merge-commit commit-msg pre-push post-commit post-merge; do
 	check "3: .husky/_: error for $h" err_has "error: not allowed: hook '$RT/.husky/_/$h' is not set up for ait"
 done
 check "3: .husky/_: no 'then commit it'" sh -c "! grep -qF 'then commit it' '$T/err'"
@@ -194,8 +210,8 @@ again
 tick; ait init >/dev/null
 git push -q origin master
 git clone -q "$T/origin.git" "$T/c1"; cd "$T/c1"
-# mini: no peek; the scenario's `ait peek` becomes `ait todo` (5.2a covers every ait command but init)
-expect_err "5: peek is mini-unsupported" MINI ait peek
+# not yet: no peek; the scenario's `ait peek` becomes `ait todo` (5.2a covers every ait command but init)
+expect_err "5: peek is not supported yet" UNSUPPORTED ait peek
 expect_ok "5: c1 (no records): todo without a session" ait todo
 check "5: c1: no hint" sh -c "! grep -q '^hint:' '$T/err'"
 cd "$T/r"

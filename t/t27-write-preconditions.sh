@@ -8,26 +8,29 @@ prompt_defs
 tick; ait future offer src/stock.c specs/p.yaml as o -m m >"$T/out"
 O=$(new_id)
 
-# 1: .ait dirty
-# mini: no contract add/commit, so the keep command ('ait contract add PATH...' and
-# 'ait contract commit -m <why>') cannot be given; only the drop form is checked
+# 1: .ait dirty; T27-1 (5.8 E_DIRTY): the keep commands ('ait contract add PATH...' and
+# 'ait contract commit -m <why>') and the drop form
 dirty_hints() { err_has "restore '.ait/' to HEAD's version and remove the new files there"; }
+keep_hints() { err_has "ait contract add $1" && err_has "ait contract commit -m <why>"; }
 echo x >> ".ait/$O"
 desc="1: modified .ait record"
 tick; expect_unchanged expect_err "$desc" E_DIRTY ait future cancel "$O" -m m
 check "1: first line names .ait/" sh -c "head -1 '$T/err' | grep -qxF 'error: uncommitted changes in .ait/'"
+check "1: keep commands (modified)" keep_hints ".ait/$O"
 check "1: drop command (modified)" dirty_hints
 git checkout -q HEAD -- .ait
 
 echo x > .ait/Onew000000000
 desc="1: untracked file in .ait"
 tick; expect_unchanged expect_err "$desc" E_DIRTY ait future cancel "$O" -m m
+check "1: keep commands (untracked)" keep_hints .ait/Onew000000000
 check "1: drop command (untracked)" dirty_hints
 rm -f .ait/Onew000000000
 
 echo x >> ".ait/$O"; git add ".ait/$O"
 desc="1: staged change in .ait"
 tick; expect_unchanged expect_err "$desc" E_DIRTY ait future cancel "$O" -m m
+check "1: keep commands (staged)" keep_hints ".ait/$O"
 check "1: drop command (staged)" dirty_hints
 git reset -q HEAD -- .ait; git checkout -q HEAD -- .ait
 
@@ -40,12 +43,15 @@ tick; git merge -q side >/dev/null 2>&1
 check "2: merge stopped with a conflict" sh -c "git rev-parse -q --verify MERGE_HEAD >/dev/null"
 desc="2: future cancel during merge"
 tick; expect_unchanged expect_err "$desc" E_BUSY ait future cancel "$O" -m m
-# mini: basic hint only ('a git merge is in progress ...' is not checked)
+check "2: hint: a git merge is in progress" err_has "a git merge is in progress; finish or abort it as 'git status' says, then rerun this command"
+check "2: hint: commit the resolution first" err_has "commit the resolution first: 'git commit --allow-empty --no-edit --cleanup=strip', then continue as git says"
 desc="2: fulfill during merge"
 tick; expect_unchanged expect_err "$desc" E_BUSY ait fulfill "$O" -m m
-# mini: no contract commit / contract pull
-tick; expect_err "2: contract commit (mini: unsupported)" MINI ait contract commit -m m
-tick; expect_err "2: contract pull (mini: unsupported)" MINI ait contract pull Rdeadbeef0000
+# T27-2 (5.2-2)
+desc="2: contract commit during merge"
+tick; expect_unchanged expect_err "$desc" E_BUSY ait contract commit -m m
+desc="2: contract pull during merge"
+tick; expect_unchanged expect_err "$desc" E_BUSY ait contract pull "$O"
 git merge --abort
 
 # 3: detached HEAD

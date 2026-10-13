@@ -1,5 +1,5 @@
 #!/bin/sh
-# B1: ait-mini develops ait itself — a demand on the ait sources, an offer that undertakes it, a fulfill
+# B1: ait develops ait itself — a demand on the ait sources, an offer that undertakes it, a fulfill
 . "$(dirname "$0")/lib.sh"
 T=$(mktemp -d); export T HOME=$T/home GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=:; mkdir -p "$HOME"
 git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master
@@ -23,9 +23,9 @@ check "the builder's todo shows the offer" out_has "id $O"
 echo '/* line ranges: see spec 3.2 */' >> record.c && git add record.c
 tick; with_r pass ait fulfill "$O" -m "line ranges"
 check "fulfilled with the demand" out_has "fulfilled $D via $O"
-check "the fulfill commit carries both checks" sh -c "git log -1 --format=%B | grep -q 'Ait-Check: $D reported' && git log -1 --format=%B | grep -q 'Ait-Check: $O reported'"
+check "the fulfill commit carries both check lines" sh -c "git show HEAD:.ait/$D | grep -q '^check reported ' && git show HEAD:.ait/$O | grep -q '^check reported ' && ! git log -1 --format=%B | grep -q '^Ait-Check:'"
 check "the sources still build" make -s ait
-# the maintainer takes the fulfilment and builds on it (10.1b): mini receives with git merge
+# the maintainer takes the fulfilment and builds on it (10.1b), here with git merge
 cd "$T/r"
 tick; run git merge -q --no-edit builder
 check "the merge passes the hook" [ "$rc" = 0 ]

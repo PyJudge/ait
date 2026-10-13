@@ -1,0 +1,376 @@
+
+======== CYC1  a1 c-P, b1 c-Q, c1 c-R ; a keeps P after seeing c1, b keeps Q after seeing a1, c keeps R after seeing b1
+  [D on main]
+     a6a43ae at a  rule1=True  demand/future cond=c-P stock.c@8e9b0  prev=['b221f71', 'eeb4294']
+     41dda70 at b  rule1=True  demand/future cond=c-Q stock.c@8e9b0  prev=['b221f71', 'dc9a6a2']
+     4dd847d at c  rule1=True  demand/future cond=c-R stock.c@8e9b0  prev=['dc9a6a2', 'eeb4294']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['a6a43ae', '41dda70', '4dd847d']  3-way: ['41dda70 moved forward from a6a43ae', '4dd847d moved forward from 41dda70', 'a6a43ae moved forward from 4dd847d']  on a cycle: ['a6a43ae', '41dda70', '4dd847d']
+     after 3-way: ['a6a43ae', '41dda70', '4dd847d']  remaining: ['a6a43ae', '41dda70', '4dd847d']
+     => DIVERGED: choose among ['a6a43ae', '41dda70', '4dd847d']
+     introducing commits of a6a43ae: [('a2', 2)]
+     introducing commits of 41dda70: [('b2', 2)]
+     introducing commits of 4dd847d: [('c2', 2)]
+
+======== CYC2  CYC1, then main picks D=b2 ; then main, a, b, c pull D
+  [D on main]
+     a6a43ae at a  rule1=True  demand/future cond=c-P stock.c@8e9b0  prev=['b221f71', 'eeb4294']
+     41dda70 at b  rule1=True  demand/future cond=c-Q stock.c@8e9b0  prev=['b221f71', 'dc9a6a2']
+     4dd847d at c  rule1=True  demand/future cond=c-R stock.c@8e9b0  prev=['dc9a6a2', 'eeb4294']
+     c2eb8dc at main,HEAD  rule1=True  demand/future cond=c-Q stock.c@8e9b0  prev=['41dda70', '4dd847d', 'a6a43ae']
+     latest: ['c2eb8dc']
+     after 3-way: ['c2eb8dc']  remaining: ['c2eb8dc']
+     => nothing to take
+  [D on a]
+     a6a43ae at a,HEAD  rule1=True  demand/future cond=c-P stock.c@8e9b0  prev=['b221f71', 'eeb4294']
+     41dda70 at b  rule1=True  demand/future cond=c-Q stock.c@8e9b0  prev=['b221f71', 'dc9a6a2']
+     4dd847d at c  rule1=True  demand/future cond=c-R stock.c@8e9b0  prev=['dc9a6a2', 'eeb4294']
+     c2eb8dc at main  rule1=True  demand/future cond=c-Q stock.c@8e9b0  prev=['41dda70', '4dd847d', 'a6a43ae']
+     latest: ['c2eb8dc']
+     after 3-way: ['c2eb8dc']  remaining: ['c2eb8dc']
+     => take c2eb8dc as is
+     introducing commits of c2eb8dc: [('pick', 3)]
+  [D on b]
+     a6a43ae at a  rule1=True  demand/future cond=c-P stock.c@8e9b0  prev=['b221f71', 'eeb4294']
+     41dda70 at b,HEAD  rule1=True  demand/future cond=c-Q stock.c@8e9b0  prev=['b221f71', 'dc9a6a2']
+     4dd847d at c  rule1=True  demand/future cond=c-R stock.c@8e9b0  prev=['dc9a6a2', 'eeb4294']
+     c2eb8dc at main  rule1=True  demand/future cond=c-Q stock.c@8e9b0  prev=['41dda70', '4dd847d', 'a6a43ae']
+     latest: ['c2eb8dc']
+     after 3-way: ['c2eb8dc']  remaining: ['c2eb8dc']
+     => take c2eb8dc as is
+     introducing commits of c2eb8dc: [('pick', 1)]
+  [D on c]
+     a6a43ae at a  rule1=True  demand/future cond=c-P stock.c@8e9b0  prev=['b221f71', 'eeb4294']
+     41dda70 at b  rule1=True  demand/future cond=c-Q stock.c@8e9b0  prev=['b221f71', 'dc9a6a2']
+     4dd847d at c,HEAD  rule1=True  demand/future cond=c-R stock.c@8e9b0  prev=['dc9a6a2', 'eeb4294']
+     c2eb8dc at main  rule1=True  demand/future cond=c-Q stock.c@8e9b0  prev=['41dda70', '4dd847d', 'a6a43ae']
+     latest: ['c2eb8dc']
+     after 3-way: ['c2eb8dc']  remaining: ['c2eb8dc']
+     => take c2eb8dc as is
+     introducing commits of c2eb8dc: [('pick', 3)]
+
+======== KC2  T1's history (main chose D=a1, then a went on to c-A2) ; 'pull D=a2'
+  [D]
+     7590017 at a  rule1=True  demand/future cond=c-A2 stock.c@8e9b0  prev=['2ace12d']
+     f3b2ffc at main,HEAD  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['2ace12d', '376595c']
+     latest: ['7590017', 'f3b2ffc']  3-way: ['7590017 moved forward from f3b2ffc']
+     after 3-way: ['7590017']  remaining: ['7590017']
+     => new version: body of 7590017, prev = latest ['7590017', 'f3b2ffc']
+     introducing commits of 7590017: [('a2', 1)]
+  a2's version is the only remaining one: True ; does it contain mine? False
+
+======== MS2  y1 c-K ; q1 c-M, q2 keeps M after seeing y1 ; p2 picks y1 after seeing q1 ; q is squashed ; fresh clone
+  [D in the same repository]
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     805329c at p  rule1=True  demand/future cond=c-K stock.c@8e9b0  prev=['94e1d7e', 'd394f3d']
+     90aabae at q  rule1=True  demand/future cond=c-M stock.c@8e9b0  prev=['94e1d7e', 'd394f3d']
+     d394f3d at y  rule1=True  demand/future cond=c-K stock.c@8e9b0  prev=['b614d4d']
+     latest: ['805329c', '90aabae']
+     after 3-way: ['805329c', '90aabae']  remaining: ['805329c', '90aabae']
+     => DIVERGED: choose among ['805329c', '90aabae']
+     introducing commits of 805329c: [('p2', 2)]
+     introducing commits of 90aabae: [('qS', 1)]
+  fresh clone: M's blob present? False  K's? True
+  [D in a fresh clone]
+     b614d4d at main,origin/main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     805329c at origin/p  rule1=True  demand/future cond=c-K stock.c@8e9b0  prev=['94e1d7e', 'd394f3d']
+     90aabae at origin/q  rule1=True  demand/future cond=c-M stock.c@8e9b0  prev=['94e1d7e', 'd394f3d']
+     d394f3d at origin/y  rule1=True  demand/future cond=c-K stock.c@8e9b0  prev=['b614d4d']
+     latest: ['805329c', '90aabae']
+     after 3-way: ['805329c', '90aabae']  remaining: ['805329c', '90aabae']
+     => DIVERGED: choose among ['805329c', '90aabae']
+     introducing commits of 805329c: [('824a197', 2)]
+     introducing commits of 90aabae: [('9e824c8', 1)]
+
+======== U4b  main edits D and edits it back (body = D0) ; a cancels D
+  body(mine) == body(D0)? True
+  [D]
+     cee379a at a  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     1be0ef6 at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['5bf3e98']
+     latest: ['cee379a', '1be0ef6']  3-way: ['cee379a moved forward from 1be0ef6']
+     after 3-way: ['cee379a']  remaining: ['cee379a']
+     => new version: body of cee379a, prev = latest ['cee379a', '1be0ef6']
+     introducing commits of cee379a: [('a1', 1)]
+
+======== PV1  a: c-A then cancel ; b: c-x, c-A then cancel ; main: c-E (also at 'om', a stand-in for origin/main)
+  [D]
+     40e6ac1 at a  rule1=True  demand/cancelled cond=c-A stock.c@8e9b0  prev=['2ace12d']
+     d15121f at b  rule1=True  demand/cancelled cond=c-A stock.c@8e9b0  prev=['d487fca']
+     376595c at main,om,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['40e6ac1', 'd15121f', '376595c']
+     after 3-way: ['40e6ac1', 'd15121f', '376595c']  -> terminal wins  remaining: ['40e6ac1', 'd15121f']
+     => new version: body of 40e6ac1, prev = latest ['40e6ac1', 'd15121f', '376595c']
+     introducing commits of 40e6ac1: [('a2', 2)]
+     introducing commits of d15121f: [('b3', 3)]
+  body(T1) == body(T2)? True
+  [D after the pull ; again]
+     40e6ac1 at a  rule1=True  demand/cancelled cond=c-A stock.c@8e9b0  prev=['2ace12d']
+     d15121f at b  rule1=True  demand/cancelled cond=c-A stock.c@8e9b0  prev=['d487fca']
+     bcfa1ed at main,HEAD  rule1=True  demand/cancelled cond=c-A stock.c@8e9b0  prev=['376595c', '40e6ac1', 'd15121f']
+     376595c at om  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['bcfa1ed']
+     after 3-way: ['bcfa1ed']  remaining: ['bcfa1ed']
+     => nothing to take
+
+======== PV2  a: cancel ; b: c-B ; main: c-E
+  [D]
+     cee379a at a  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     6619123 at b  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['cee379a', '6619123', '376595c']
+     after 3-way: ['cee379a', '6619123', '376595c']  -> terminal wins  remaining: ['cee379a']
+     => new version: body of cee379a, prev = latest ['cee379a', '6619123', '376595c']
+     introducing commits of cee379a: [('a1', 1)]
+  [D after the pull ; again]
+     cee379a at a  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     6619123 at b  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     63e8f54 at main,HEAD  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['376595c', '6619123', 'cee379a']
+     latest: ['63e8f54']
+     after 3-way: ['63e8f54']  remaining: ['63e8f54']
+     => nothing to take
+  b's version is in prev: True ; it was made by b1 with Ait-Agent 'agent-b'
+
+======== PV3  D current, drop X ; main fulfils X (D withdrawn) ; a changes D's consumer only
+  [D]
+     387441e at a  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=['5b1b0e3']
+     3295a54 at main,HEAD  rule1=True  demand/withdrawn cond=c0 stock.c@8e9b0  prev=['5b1b0e3']
+     latest: ['387441e', '3295a54']
+     after 3-way: ['387441e', '3295a54']  -> terminal wins  remaining: ['3295a54']
+     => new version: body of 3295a54, prev = latest ['387441e', '3295a54']
+  [D after kept ; again]
+     387441e at a  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=['5b1b0e3']
+     aa77362 at main,HEAD  rule1=True  demand/withdrawn cond=c0 stock.c@8e9b0  prev=['3295a54', '387441e']
+     latest: ['aa77362']
+     after 3-way: ['aa77362']  remaining: ['aa77362']
+     => nothing to take
+
+======== TT1  a: cancel D ; b: fulfil D, drop X, fulfil X (D withdrawn) ; main: c-E
+  [D]
+     cee379a at a  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     d450a16 at b  rule1=True  demand/withdrawn cond=c0 stock.c@e3dea  prev=['7c6d127']
+     376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['cee379a', 'd450a16', '376595c']
+     after 3-way: ['cee379a', 'd450a16', '376595c']  -> terminal wins  remaining: ['cee379a', 'd450a16']
+     => DIVERGED: choose among ['cee379a', 'd450a16']
+     introducing commits of cee379a: [('a1', 1)]
+     introducing commits of d450a16: [('b3', 3)]
+  result db853af: rule1=True state=cancelled contains mine and every latest? True
+
+======== REV1  main took a1 (D cancel) ; b: c-E, then git merge main, .ait/D resolved by hand as c-E future with prev {T, E}
+  git merge main on b: exit 1 unmerged ['.ait/D']
+  N=9c586c1 state=future prev holds the cancelled T? True
+  [D]
+     cee379a at a,main,HEAD  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     9c586c1 at b  rule1=False  demand/future cond=c-E stock.c@8e9b0  prev=['376595c', 'cee379a']
+     skipped (accident): ['9c586c1']
+     latest: ['cee379a']
+     after 3-way: ['cee379a']  remaining: ['cee379a']
+     => nothing to take
+
+======== CK4  U6, then 'pull D=a1'
+  [D]
+     d1314a9 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['5b1b0e3']
+     cfce40b at b  rule1=True  demand/current cond=c0 stock.c@e3dea check=reported  prev=['5b1b0e3']
+     5b1b0e3 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=[]
+     latest: ['d1314a9', 'cfce40b']
+     after 3-way: ['d1314a9', 'cfce40b']  remaining: ['d1314a9', 'cfce40b']
+     => DIVERGED: choose among ['d1314a9', 'cfce40b']
+     introducing commits of d1314a9: [('a1', 1)]
+     introducing commits of cfce40b: [('b1', 1)]
+  result: ['reported e934a49b128da2655af05aacb88077c6ad5d35e4'] check_ok=True rule1=True
+
+======== CK5  D current, checked with --force ; a1: the same pins checked again with -r ; main: consumer only
+  init check: ['forced 76b5529801bd0e71c3ab38eeb60f2723f9efb558']
+  body(a1) == body(D0)? True  a1 and e1 PINS equal? True
+  [D on main]
+     8ffa6d5 at a  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=['287c3ed']
+     4f4ffd1 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=forced  prev=['287c3ed']
+     latest: ['8ffa6d5', '4f4ffd1']  3-way: ['4f4ffd1 moved forward from 8ffa6d5']
+     after 3-way: ['4f4ffd1']  remaining: ['4f4ffd1']
+     => new version: body of 4f4ffd1, prev = latest ['8ffa6d5', '4f4ffd1']
+  new version on main: check = check reported 76b5529801bd0e71c3ab38eeb60f2723f9efb558
+  [D on a]
+     8ffa6d5 at a,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=['287c3ed']
+     4f4ffd1 at main  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=forced  prev=['287c3ed']
+     latest: ['8ffa6d5', '4f4ffd1']  3-way: ['4f4ffd1 moved forward from 8ffa6d5']
+     after 3-way: ['4f4ffd1']  remaining: ['4f4ffd1']
+     => new version: body of 4f4ffd1, prev = latest ['8ffa6d5', '4f4ffd1']
+     introducing commits of 4f4ffd1: [('e1', 1)]
+  new version on a: check = check reported 76b5529801bd0e71c3ab38eeb60f2723f9efb558
+  main's and a's new versions are byte-identical? True
+
+======== CK6  a1 fulfils D with -r, b1 fulfils D with --force, same code
+  [D]
+     70d5fa2 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     43d78d7 at b  rule1=True  demand/current cond=c0 stock.c@77339 check=forced  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['70d5fa2', '43d78d7']
+     after 3-way: ['70d5fa2', '43d78d7']  remaining: ['70d5fa2', '43d78d7']
+     => new version: body of 70d5fa2, prev = latest ['70d5fa2', '43d78d7']
+     introducing commits of 70d5fa2: [('a1', 1)]
+     introducing commits of 43d78d7: [('b1', 1)]
+  new version's check line: check reported e934a49b128da2655af05aacb88077c6ad5d35e4
+
+======== IND2  a fulfils D (current) ; main: D c-E ; main 'pull D=a1 future amend D' ; then a fresh clone at init pulls D
+  -- revision 4: prev = the version pull decided (V1): V1 in the clone? False
+  [D seen from the clone]
+     b614d4d at b,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     70d5fa2 at origin/a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     376595c at origin/main  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     bd83112 at origin/res  rule1=None  demand/future cond=c0 stock.c@77339  prev=['932ac90']
+     latest: ['70d5fa2', '376595c', 'bd83112']
+     after 3-way: ['70d5fa2', '376595c', 'bd83112']  remaining: ['70d5fa2', '376595c', 'bd83112']
+     => DIVERGED: choose among ['70d5fa2', '376595c', 'bd83112']
+     introducing commits of 70d5fa2: [('d9cf6e9', 1)]
+     introducing commits of 376595c: [('c3a67cd', 1)]
+     introducing commits of bd83112: [('8bff7ca', 3)]
+  -- revision 5: prev = V1's prev: V1 in the clone? False
+  [D seen from the clone]
+     b614d4d at b,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     70d5fa2 at origin/a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     376595c at origin/main  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     5ddfc75 at origin/res  rule1=True  demand/future cond=c0 stock.c@77339  prev=['376595c', '70d5fa2']
+     latest: ['5ddfc75']
+     after 3-way: ['5ddfc75']  remaining: ['5ddfc75']
+     => take 5ddfc75 as is
+     introducing commits of 5ddfc75: [('c8ac17e', 3)]
+
+======== MF1  a1 writes .ait/D with CRLF line ends
+  [D]
+     8b42800 at a  rule1=MALFORMED  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     skipped (malformed): ['8b42800']
+     latest: ['b614d4d']
+     after 3-way: ['b614d4d']  remaining: ['b614d4d']
+     => nothing to take
+
+======== ACC1  D current, drop X ; a1 fulfils X (D withdrawn) ; a2 turns D back to current by hand ; a3 changes Q ; 'pull Q'
+  [.ait/Q]
+     fc5dc97 at a,taken commit  rule1=True  demand/future cond=q-A stock.c@8e9b0  prev=['c0baf82']
+     c0baf82 at main,HEAD  rule1=True  demand/future cond=q0 stock.c@8e9b0  prev=[]
+     latest: ['fc5dc97']
+     after 3-way: ['fc5dc97']  remaining: ['fc5dc97']
+     => take fc5dc97 as is
+     introducing commits of fc5dc97: [('a3', 3)]
+  [.ait/X]
+     351a2d2 at a,taken commit  rule1=True  drop/fulfilled target=D  prev=['03e764b']
+     03e764b at main,HEAD  rule1=True  drop/future target=D  prev=[]
+     latest: ['351a2d2']
+     after 3-way: ['351a2d2']  remaining: ['351a2d2']
+     => take 351a2d2 as is
+     introducing commits of 351a2d2: [('a1', 1)]
+  [.ait/D]
+     08fe207 at a,taken commit  rule1=False  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=['3295a54']
+     5b1b0e3 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=[]
+     skipped (accident): ['08fe207']
+     latest: ['5b1b0e3']
+     after 3-way: ['5b1b0e3']  remaining: ['5b1b0e3']
+     => nothing to take
+  received result with X and Q from a3, D mine (a's D skipped): validate: ['d: fulfilled X target not withdrawn']
+
+======== F2  C2 (a1 fulfils D, main changes stock.c line 9) and both change src/other.c
+  merge-tree HEAD a1: exit=1 conflicts=['src/other.c'] ; merged stock.c == D's pin? False
+
+======== XT1  D current, drop X ; a1 fulfils X (D withdrawn) ; main cancels X ; 'pull D X'
+  [D]
+     3295a54 at a  rule1=True  demand/withdrawn cond=c0 stock.c@8e9b0  prev=['5b1b0e3']
+     5b1b0e3 at main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=[]
+     latest: ['3295a54']
+     after 3-way: ['3295a54']  remaining: ['3295a54']
+     => take 3295a54 as is
+     introducing commits of 3295a54: [('a1', 1)]
+  [X]
+     351a2d2 at a  rule1=True  drop/fulfilled target=D  prev=['03e764b']
+     7d8ef1c at main,HEAD  rule1=True  drop/cancelled target=D  prev=['03e764b']
+     latest: ['351a2d2', '7d8ef1c']
+     after 3-way: ['351a2d2', '7d8ef1c']  remaining: ['351a2d2', '7d8ef1c']
+     => DIVERGED: choose among ['351a2d2', '7d8ef1c']
+     introducing commits of 351a2d2: [('a1', 1)]
+
+======== CP2  tests/d.sh is code ; a0 changes it (tA) ; a1 changes Q ; main e1 makes D pin it as an input (t0) ; 'pull Q'
+  D pins tests/d.sh = ['e9c37cf'] (t0 = e9c37cf)
+  merge-tree HEAD a1: exit=0 ; tests/d.sh in the merged tree = 73a8bf6 (tA = 73a8bf6)
+  versions in the taken history that pin tests/d.sh at tA: none
+  [Q]
+     fc5dc97 at a  rule1=True  demand/future cond=q-A stock.c@8e9b0  prev=['c0baf82']
+     c0baf82 at main,HEAD  rule1=True  demand/future cond=q0 stock.c@8e9b0  prev=[]
+     latest: ['fc5dc97']
+     after 3-way: ['fc5dc97']  remaining: ['fc5dc97']
+     => take fc5dc97 as is
+     introducing commits of fc5dc97: [('a1', 2)]
+
+======== NU2  D current (a1) ; a2, a3 plain code changes (unverified) ; a4 changes Q ; main changes stock.c line 9 ; 'pull D Q'
+  D's pin 77339e7 ; a3/a4 stock.c 46aebc2 (unverified there) ; merged stock.c 479acc4 (exit 0)
+
+======== CP3  a1 and b1 each write the same D version by hand (agent-a, agent-b) ; main: c-E
+  same blob? True
+  [D]
+     2ace12d at a,b  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['2ace12d', '376595c']
+     after 3-way: ['2ace12d', '376595c']  remaining: ['2ace12d', '376595c']
+     => DIVERGED: choose among ['2ace12d', '376595c']
+     introducing commits of 2ace12d: [('b1', 1), ('a1', 1)]
+  introducing b1 (1 new) Ait-Agent='agent-b'
+  introducing a1 (1 new) Ait-Agent='agent-a'
+
+======== RN1  a cancels D and moves specs/d.yaml to src/moved.c ; main edits the spec and re-pins D
+  merge-tree: exit=1 conflicts=['.ait/D'] ; src/moved.c row15 in the merged tree: ['row15: E']
+
+======== MH2'  'pull D Q' : D from a1, Q from b1 ; a1 and b1 change src/x.c differently ; main did not touch x.c
+  decision 20 steps: [('a1', 'no code conflict'), ('ends with code conflicts', [('b1', ['src/x.c'])])]
+  one merge state: status=['M  .ait/D', 'M  .ait/Q', 'M  specs/d.yaml', 'M  specs/q.yaml', 'UU src/x.c'] HEAD unchanged? True
+
+======== MH4  MH2' and 'git merge --abort'
+  after abort: HEAD unchanged? True status=[]
+
+======== MH3  MH2' again, resolved and finished ; then the same command again
+  parents of the finishing commit: ['init', 'a1', 'b1']
+  [D]
+     2ace12d at a,main,HEAD  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     b614d4d at b  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['2ace12d']
+     after 3-way: ['2ace12d']  remaining: ['2ace12d']
+     => nothing to take
+  [Q]
+     c0baf82 at a  rule1=True  demand/future cond=q0 stock.c@8e9b0  prev=[]
+     59218fe at b,main,HEAD  rule1=True  demand/future cond=q-B stock.c@8e9b0  prev=['c0baf82']
+     latest: ['59218fe']
+     after 3-way: ['59218fe']  remaining: ['59218fe']
+     => nothing to take
+
+======== MH5  D and O future, undertaken ; a1 fulfils O (and D), x.c=A ; b1 fulfils D only (other consumer), x.c=B ; 'pull D=b1 O'
+  [D]
+     70d5fa2 at a  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     3691dfa at b  rule1=True  demand/current cond=c0 stock.c@77339 check=reported  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['70d5fa2', '3691dfa']
+     after 3-way: ['70d5fa2', '3691dfa']  remaining: ['70d5fa2', '3691dfa']
+     => DIVERGED: choose among ['70d5fa2', '3691dfa']
+     introducing commits of 70d5fa2: [('a1', 1)]
+     introducing commits of 3691dfa: [('b1', 1)]
+  [O]
+     b670950 at a  rule1=True  offer/current cond=o0 o.c@13e75 check=reported  prev=['8368ac6']
+     8368ac6 at b,main,HEAD  rule1=True  offer/future cond=o0 o.c@13e75  prev=[]
+     latest: ['b670950']
+     after 3-way: ['b670950']  remaining: ['b670950']
+     => take b670950 as is
+     introducing commits of b670950: [('a1', 1)]
+  decision 20 steps: [('b1', 'no code conflict'), ('ends with code conflicts', [('a1', ['src/x.c'])])]
+  the one result (D from b1, O from a1): validate: pass
+
+======== MH6  'pull D Q' : D from a1 changes x.c, Q from b1 changes y.c ; main changed both x.c and y.c
+  decision 20 steps: [('ends with code conflicts', [('b1', ['src/y.c']), ('a1', ['src/x.c'])])]
+  alone: merge-tree HEAD a1 exit=1 ['src/x.c']
+  alone: merge-tree HEAD b1 exit=1 ['src/y.c']
+
+======== WT2  main took b1 (D@B) ; b reverts b1 and changes Q and x.c (b3) ; a1: Q2 ; main: x.c differently, uncommitted draft in specs/d.yaml ; 'pull Q Q2'
+  [D]
+     6619123 at a,main,HEAD  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     b614d4d at b,taken commit  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['6619123']
+     after 3-way: ['6619123']  remaining: ['6619123']
+     => nothing to take
+  decision 20 steps: [('a1', 'no code conflict'), ('ends with code conflicts', [('b3', ['src/x.c'])])]
+  paths where the received result differs from HEAD: ['.ait/Q', '.ait/Q2', 'specs/q.yaml', 'specs/q2.yaml', 'src/x.c']
+  read-tree -m -u HEAD <result>: exit=0 ; draft kept? True

@@ -1,0 +1,196 @@
+
+======== SP5  U1 with 'pull D=a1' : the result is a new version V (body of a's D@A)
+  merge-tree exit=1 conflicts=['.ait/D', 'specs/d.yaml'] ; V == D@A? False ; V's pin == D@A's pin? True
+     specs/d.yaml my side: not taken (old or discarded version's spec: ['D'])
+     specs/d.yaml a1: take (the result pins it)
+     specs/d.yaml: git's merge = 'body: c-A' ; equals a result pin? True
+
+======== SP6  T1 : after 'pull D=a1', a writes c-A2 (a2) ; 'pull D' (a2 moved forward ; the result is a new version)
+  [D on main]
+     7590017 at a  rule1=True  demand/future cond=c-A2 stock.c@8e9b0  prev=['2ace12d']
+     f3b2ffc at main,HEAD  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['2ace12d', '376595c']
+     latest: ['7590017', 'f3b2ffc']  3-way: ['7590017 moved forward from f3b2ffc']
+     after 3-way: ['7590017']  remaining: ['7590017']
+     => new version: body of 7590017, prev = latest ['7590017', 'f3b2ffc']
+     introducing commits of 7590017: [('a2', 1)]
+  merge-base(HEAD, a2) = a1
+     specs/d.yaml a2: take (the result pins it)
+     specs/d.yaml: git's merge = 'body: c-A2' ; equals a result pin? True
+
+======== SP7  E1 : b1 D@B ; b2 Q ; b3 reverts b1 ; 'pull D Q' takes b2 : the side is the taken commit, not the ref tip
+  b's tip specs/d.yaml == init's? True
+   [side = the ref tip b3]
+     specs/d.yaml: git's merge = 'body: c0' ; equals a result pin? False -> 6.2 re-pin (future) / stop at 5 (current)
+   [side = the taken commit b2]
+     specs/d.yaml b2: take (the result pins it)
+     specs/d.yaml: git's merge = 'body: c-B' ; equals a result pin? True
+
+======== SP8  init's D pins specs/shared.yaml ; a1 cancels D and edits shared.yaml ; main: new K5 pins it ; 'pull D'
+  a1's D: demand/cancelled cond=s0 stock.c@8e9b0 with a file row for shared.yaml ; merge-tree exit=0
+  [D]
+     f92a442 at a  rule1=True  demand/cancelled cond=s0 stock.c@8e9b0  prev=['50f1ef7']
+     50f1ef7 at main,HEAD  rule1=True  demand/future cond=s0 stock.c@8e9b0  prev=[]
+     latest: ['f92a442']
+     after 3-way: ['f92a442']  remaining: ['f92a442']
+     => take f92a442 as is
+     introducing commits of f92a442: [('a1', 1)]
+   [ended versions do not pin]
+     specs/shared.yaml a1: take (code at that side)
+     specs/shared.yaml: git's merge = 'body: s-A' ; equals a result pin? False -> 6.2 re-pin (future) / stop at 5 (current)
+
+======== SF2  SF1 with the mixed choice 'pull D=a1 Q=b1' : D and Q both pin specs/shared.yaml
+  [D]
+     7068f97 at a  rule1=True  demand/future cond=s-A stock.c@8e9b0  prev=['50f1ef7']
+     90dcaa0 at b  rule1=True  demand/future cond=s-B stock.c@8e9b0  prev=['50f1ef7']
+     50f1ef7 at main,HEAD  rule1=True  demand/future cond=s0 stock.c@8e9b0  prev=[]
+     latest: ['7068f97', '90dcaa0']
+     after 3-way: ['7068f97', '90dcaa0']  remaining: ['7068f97', '90dcaa0']
+     => DIVERGED: choose among ['7068f97', '90dcaa0']
+     introducing commits of 7068f97: [('a1', 1)]
+     introducing commits of 90dcaa0: [('b1', 1)]
+  [Q]
+     ec4ad2f at a  rule1=True  demand/future cond=s-A stock.c@8e9b0  prev=['3b9c454']
+     7bca304 at b  rule1=True  demand/future cond=s-B stock.c@8e9b0  prev=['3b9c454']
+     3b9c454 at main,HEAD  rule1=True  demand/future cond=s0 stock.c@8e9b0  prev=[]
+     latest: ['ec4ad2f', '7bca304']
+     after 3-way: ['ec4ad2f', '7bca304']  remaining: ['ec4ad2f', '7bca304']
+     => DIVERGED: choose among ['ec4ad2f', '7bca304']
+     introducing commits of ec4ad2f: [('a1', 1)]
+     introducing commits of 7bca304: [('b1', 1)]
+  result pins of shared.yaml: D (a1's body) s-A, Q (b1's body) s-B
+     specs/shared.yaml a1: take (the result pins it)
+     specs/shared.yaml b1: take (the result pins it)
+     specs/shared.yaml: git conflicts on it (a code conflict, decision 29)
+
+======== SP4c  as SP4, but a's D and main's K edit the same line of tests/f.sh ; 'pull D'
+  merge-tree exit=1 conflicts=['tests/f.sh']
+  [D]
+     568cbcd at a  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['568cbcd']
+     after 3-way: ['568cbcd']  remaining: ['568cbcd']
+     => take 568cbcd as is
+     introducing commits of 568cbcd: [('a1', 1)]
+  [K]
+     e0b6291 at a  rule1=True  demand/future cond=k0 stock.c@8e9b0  prev=[]
+     f38ba00 at main,HEAD  rule1=True  demand/future cond=k0 stock.c@8e9b0  prev=['e0b6291']
+     latest: ['f38ba00']
+     after 3-way: ['f38ba00']  remaining: ['f38ba00']
+     => nothing to take
+     tests/f.sh my side: take (the result pins it)
+     tests/f.sh a1: take (the result pins it)
+     tests/f.sh: git conflicts on it (a code conflict, decision 29)
+
+======== DL2-future  tests/d.sh is code at init ; main edits its line 9 and D (future) pins it ; a1 deletes it and changes Q ; 'pull Q'
+  merge-tree exit=1 : ['CONFLICT (modify/delete): tests/d.sh deleted in a and modified in HEAD.  Version HEAD of tests/d.sh left in tree.']
+     tests/d.sh my side: take (the result pins it)
+     tests/d.sh a1: a removal of a path the result pins: not taken, warned
+     tests/d.sh: git's merge = 't1 ... t10' ; equals a result pin? True
+
+======== DL2-current  tests/d.sh is code at init ; main edits its line 9 and D (current) pins it ; a1 deletes it and changes Q ; 'pull Q'
+  merge-tree exit=1 : ['CONFLICT (modify/delete): tests/d.sh deleted in a and modified in HEAD.  Version HEAD of tests/d.sh left in tree.']
+     tests/d.sh my side: take (the result pins it)
+     tests/d.sh a1: a removal of a path the result pins: not taken, warned
+     tests/d.sh: git's merge = 't1 ... t10' ; equals a result pin? True
+
+======== RN2  a1 moves specs/d.yaml to specs/d2.yaml and edits its line 6 (D@A pins d2.yaml) ; main edits line 1 (D@E) ; 'pull D=a1'
+  merge-tree exit=1 ; git's specs/d2.yaml: 'body: c-E' ... '# l6 A' ; == D@A's pin? False ; specs/d.yaml in git's tree? False
+     specs/d.yaml my side: not taken (old or discarded version's spec: ['D'])
+     specs/d2.yaml a1: take (the result pins it)
+     specs/d2.yaml: git's merge = 'body: c0 ... # l6 A' ; equals a result pin? True
+
+======== RP5  RP3's pull commit under v14 1.5d as written, and under the one formula
+  v14 1.5d as written: reopen commit? True ; one formula: reopens []
+
+======== RP4  D0 current with 'check forced' ; main reopens it (R) ; a re-checks it with -r (C', same body) ; main pulls D
+  D0: demand/current cond=c0 stock.c@8e9b0 check=forced ; C': demand/current cond=c0 stock.c@8e9b0 check=reported prev=['287c3ed'] ; body(C') == body(D0)? True
+  [D on main]
+     8ffa6d5 at a  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=['287c3ed']
+     9884d35 at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=['287c3ed']
+     latest: ['8ffa6d5', '9884d35']  3-way: ['9884d35 moved forward from 8ffa6d5']
+     after 3-way: ['9884d35']  remaining: ['9884d35']
+     => new version: body of 9884d35, prev = latest ['8ffa6d5', '9884d35']
+  the pull commit's parents: 1 ; v14 1.5d as written: False ; one formula: reopens []
+
+======== RP6  a1 fulfils D (C) and main takes it ; x1 reopens, x2 c-B ; y1 (from init) c-B ; main 'pull D'
+  [D on main]
+     626de88 at a,main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=['b614d4d']
+     a4eefa1 at x  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['7aa9f08']
+     6619123 at y  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     latest: ['a4eefa1', '6619123']
+     after 3-way: ['a4eefa1', '6619123']  remaining: ['a4eefa1', '6619123']
+     => new version: body of a4eefa1, prev = latest ['a4eefa1', '6619123']
+     introducing commits of a4eefa1: [('x2', 2)]
+     introducing commits of 6619123: [('y1', 1)]
+  Fx contains my C? True ; Fy contains my C? False
+   [TIE takes x2 (decision 30)] any current version in V's prev? False ; x1 in this history? True ; v14 1.5d as written: True ; one formula: reopens []
+   [TIE takes y1] any current version in V's prev? False ; x1 in this history? False ; v14 1.5d as written: True ; one formula: reopens ['626de88']
+
+======== RV3b'  a1 fulfils D ; main fast-forwards to a1, then 'git revert a1' : is the revert commit a reopen commit?
+  HEAD's D == init's D0? True ; parent's D contains it? True
+  v14 1.5d as written: True ; one formula: reopens []
+
+======== IND4  a1 fulfils D (C) ; main c-E (E) ; main 'pull D=a1 future amend D'
+  one formula: reopens ['70d5fa2', '932ac90'] (C = 70d5fa2, V1 = 932ac90)
+  v14 7.1.5 reason 'keeps the future version': body(V2) == body of a future start version (E)? False
+
+======== U1z  U1c, then a clone z that holds main only
+  here: reopens ['70d5fa2'] ; clone z: has C's blob? False ; reopens []
+
+======== ORD1  'pull D Q' : a1 (D) edits x.c line 1 ; b1 (Q) edits x.c line 8 and y.c line 1 ; main edited x.c line 1 and y.c line 1 ; a1 < b1
+  commit-ID order: ['a1', 'b1']
+   order a1, b1: a1 changes already-conflicted [] ; conflicts now ['src/x.c']
+   order a1, b1: b1 changes already-conflicted ['src/x.c'] ; conflicts now ['src/y.c']
+  decision 26: order [('b1', "conflicts in ['src/y.c']"), ('a1', "conflicts in ['src/x.c']")] ; files in conflict: ['src/y.c', 'src/x.c']
+
+======== MH9  a1: D c-A, x.c ; b0: D c-B ; b1 (on b0): Q, x.c ; main: x.c ; 'pull D=a1 Q' then the split commands in turn
+  [D]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     6619123 at b  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     b614d4d at main,HEAD  rule1=True  demand/future cond=c0 stock.c@8e9b0  prev=[]
+     latest: ['2ace12d', '6619123']
+     after 3-way: ['2ace12d', '6619123']  remaining: ['2ace12d', '6619123']
+     => DIVERGED: choose among ['2ace12d', '6619123']
+     introducing commits of 2ace12d: [('a1', 1)]
+     introducing commits of 6619123: [('b0', 1)]
+   [both at once: ends a1, b1]
+  decision 26: STOP: in every order some file would conflict twice (['a1', 'b1'])
+   [first 'pull D=a1 -m <why>' (end a1 only): x.c conflicts once ; the resolution keeps main's x.c]
+  [D after the first command]
+     2ace12d at a  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['b614d4d']
+     6619123 at b  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     9b36e15 at main,HEAD  rule1=True  demand/future cond=c-A stock.c@8e9b0  prev=['2ace12d', '6619123']
+     latest: ['9b36e15']
+     after 3-way: ['9b36e15']  remaining: ['9b36e15']
+     => nothing to take
+  [Q after the first command]
+     c0baf82 at a,main,HEAD  rule1=True  demand/future cond=q0 stock.c@8e9b0  prev=[]
+     59218fe at b  rule1=True  demand/future cond=q-B stock.c@8e9b0  prev=['c0baf82']
+     latest: ['59218fe']
+     after 3-way: ['59218fe']  remaining: ['59218fe']
+     => take 59218fe as is
+     introducing commits of 59218fe: [('b1', 2)]
+   [then 'pull Q' (end b1 only) ; specs/d.yaml: b's change is the discarded D@B's spec, decided by pull]
+  decision 26: order [('b1', "conflicts in ['src/x.c']")] ; files in conflict: ['src/x.c']
+
+======== MH8b  MH8 (a1 and b1 both change x.c, D-O taken together), but main's x.c is unchanged
+  decision 26: order [('a1', 'no code conflict'), ('b1', "conflicts in ['src/x.c', 'src/y.c']")] ; files in conflict: ['src/x.c', 'src/y.c']
+
+======== MH8c  MH8 (a1 and b1 both change x.c, D-O taken together), but main's x.c is the same as a1
+  decision 26: order [('a1', 'no code conflict'), ('b1', "conflicts in ['src/x.c', 'src/y.c']")] ; files in conflict: ['src/x.c', 'src/y.c']
+
+======== MH10  CY1, plus c1 edits x.c line 5 and main edits x.c line 5 ; 'pull D O'
+  files b1 changes from merge-base(accumulated, b1) = c1: ['.ait/O', 'specs/o.yaml']
+  files b1 changes from merge-base(HEAD, b1) = init: ['.ait/O', '.ait/undertake/D-O', 'specs/o.yaml', 'src/x.c']
+  decision 26: order [('b1', "conflicts in ['src/x.c']"), ('a1', 'no code conflict')] ; files in conflict: ['src/x.c']
+
+======== HK3  a1: D cancel, x.c ; main: D c-E, x.c ; 'pull D' stops on x.c ; the resolution writes .ait/D as c-E (future), prev {C, E}
+  [D]
+     cee379a at a  rule1=True  demand/cancelled cond=c0 stock.c@8e9b0  prev=['b614d4d']
+     376595c at main,HEAD  rule1=True  demand/future cond=c-E stock.c@8e9b0  prev=['b614d4d']
+     latest: ['cee379a', '376595c']
+     after 3-way: ['cee379a', '376595c']  -> terminal wins  remaining: ['cee379a']
+     => new version: body of cee379a, prev = latest ['cee379a', '376595c']
+     introducing commits of cee379a: [('a1', 1)]
+  start versions: HEAD E (contains an ended version? False), a1 C (cancelled)
+  the resolution N (future, prev {C, E}): contains C? True ; rule1 = False

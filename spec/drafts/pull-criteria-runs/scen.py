@@ -38,9 +38,24 @@ def resolve(r, other, id, keep_body_of, msg, name):
     r.g("merge", "--no-commit", "--no-ff", other, check=False)
     ours = r.blob_at("HEAD", f".ait/{id}")
     theirs = r.blob_at(other, f".ait/{id}")
-    t = body(r.cat(keep_body_of)) + "".join(f"prev {p}\n" for p in sorted([ours, theirs]))
+    b = body(r.cat(keep_body_of))
+    t = compose(b, new_check_line(r, b, [ours, theirs]), [ours, theirs])
     r.write(f".ait/{id}", t)
+    restore_pinned(r, t)
     return r.commit(msg, name)
+
+
+def restore_pinned(r, record_text):
+    """put every spec file the record pins back to the pinned blob (an ait resolution keeps the bundle whole, 2.4.1)"""
+    for fl in fields(record_text).get("file", []):
+        pth, mode, blob = fl.split()[:3]
+        r.write(pth, r.cat(blob))
+
+
+def bundle_ok(r, rev, id="D"):
+    t = r.cat(r.blob_at(rev, f".ait/{id}"))
+    bad = [fl.split()[0] for fl in fields(t).get("file", []) if r.blob_at(rev, fl.split()[0]) != fl.split()[2]]
+    return "ok" if not bad else f"BROKEN {bad}"
 
 
 def H(t):
@@ -104,6 +119,7 @@ def U():
     resolve(r, "a", "D", vF, "f: merge a, keep F", "fM")
     r.co("main")
     show(r, ".ait/D", "D")
+    print("  bundle (2.4.1) at b:", bundle_ok(r, "b"), " at f:", bundle_ok(r, "f"))
 
     H("U3  a: fulfils D (current, pins new stock.c) ; main: D cond c-E")
     r = base("U3")
@@ -153,6 +169,7 @@ def G():
     r.co("b"); bM = resolve(r, "a", "D", vB, "b: merge a, keep B", "bM")
     r.co("main")
     show(r, ".ait/D", "D")
+    print("  bundle (2.4.1) at bM:", bundle_ok(r, bM))
     gitmerge(r, "a", "a (the commit of D@A)")
     mt(r, bM, "bM")
 
@@ -177,8 +194,10 @@ def G():
     print("  -- simulate pull D: one body; take the introducing commit with fewest new commits (fM), prev {D@B', D@F'}")
     r.g("merge", "--no-commit", "--no-ff", fM, check=False)
     r.write(".ait/D", body(r.cat(vA)) + "".join(f"prev {p}\n" for p in sorted(lat)))
+    restore_pinned(r, r.read(".ait/D"))
     r.commit("pull D", "pull")
     show(r, ".ait/D", "D after pull")
+    print("  bundle (2.4.1) at bM:", bundle_ok(r, bM), " fM:", bundle_ok(r, fM), " after pull:", bundle_ok(r, "HEAD"))
 
     H("G3  main has D@A (from a) ; b: D@B then resolves a to B side (D@B')")
     r = base("G3")
@@ -188,6 +207,7 @@ def G():
     bM = resolve(r, "a", "D", vB, "b: merge a, keep B", "bM")
     r.co("main")
     show(r, ".ait/D", "D")
+    print("  bundle (2.4.1) at bM:", bundle_ok(r, bM))
     gitmerge(r, b1, "b1 (the commit of D@B)")
     gitmerge(r, bM, "bM (the commit of D@B')")
 
@@ -223,7 +243,7 @@ def N():
     r = base("K1")
     r.co("a", True); r.write("src/o.c", "o\n"); cond(r, "O", "o"); r.record("O", role="offer", provider="src/o.c")
     r.record("D-O", role="undertake", state="undertaken"); r.commit("a: offer O, undertake D", "a1")
-    r.write("src/o.c", "o impl\n"); r.record("O", role="offer", state="current", provider="src/o.c"); r.commit("a: fulfil O\n\nAit-Check: O reported p", "a2")
+    r.write("src/o.c", "o impl\n"); r.record("O", role="offer", state="current", provider="src/o.c"); r.record("D", state="current"); r.commit("a: fulfil O and the D it undertook", "a2")
     r.co("main")
     show(r, ".ait/O", "O")
     mt(r, "a", "a2")

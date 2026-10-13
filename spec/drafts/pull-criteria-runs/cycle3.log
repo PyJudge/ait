@@ -1,0 +1,8 @@
+
+======== CY1 again: 'pull D O' takes a1 and b1 in one command
+  second merge exit: 0
+  parents of the pull commit: ['init', 'a1', 'b1']
+  validate (5.9 b-e): pass
+  .ait/D: all latest contained in HEAD's -> True
+  .ait/O: all latest contained in HEAD's -> True
+  .ait/undertake/D-O: all latest contained in HEAD's -> True

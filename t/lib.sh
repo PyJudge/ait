@@ -70,8 +70,31 @@ GIT
 	chmod +x "$T/bin/git"
 }
 
+# AIT_REPLAY=1 (5.9a, user decision 52): each hint that gives one command, 'ait ...' and nothing to fill in,
+# runs as given in a copy of the repository and is taken: it succeeds, or asks for results itself
+replay() {
+	rp_top=$(git rev-parse --show-toplevel 2>/dev/null) && [ -d "$rp_top/.git" ] || return 0
+	grep "^hint: .*'ait [^']*'\$" "$T/err" | grep -v "then\|restore\|push\|<[^w]" >"$T/replay.hints"
+	while IFS= read -r rp_line; do
+		rp_cmd=$(printf '%s\n' "$rp_line" | grep -o "'ait [^']*'" | tr -d "'" | sed 's/<why>/x/')
+		[ "$(printf '%s\n' "$rp_cmd" | wc -l)" = 1 ] || continue
+		rm -rf "$T/replay"; cp -R "$rp_top" "$T/replay"
+		rp_new=$(cd "$T/replay" && git rev-parse --show-toplevel)
+		for rp_f in "$T/replay/.git/ait/sessions/"*; do
+			[ -f "$rp_f" ] && sed "s#^worktree $rp_top\$#worktree $rp_new#" "$rp_f" >"$rp_f.new" && mv "$rp_f.new" "$rp_f"
+		done
+		rp_key=$(printf %s "$rp_top" | git hash-object --stdin)
+		[ -f "$T/replay/.git/ait/worktrees/$rp_key" ] &&
+			mv "$T/replay/.git/ait/worktrees/$rp_key" "$T/replay/.git/ait/worktrees/$(printf %s "$rp_new" | git hash-object --stdin)"
+		(cd "$T/replay" && sh -c "$rp_cmd" >"$T/replay.out" 2>"$T/replay.err")
+		rp_r=$?
+		[ $rp_r = 0 ] || grep -q '^error: check results required' "$T/replay.err" && continue
+		n=$((n+1)); failed=$((failed+1)); echo "not ok $n - replay: $rp_line"; sed 's/^/#   /' "$T/replay.err" | head -5
+	done <"$T/replay.hints"
+}
+
 # run a command, keeping stdout, stderr and the exit code
-run() { "$@" >"$T/out" 2>"$T/err"; rc=$?; }
+run() { "$@" >"$T/out" 2>"$T/err"; rc=$?; [ -z "$AIT_REPLAY" ] || replay; }
 
 # 0.2 `ok` and `err X` (5.8)
 code_of() {
@@ -94,14 +117,15 @@ code_of() {
 	E_GUARD) echo "1 error: contract files cannot be changed by a plain commit:" ;;
 	E_GIT) echo "128 fatal: git failed:" ;;
 	E_IO) echo "128 fatal: write error:" ;;
-	MINI) echo "128 fatal: not supported in ait-mini:" ;;
+	UNSUPPORTED) echo "128 fatal: not supported:" ;;
 	esac
 }
 expect_ok() { desc=$1; shift; run "$@"; [ $rc = 0 ] && say_ok "$desc" || say_fail "$desc (exit $rc)"; }
+# the error is the first line after the warnings and their hints, which git writes before it too
 expect_err() {
 	desc=$1 kind=$2; shift 2; run "$@"
 	want=$(code_of "$kind")
-	if [ "$rc" = "${want%% *}" ] && head -1 "$T/err" | grep -qF -- "${want#* }"; then say_ok "$desc"; else say_fail "$desc (want $kind, exit $rc)"; fi
+	if [ "$rc" = "${want%% *}" ] && grep -v '^warning: \|^hint: ' "$T/err" | head -1 | grep -qF -- "${want#* }"; then say_ok "$desc"; else say_fail "$desc (want $kind, exit $rc)"; fi
 }
 # 0.2 `불변`: HEAD, the index and the status are the same before and after
 snapshot() { { git rev-parse HEAD; git ls-files -s; git status --porcelain --untracked-files=all; } 2>&1; }
@@ -118,6 +142,8 @@ out_value() { sed -n "s/^$1 //p" "$T/out" | head -1; }
 rec() { git show "HEAD:.ait/$1"; }
 blob() { git rev-parse "$1"; }
 pins() { git show "$1:.ait/$2" | grep -E '^(provider|file) ' | git hash-object --stdin; }
+# check_line REV ID: the check line of ID's record at REV without its key ("reported|forced PINS", 1.5a)
+check_line() { git show "$1:.ait/$2" | sed -n 's/^check //p'; }
 new_id() { out_value new | cut -d' ' -f1; }
 
 # 0.2 `fill W OUT [TASK=OUT2]...`
@@ -140,7 +166,7 @@ with_r() {
 	outcome=$1; shift
 	wr_before=$(snapshot); run "$@"
 	W=$(out_value check-result); Q=$(out_value check-request)
-	if [ "$rc" = 1 ] && head -1 "$T/err" | grep -qF "error: check results required:" && [ -n "$W" ] &&
+	if [ "$rc" = 1 ] && grep -v '^warning: \|^hint: ' "$T/err" | head -1 | grep -qF "error: check results required:" && [ -n "$W" ] &&
 	   [ "$(snapshot)" = "$wr_before" ]; then :; else say_fail "first run of '$*' asks for results"; return; fi
 	fill "$W" "$outcome"
 	run "$@" -r "$W"

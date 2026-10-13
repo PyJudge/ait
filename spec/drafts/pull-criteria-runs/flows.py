@@ -85,7 +85,7 @@ def reopen(wt, id):
     p = os.path.join(wt, ".ait", id)
     old = open(p).read()
     prev = run(wt, "git", "hash-object", "-w", f".ait/{id}").stdout.strip()
-    new = "".join(l + "\n" for l in old.splitlines() if not l.startswith("prev ")).replace("state current", "state future") + f"prev {prev}\n"
+    new = "".join(l + "\n" for l in old.splitlines() if not l.startswith("prev ") and not l.startswith("check ")).replace("state current", "state future") + f"prev {prev}\n"
     set_record(wt, f".ait/{id}", new)
 
 
@@ -102,6 +102,24 @@ def repin_file(wt, id, spec):
             parts = l.split(); parts[3] = b; l = " ".join(parts)
         L.append(l)
     set_record(wt, f".ait/{id}", "\n".join(L) + f"\nprev {prev}\n")
+
+
+def repin_on_top(wt, id, spec):
+    """the finishing commit's re-pin of a future contract (7.1.3-2) on top of the version in the work tree:
+    prev = that version and its prev (record 108)"""
+    p = os.path.join(wt, ".ait", id)
+    old = open(p).read()
+    cur = run(wt, "git", "hash-object", "-w", f".ait/{id}").stdout.strip()
+    b = run(wt, "git", "hash-object", "-w", spec).stdout.strip()
+    L, ps = [], [cur]
+    for l in old.splitlines():
+        if l.startswith("prev "):
+            ps.append(l[5:])
+            continue
+        if l.startswith(f"file {spec} "):
+            parts = l.split(); parts[3] = b; l = " ".join(parts)
+        L.append(l)
+    set_record(wt, f".ait/{id}", "\n".join(L) + "\n" + "".join(f"prev {p}\n" for p in sorted(set(ps)) if p != "-"))
 
 
 def report(wt, label):
@@ -144,13 +162,20 @@ def U7():
 
 
 def SF1():
-    H("flow SF1: D=a1 Q=b1 versus D=a1 Q=a1")
+    H("flow SF1: the mixed choice D=a1 Q=b1 (decision 29: a code conflict on shared.yaml), and D=a1 Q=a1")
     r = scen.Repo.__new__(scen.Repo); r.path = os.path.join(RUNS, "SF1"); r.short = {}
     a1 = r.out("rev-parse", "a"); b1 = r.out("rev-parse", "b")
-    wt = take(r, [a1], "D=a1 Q=b1 (a1 merged, then Q set to b1's version)")
-    qa, qb, q0 = r.blob_at(a1, ".ait/Q"), r.blob_at(b1, ".ait/Q"), r.blob_at("HEAD", ".ait/Q")
+    da, db = r.blob_at(a1, ".ait/D"), r.blob_at(b1, ".ait/D")
+    qa, qb = r.blob_at(a1, ".ait/Q"), r.blob_at(b1, ".ait/Q")
+    wt = take(r, [a1, b1], "D=a1 Q=b1 (both ends ; contract files decided by pull)")
+    print(f"     unmerged: {run(wt, 'git', 'diff', '--name-only', '--diff-filter=U').stdout.split()}")
+    set_record(wt, ".ait/D", body(r.cat(da)) + "".join(f"prev {p}\n" for p in sorted([da, db])))
     set_record(wt, ".ait/Q", body(r.cat(qb)) + "".join(f"prev {p}\n" for p in sorted([qa, qb])))
-    report(wt, "D=a1 Q=b1")
+    set_record(wt, "specs/shared.yaml", "body: s-M (resolved by hand)\n")
+    repin_on_top(wt, "D", "specs/shared.yaml"); repin_on_top(wt, "Q", "specs/shared.yaml")
+    report(wt, "D=a1 Q=b1, resolved, D and Q re-pinned on top (record 108)")
+    done(r, wt)
+    wt = take(r, [a1], "D=a1 Q=a1")
     set_record(wt, ".ait/Q", body(r.cat(qa)) + "".join(f"prev {p}\n" for p in sorted([qa, qb])))
     report(wt, "D=a1 Q=a1")
     done(r, wt)

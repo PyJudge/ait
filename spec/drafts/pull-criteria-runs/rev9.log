@@ -1,0 +1,139 @@
+
+======== PV1-9  from main's e1 ; 'pull D' takes a2 (TIE) ; the result D is cancelled and pins nothing
+  plain merge-tree HEAD a2: exit=1 ['.ait/D', 'specs/d.yaml']
+     specs/d.yaml my side: not taken (old or discarded version's spec: ['D'])
+     specs/d.yaml a2: take (code at that side)
+     specs/d.yaml: git's merge = 'body: c-A' ; equals a result pin? False
+
+======== MF2-9  a0: Z in CRLF ; a1: Y current by hand ; a2: new W (current, no check) ; a3: Q ; 'pull Q'
+     specs/q.yaml a3: take (the result pins it)
+     specs/w.yaml a3: not taken (old or discarded version's spec: ['W'])
+     specs/z.yaml a3: not taken (old or discarded version's spec: ['Z'])
+     specs/q.yaml: git's merge = 'body: q-A' ; equals a result pin? True
+     specs/w.yaml a3: not taken (old or discarded version's spec: ['W'])
+     specs/z.yaml a3: not taken (old or discarded version's spec: ['Z'])
+     specs/z.yaml: git's merge = 'body: z0' ; equals a result pin? True
+     specs/w.yaml a3: not taken (old or discarded version's spec: ['W'])
+     specs/z.yaml a3: not taken (old or discarded version's spec: ['Z'])
+     specs/w.yaml: git's merge = None ; equals a result pin? False
+
+======== SP9  main's D pins tests/d.sh (t0) ; a1: tests/d.sh line 1 as code, and Q ; b1: Q2 only ; 'pull Q Q2' ; a1<b1
+  ends in commit-ID order: ['a1', 'b1']
+     tests/d.sh a1: take (code at that side)
+     tests/d.sh: git's merge = 't1 A ... t10' ; equals a result pin? False -> 6.2 re-pin (future) / stop at 5 (current)
+
+======== SP9  main's D pins tests/d.sh (t0) ; a1: tests/d.sh line 1 as code, and Q ; b1: Q2 only ; 'pull Q Q2' ; b1<a1
+  ends in commit-ID order: ['b1', 'a1']
+     tests/d.sh a1: take (code at that side)
+     tests/d.sh: git's merge = 't1 A ... t10' ; equals a result pin? False -> 6.2 re-pin (future) / stop at 5 (current)
+
+======== SP10  a1: D c-A ; a2: a plain commit edits specs/d.yaml (c-X, no re-pin) ; a3: Q ; 'pull D Q' (end a3), and 'pull D' then 'pull Q'
+  a3's D == a1's D@A? True ; a3's specs/d.yaml = 'body: c-X'
+   ['pull D Q': end a3]
+     specs/d.yaml a3: not taken, warned (changed outside ait's rules; ['D'] pin it: that side's pin is the result's, taken)
+     specs/d.yaml: git's merge = 'body: c-A' ; equals a result pin? True
+   ['pull D': end a1]
+     specs/d.yaml a1: take (the result pins it)
+     specs/d.yaml: git's merge = 'body: c-A' ; equals a result pin? True
+
+======== SP11  as SP10, but a1's D newly pins tests/t.sh with line 1 A ; a2 edits its line 1 to X by a plain commit ; main edits line 9 as code
+     tests/t.sh my side: take (code at that side)
+     tests/t.sh a3: not taken, warned (changed outside ait's rules; ['D'] pin it: that side's pin is the result's, taken)
+     tests/t.sh: git's merge = 't1 A ... t10' ; equals a result pin? False -> 6.2 re-pin (future) / stop at 5 (current)
+  lines 1 and 9 of the merge: ['t1 A', 't9 E', 't10']
+
+======== SP12  new A, B, C on a, b, c each pin tests/shared.sh and edit lines 1, 10, 20 ; 'pull A B C'
+     tests/shared.sh b1: take (the result pins it)
+     tests/shared.sh a1: take (the result pins it)
+     tests/shared.sh c1: take (the result pins it)
+     tests/shared.sh: git's merge = 'line1 a ... line20 c' ; equals a result pin? False -> 6.2 re-pin (future) / stop at 5 (current)
+  the merge has all three edits? True
+
+======== MF3  main's D pins tests/f.sh (base) ; a: Q, and a malformed W (two state rows) whose file row pins tests/f.sh at a's content ; 'pull Q'
+  W well-formed? False ; its state rows: ['state future', 'state cancelled']
+     specs/w.yaml a1: not taken (old or discarded version's spec: ['W'])
+     tests/f.sh a1: not taken (old or discarded version's spec: ['W'])
+     tests/f.sh: git's merge = 'echo base' ; equals a result pin? True
+
+======== SP13  U1, where main's new K5 shares specs/d.yaml and was re-pinned with c-E ; 'pull D=a1'
+     specs/d.yaml my side: take (the result pins it)
+     specs/d.yaml a1: take (the result pins it)
+     specs/d.yaml: git conflicts on it (a code conflict, decision 29)
+
+======== HK4  a1: D c-A newly pins tests/t.sh (line 1 A) ; b1: D c-B ; main: D c-E, tests/t.sh line 1 E as code ; 'pull D=a1' stops on tests/t.sh
+  latest: ['b379cd7', '6619123', '376595c'] (D@A, D@B, D@E) ; pull's V = body of D@A, prev = latest
+     specs/d.yaml my side: not taken (old or discarded version's spec: ['D'])
+     tests/t.sh my side: take (code at that side)
+     tests/t.sh a1: take (the result pins it)
+     tests/t.sh: git conflicts on it (a code conflict, decision 29)
+   [7.1.3-5 (prev = the maximal start versions)] the re-pinned D contains every latest version? False missing ['6619123']
+   [record 108 (prev = the kept version and its prev)] the re-pinned D contains every latest version? True 
+
+======== HD2  b's HEAD holds the accident V of REV1 (future, prev {cancelled C, E}) ; b runs a plain git merge of a code-only branch f
+  V rule1=False (contains cancelled C? True) ; git merge f: exit=0 ; index D == HEAD's V? True ; f's D = D0? True
+
+======== RP7  a1 fulfils D (C) ; main takes it ; x1 reopens D and writes c-B in one commit ; y1 (from init) c-B ; 'pull D' ; x1<y1
+  [D on main]
+     626de88 at a,main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=['b614d4d']
+     029d94e at x  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['626de88']
+     6619123 at y  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     latest: ['029d94e', '6619123']
+     after 3-way: ['029d94e', '6619123']  remaining: ['029d94e', '6619123']
+     => new version: body of 029d94e, prev = latest ['029d94e', '6619123']
+     introducing commits of 029d94e: [('x1', 1)]
+     introducing commits of 6619123: [('y1', 1)]
+  Fx contains my C? True ; Fy contains my C? False
+   [TIE takes Fx (decision 30)] the pull commit reopens [] ; x1 in this history? True
+   [TIE takes Fy] the pull commit reopens ['626de88'] ; x1 in this history? False
+
+======== RP7  a1 fulfils D (C) ; main takes it ; x1 reopens D and writes c-B in one commit ; y1 (from init) c-B ; 'pull D' ; y1<x1
+  [D on main]
+     626de88 at a,main,HEAD  rule1=True  demand/current cond=c0 stock.c@8e9b0 check=reported  prev=['b614d4d']
+     029d94e at x  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['626de88']
+     6619123 at y  rule1=True  demand/future cond=c-B stock.c@8e9b0  prev=['b614d4d']
+     latest: ['029d94e', '6619123']
+     after 3-way: ['029d94e', '6619123']  remaining: ['029d94e', '6619123']
+     => new version: body of 029d94e, prev = latest ['029d94e', '6619123']
+     introducing commits of 029d94e: [('x1', 1)]
+     introducing commits of 6619123: [('y1', 1)]
+  Fx contains my C? True ; Fy contains my C? False
+   [TIE takes Fx (decision 30)] the pull commit reopens [] ; x1 in this history? True
+   [TIE takes Fy] the pull commit reopens ['626de88'] ; x1 in this history? False
+
+======== U1m  a1 fulfils D (C) ; main takes it ; a reopens (R1) then writes c-R (R2) ; a squashes them ; clone z lacks R1 ; z: 'pull D=a2s'
+  clone z: has R1's blob? False ; latest ['626de88', '362c016'] ; DIVERGED: choose among ['626de88', '362c016']
+  z's pull commit: reopens in z [] ; the same commit here (R1 readable): []
+
+======== MH11  D-O taken together ; a1: D, x.c line 1, y.c line 5 ; b1: O, x.c line 8, y.c line 1 ; main: x.c line 1, y.c line 1 ; 'pull D O'
+  HEAD vs a1 code conflicts ['src/x.c'] ; HEAD vs b1 ['src/y.c']
+  decision 26: STOP: in every order some file would conflict twice (['a1', 'b1'])
+   [the decision-20 state: b includes a1 (b2 = b1 merged with a1)]
+  a1 is an ancestor of b2? True
+  decision 26: order [('b2', "conflicts in ['src/x.c', 'src/y.c']")] ; files in conflict: ['src/x.c', 'src/y.c']
+
+======== XT2/XT3  c1: D-O ; a1: D c-A, x.c ; d1: D c-D (XT3: also x.c) ; b1: O, x.c ; main: x.c ; 'pull D O'
+  [XT2] D: DIVERGED: choose among ['2ace12d', 'd97e853']
+   [XT2 D=a1: ends a1, b1]
+  decision 26: STOP: in every order some file would conflict twice (['a1', 'b1'])
+   [XT2 D=d1: ends d1, b1]
+  decision 26: order [('b1', "conflicts in ['src/x.c']"), ('d1', 'no code conflict')] ; files in conflict: ['src/x.c']
+  [XT3] D: DIVERGED: choose among ['2ace12d', 'd97e853']
+   [XT3 D=a1: ends a1, b1]
+  decision 26: STOP: in every order some file would conflict twice (['a1', 'b1'])
+   [XT3 D=d1: ends d1, b1]
+  decision 26: STOP: in every order some file would conflict twice (['d1', 'b1'])
+
+======== MH12  c1: D-O ; a1: D, x.c line 1 ; b1: O ; q1 (from init): Q, x.c line 1 ; main: x.c line 1 ; 'pull D O Q'
+   [all three ends]
+  decision 26: STOP: in every order some file would conflict twice (['a1', 'b1', 'q1'])
+   [a group per command: 'pull D O' (a1, b1)]
+  decision 26: order [('a1', "conflicts in ['src/x.c']"), ('b1', 'no code conflict')] ; files in conflict: ['src/x.c']
+   [then 'pull Q' (q1) on top of it]
+  q1 after 'pull D O' conflicts in ['src/x.c'] (one end, so once)
+
+======== MH13  as MH9, but b1's commit ID is smaller than a1's ; the split commands are searched in order
+  commit-ID order: ['b1', 'a1']
+  'pull Q' first would take ['b1'] ; b1 carries D@B? True -> it needs D named, and D=a1 needs a1 (step 3)
+   [order a1 first: 'pull D=a1', then 'pull Q' as in MH9]
+  then D: nothing to take ; Q: take 59218fe as is
+  decision 26: order [('b1', "conflicts in ['src/x.c']")] ; files in conflict: ['src/x.c']

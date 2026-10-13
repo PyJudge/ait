@@ -54,10 +54,16 @@ git checkout -q --detach
 expect_err "no message on a detached HEAD" E_USAGE ait fulfill $O
 git checkout -q master
 
-# 7.7a.1: a commit with nothing to check does not validate; 7.7.6: one 'invalid' line, after 'mixed'
+# 7.7a.1: a commit with nothing to check does not validate; fulfill stops on HEAD's error first (5.10, user decision 55)
 echo "body: changed" > specs/p.yaml; git add specs/p.yaml; tick; git commit -q --no-verify -m raw
 echo z > README; git add README
 tick; expect_ok "a commit with nothing to check" ait commit -m x
+echo y >> src/stock.c; git add src/stock.c
+run ait fulfill $O -m x
+check "fulfill stops on HEAD's broken bundle before its report" sh -c "grep -q '^error: spec files do not match the contract' '$T/err' && ! grep -q '^ready ' '$T/out'"
+git reset -q; git checkout -q -- src/stock.c
+tick; ait contract commit -m repin >/dev/null 2>&1
+# 7.7.6: one 'invalid' line, after 'mixed', for the request's own error
 echo y >> src/stock.c; echo '# y' >> tests/pass.sh; git add src/stock.c tests/pass.sh
 run ait fulfill $O -m x
 check "one invalid line" [ "$(grep -c '^invalid ' "$T/out")" = 1 ]

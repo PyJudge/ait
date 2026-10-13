@@ -14,16 +14,15 @@ setup
 A=$(ait session open --agent agent-a)
 prompt_defs; exec_def guard; exec_def pass
 
-# mini: line ranges are not supported; the scenario's src/stock.c:1-10 becomes src/stock.c
-tick; expect_err "line range scope is mini-unsupported" MINI ait future offer src/stock.c:1-10 specs/guard.yaml as o -m m
-tick; expect_ok "prepare: future offer O" ait future offer src/stock.c specs/guard.yaml as o -m m
+# T17 prep: the provider is the line range src/stock.c:1-10
+tick; expect_ok "prepare: future offer O" ait future offer src/stock.c:1-10 specs/guard.yaml as o -m m
 O=$(new_id)
 
 # 1
 desc="1: fulfill without stage asks for results"
 expect_unchanged expect_err "$desc" E_NEEDS_RESULTS ait fulfill "$O" -m m
 GD=$(gitdir_abs); Q=$GD/ait/check-request.yaml; W=$GD/ait/check-result.yaml
-check "1: report is exactly the 7.7.6 form" out_is "id $O" "provider $O src/stock.c" "" "task $O:specs/guard.yaml exec" "check-request $Q" "check-result $W" "ready yes"
+check "1: report is exactly the 7.7.6 form" out_is "id $O" "provider $O src/stock.c:1-10" "" "task $O:specs/guard.yaml exec" "check-request $Q" "check-result $W" "ready yes"
 check "1: Q tree is git write-tree" test "$(qval "$Q" tree)" = "$(git write-tree)"
 check "1: Q task has command [./tests/guard.sh]" grep -qxF '  command: ["./tests/guard.sh"]' "$Q"
 check "1: Q task has body: guard" sh -c "grep -A1 -xF '  body: |-' '$Q' | grep -qxF '    guard'"
@@ -43,11 +42,11 @@ check "2: name-status is only M .ait/O" test "$(git show --name-status --format=
 check "2: subject [FULFILL] m" test "$(git log -1 --format=%s)" = "[FULFILL] m"
 check "2: message order: subject, blank, results, blank, trailers" sh -c "git log -1 --format=%B | awk 'NR==2&&\$0!=\"\"{exit 1} NR==3&&\$0!~/^input: /{exit 1}'"
 check "2: message has results for the task" sh -c "git log -1 --format=%B | grep -qF -- '- task: $O:specs/guard.yaml'"
-check "2: trailer Ait-Check O reported pins(HEAD,O)" sh -c "git log -1 --format=%B | grep -qxF 'Ait-Check: $O reported $(pins HEAD "$O")'"
-check "2: results paragraph precedes trailers" sh -c "git log -1 --format=%B | awk '/^results:/{r=NR} /^Ait-Check:/{c=NR} END{exit !(r && c && r<c)}'"
-check "2: rec(O) provider re-pinned to HEAD blob" sh -c "git show HEAD:.ait/$O | grep -qxF 'provider src/stock.c $(blob HEAD:src/stock.c)'"
+check "2: O's check line is reported pins(HEAD,O)" [ "$(check_line HEAD "$O")" = "reported $(pins HEAD "$O")" ]
+check "2: results paragraph precedes trailers" sh -c "git log -1 --format=%B | awk '/^results:/{r=NR} /^Ait-Request:/{c=NR} END{exit !(r && c && r<c)}'"
+check "2: rec(O) provider re-pinned to HEAD blob" sh -c "git show HEAD:.ait/$O | grep -qxF 'provider src/stock.c:1-10 $(blob HEAD:src/stock.c)'"
 check "2: rec(O) state current" sh -c "git show HEAD:.ait/$O | grep -qxF 'state current'"
-# mini: no peek; 'ait todo O' shows the same unverified line
+# not yet: no peek; 'ait todo O' shows the same unverified line
 run ait todo "$O"
 check "2: todo O has no unverified line" sh -c "! grep -q '^unverified' '$T/out'"
 
@@ -66,10 +65,10 @@ expect_err "4: alias is E_USAGE" E_USAGE ait fulfill "$O2" as x -m m
 expect_err "4: no message is E_USAGE" E_USAGE ait fulfill "$O2"
 expect_err "4: unknown ID is E_ID" E_ID ait fulfill O000000000000 -m m
 expect_err "4: current O is E_STATE" E_STATE ait fulfill "$O" -m m
-check "4: E_STATE hint" err_has "'$O' is already current; to check it again, run 'ait amend $O -m <why>' to get the tasks"
+check "4: E_STATE hint" err_has "'$O' is already current; to check it again, run 'ait amend $O -m <why>'"
 tick; expect_ok "4: fulfill O2 --force" ait fulfill "$O2" --force -m m
 check "4: check O2 forced" out_has "check $O2 forced"
-check "4: trailer Ait-Check O2 forced pins" sh -c "git log -1 --format=%B | grep -qxF 'Ait-Check: $O2 forced $(pins HEAD "$O2")'"
+check "4: O2's check line is forced pins" [ "$(check_line HEAD "$O2")" = "forced $(pins HEAD "$O2")" ]
 check "4: no results paragraph" sh -c "! git log -1 --format=%B | grep -qE '^(input|results):'"
 
 # 5
@@ -82,8 +81,9 @@ check "5: report ready no" out_has "ready no"
 check "5: no task lines" sh -c "! grep -qE '^(task|check-request|check-result) ' '$T/out'"
 check "5: hint write 'src/g.c'" err_has "write 'src/g.c'"
 check "5: hint stage 'src/g.c'" err_has "stage 'src/g.c'"
-# mini: the later per-contract forms of the E_CODE_REQUIRED hint (rerun with '<O3>=<new scope>',
-# 'ait future cancel <O3> -m <why>') are not the basic form; not checked
+# T17-5 (5.8 E_CODE_REQUIRED, 5.9a): O3 is in HEAD, so the range move; O3 is my selected future, so the cancel
+check "5: hint rerun with '<O3>=<new scope>'" err_has "rerun with '$O3=<new scope>'"
+check "5: hint cancels my future O3" err_has "ait future cancel $O3 -m <why>"
 check "5: no future amend / drop hint" sh -c "! grep -qE 'ait future (amend|drop)' '$T/err'"
 desc="5: --force is also E_CODE_REQUIRED"
 tick; expect_unchanged expect_err "$desc" E_CODE_REQUIRED ait fulfill "$O3" --force -m m
@@ -102,23 +102,23 @@ check "6: message has basis" sh -c "git log -1 --format=%B | grep -qE '^ +basis:
 setup
 A=$(ait session open --agent agent-a)
 exec_def guard
-tick; ait future offer src/stock.c specs/guard.yaml as o -m m >"$T/out" 2>"$T/err"; O=$(new_id)
+tick; ait future offer src/stock.c:1-10 specs/guard.yaml as o -m m >"$T/out" 2>"$T/err"; O=$(new_id)
 tick; git rm -q src/stock.c; git commit -qm rm 2>"$T/err"
 check "7: no warning for a future contract" test ! -s "$T/err"
 expect_ok "7: todo" ait todo
-check "7: O provider ?missing" out_has "provider src/stock.c ?missing"
-# mini: the H10 hint (5.9a) is not the basic form of an error hint; ait-mini gives only
-# the basic "when ready, stage the code ..." form, so the H10 move/cancel forms are not checked here
+check "7: O provider ?missing" out_has "provider src/stock.c:1-10 ?missing"
+check "7: H10 moves O" err_has "'$O' has no code under its scope; if it was moved, run 'ait fulfill $O=<new scope> -m <why>'"
+check "7: H10 cancels my O" err_has "if it is gone for good, run 'ait future cancel $O -m <why>'"
 
-# 7 variant: scope list (mini: file ranges instead of src/stock.c:1-10,src/order.c:1-5)
+# 7 variant: scope list (T17-7: the provider is src/stock.c:1-10,src/order.c:1-5)
 setup
 A=$(ait session open --agent agent-a)
 exec_def guard
-tick; ait future offer src/stock.c,src/order.c specs/guard.yaml as o -m m >"$T/out" 2>"$T/err"; O=$(new_id)
+tick; ait future offer src/stock.c:1-10,src/order.c:1-5 specs/guard.yaml as o -m m >"$T/out" 2>"$T/err"; O=$(new_id)
 check "7b: future offer with a scope list" test -n "$O"
 tick; git rm -q src/stock.c; git commit -qm rm
 expect_ok "7b: todo" ait todo
-check "7b: provider lines" sh -c "grep -qxF 'provider src/order.c' '$T/out' && grep -qxF 'provider src/stock.c ?missing' '$T/out'"
-# mini: H10 move form with KEPT (src/order.c,<new scope>) is not a basic hint; not checked
+check "7b: provider lines" sh -c "grep -qxF 'provider src/order.c:1-5' '$T/out' && grep -qxF 'provider src/stock.c:1-10 ?missing' '$T/out'"
+check "7b: H10 keeps what is found" err_has "run 'ait fulfill $O=src/order.c:1-5,<new scope> -m <why>'"
 
 done_testing

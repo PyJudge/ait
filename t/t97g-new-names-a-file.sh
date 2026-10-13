@@ -18,5 +18,5 @@ for s in / lib/ src/; do
 	check "consumer $s: no new: hint" not err_has "new:"
 done
 bad "a missing file as consumer" ait future demand lib/x.c src/stock.c specs/p.yaml -m m
-check "a missing file still gets the new: hint" err_has "hint: if it does not exist yet, use 'new:lib/x.c'"
+check "a missing file still gets the new: hint, as the same command (5.8 E_SCOPE)" err_has "hint: if it does not exist yet, run 'ait future demand new:lib/x.c src/stock.c specs/p.yaml -m <why>'"
 done_testing

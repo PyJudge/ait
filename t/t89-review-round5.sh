@@ -21,11 +21,11 @@ for ok in 'body: x\nengine: exec\ncommand: [./tests/pass.sh,\n  a]\n' 'body: x\n
 	git reset -q --hard "$H"
 done
 
-# 5.4: an Ait-Check that is not exactly "ID reported|forced PINS" does not count
+# 2.2.2: a check line that is not exactly "check reported|forced PINS" makes the record malformed
 tick; ait offer src/stock.c specs/p.yaml --force -m o >"$T/out"; O=$(new_id)
-tick; git commit -q --amend --no-verify -m "$(git log -1 --format=%B | sed 's/ forced / forced  /')"
-run ait todo $O
-check "a check with two blanks does not count" out_has "unverified yes"
+sed -i.bak 's/^check forced /check forced  /' .ait/$O && rm .ait/$O.bak && git add .ait && tick && git commit -q --no-verify -m bad
+run ait todo
+check "a check line with two blanks is malformed" err_has "warning: skipping malformed '.ait/$O'"
 git reset -q --hard "$H"
 
 # 2.2.2: creator is "AGENT SID" with an agent name of 7.2.1, or "unknown -"
