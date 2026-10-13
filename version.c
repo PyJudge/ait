@@ -580,15 +580,15 @@ int at_head(struct verdict *v)
 	struct string_list_item *item;
 	int bundle = !strcmp(v->word, "incomplete");
 
-	/* a broken bundle answers a broken bundle, a structure error a structure error; an accident is no validate error */
+	/* an accident is no validate error, and HEAD's broken bundle holds only a broken bundle */
 	for_each_string_list_item(item, &judge(head)->errors) {
 		struct verdict *e = item->util;
 
-		if (strcmp(e->word, "accident") && bundle == !strcmp(e->word, "incomplete")) {
-			string_list_insert(&held, e->k->id);
-			if (e->o)
-				string_list_insert(&held, e->o->id);
-		}
+		if (!strcmp(e->word, "accident") || (!strcmp(e->word, "incomplete") && !bundle))
+			continue;
+		string_list_insert(&held, e->k->id);
+		if (e->o)
+			string_list_insert(&held, e->o->id);
 	}
 	return string_list_has_string(&held, v->k->id) || (v->o && string_list_has_string(&held, v->o->id));
 }
@@ -596,12 +596,13 @@ int at_head(struct verdict *v)
 /*
  * 5.10: into HINT, HEAD's entangled records go back together to GOOD, or go
  * when there is none, and GOOD's spec files they declare come back where the
- * index or work tree lacks them
+ * index or work tree lacks them; the tree HEAD has after it
  */
-static void entangled_restore(struct strbuf *hint)
+static struct tree *entangled_restore(struct strbuf *hint)
 {
 	struct string_list restore = STRING_LIST_INIT_DUP, remove = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
+	struct strbuf info = STRBUF_INIT;
 	struct judgment *j = head_good();
 	const char *good = j->good;
 
@@ -625,6 +626,27 @@ static void entangled_restore(struct strbuf *hint)
 		strbuf_addf(hint, "restore %s as in '%s'", quoted_paths(&restore), good);
 	if (remove.nr)
 		strbuf_addf(hint, "%sremove %s", restore.nr ? ", " : "", quoted_paths(&remove));
+	for_each_string_list_item(item, &restore) {
+		struct entry *e = file_entry(tree_load(good), item->string);
+
+		index_line(&info, e ? e->mode : NULL, e ? e->oid : NULL, item->string);
+	}
+	for_each_string_list_item(item, &remove)
+		index_line(&info, NULL, NULL, item->string);
+	return tree_load(tree_with(head_tree()->oid, info.buf, NULL));
+}
+
+/* 6.2: the gate can pin again each live record of AFTER whose spec files do not match it */
+static int pinnable(struct tree *after)
+{
+	struct state s = { 0 };
+	size_t i;
+
+	state_load(&s, after);
+	for (i = 0; i < s.nr; i++)
+		if (!s.r[i]->bad && is_live(s.r[i]) && !files_match(s.r[i], after) && expand_files(record_copy(s.r[i]), after))
+			return 0;
+	return 1;
 }
 
 /*
@@ -636,6 +658,7 @@ char *head_repair(struct verdict *v, int rerun)
 {
 	struct strbuf hint = STRBUF_INIT;
 	const char *commit = "'ait contract commit -m <why>'";
+	struct tree *after = head_tree();
 
 	if (v->k->mend) {
 		/* what is no record goes; it is committed only when HEAD has it */
@@ -648,11 +671,11 @@ char *head_repair(struct verdict *v, int rerun)
 		commit = through_ait(single(".ait/init"));
 	} else if (strcmp(v->word, "incomplete") || string_list_has_string(&head_good()->entangled, v->k->id)) {
 		/* back to GOOD; a broken bundle (5.8 E_INCOMPLETE) entangled with no other error needs none, as the gate pins it again (6.2) */
-		entangled_restore(&hint);
-	} else if (expand_files(record_copy(v->k), head_tree())) {
-		/* but not when the gate cannot pin it again, a spec file it declares not at HEAD: no command mends that (5.9a) */
-		return NULL;
+		after = entangled_restore(&hint);
 	}
+	/* the gate pins again what the repair leaves unpinned, but not a spec file declared and not there: no command mends that (5.9a) */
+	if (commit && !pinnable(after))
+		return NULL;
 	if (commit)
 		strbuf_addf(&hint, "%s%s", hint.len ? ", then " : "run ", commit);
 	if (rerun)

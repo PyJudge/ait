@@ -3,6 +3,7 @@
 . "$(dirname "$0")/lib.sh"
 # the explorer's repository (tools/explore.py SETUP); a step's output is in out and err
 explorer_repo() {
+	unset $(set | sed -n 's/^\([DOX][0-9]*\)=.*/\1/p')
 	T=$(mktemp -d); export T HOME=$T GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=: LC_ALL=C
 	unset AIT_SESSION
 	git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master
@@ -40,4 +41,52 @@ tick; git commit -qm c > out 2> err; bind
 tick; sed -i.bak 's/^state .*/state current/' .ait/$O0 && rm -f .ait/$O0.bak && git add .ait/$O0
 tick; git commit -q --no-verify -m nv > out 2> err; bind
 check "seed 544: the broken bundle's hint is the shared restore" sh -c "grep -q \"^warning: spec files do not match the contract: '$O0'\" err && ! grep -qx \"hint: run 'ait contract commit -m <why>'\" err"
+# 5.9a hint 1, 7.1.3-7: a broken bundle of the request on a record HEAD's structure error points to is HEAD's error
+explorer_repo
+tick; ait future offer src/a.c specs/p.yaml -m o > out 2> err; bind
+awk '/^creator /{print "check forced 0000000000000000000000000000000000000000"} {print}' .ait/$O0 > "$T/o" && cat "$T/o" > .ait/$O0
+echo 'body: changed' > specs/p.yaml; git add -A; tick; git commit -q --no-verify -m hand 2>/dev/null
+echo x >> src/a.c; git add src/a.c
+tick; ait fulfill $O0 --force -m f > out 2> err
+check "HEAD's check on a promise, the request's broken bundle: the hint is 5.10's repair" sh -c "grep -q \"^hint: restore '.ait/$O0' as in '[0-9a-f]*', then 'ait contract commit -m <why>', then rerun this command\" err && ! grep -q 'ait future amend' err"
+
+# 5.10 (seed 892): no repair ends in a contract commit when the gate cannot pin a bundle again, entangled or not
+explorer_repo
+tick; ait demand src/a.c src/a.c specs/x.yaml --force -m d > out 2> err; bind
+tick; printf 'body: b\ninputs: [tests/none.sh]\n' > specs/x.yaml && git add specs/x.yaml
+tick; git commit -q --no-verify -m nv > out 2> err
+tick; sed -i.bak 's/^state .*/state future/' .ait/$D0 && rm -f .ait/$D0.bak && ait contract add .ait/$D0 >/dev/null 2>&1
+tick; ait contract commit -m w > out 2> err
+tick; git add -A
+tick; AIT_SESSION=$SB ait fulfill $D0 --force -m f > out 2> err
+tick; printf 'body: b\nfoo: 1\n' > specs/q.yaml && git add specs/q.yaml
+tick; git commit -q --no-verify -m nv > out 2> err
+tick; git add -A
+tick; ait fulfill $D0 -m f > out 2> err
+check "seed 892: the bundle no command pins again gets no hint a helper refuses" sh -c "grep -q \"^error: spec files do not match the contract: '$D0'\" err && ! grep -q '^hint:' err"
+
+# 5.10 (seed 818): the same for a broken bundle entangled with another error of HEAD
+explorer_repo
+tick; ait demand lib/c.c src/b.c specs/q.yaml --force -m d > out 2> err; bind
+tick; printf 'body: b\nfoo: 1\n' > specs/x.yaml && git add specs/x.yaml
+tick; git commit -q --no-verify -m nv > out 2> err
+tick; ait offer lib/c.c specs/p.yaml --force -m o > out 2> err; bind
+tick; AIT_SESSION=$SB ait future amend $O0 -m a > out 2> err
+tick; ait demand lib/c.c src/a.c specs/p.yaml --force -m d > out 2> err; bind
+tick; echo 'body: changed 6' > specs/q.yaml && ait contract add specs/q.yaml >/dev/null 2>&1
+tick; AIT_SESSION=$SB ait contract commit -m s > out 2> err
+tick; ait undertake $D1 $O0 -m u > out 2> err
+tick; ait future cancel $O0 -m c > out 2> err
+tick; rm -f tests/x.sh && ln -s ../src/a.c tests/x.sh && git add -A tests
+tick; git commit -q --no-verify -m nv > out 2> err
+tick; echo 'body: changed 12' > specs/x.yaml && ait contract add specs/x.yaml >/dev/null 2>&1
+tick; git commit -qm s > out 2> err
+tick; git rm -q specs/x.yaml
+tick; git commit -qm gone > out 2> err
+tick; git revert --no-edit HEAD > out 2> err
+tick; sed -i.bak 's/^state .*/state withdrawn/' .ait/$O0 && rm -f .ait/$O0.bak && git add .ait/$O0
+tick; git commit -q --no-verify -m nv > out 2> err
+tick; printf 'body: b\ninputs: [tests/none.sh]\n' > specs/p.yaml && git add specs/p.yaml
+tick; git commit -q --no-verify -m nv > out 2> err
+check "seed 818: the broken bundle no command pins again gets no contract commit to run" sh -c "grep -q \"^warning: spec files do not match the contract: '$D1'\" err && ! grep -q 'ait contract commit' err"
 done_testing
