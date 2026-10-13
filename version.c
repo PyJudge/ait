@@ -651,10 +651,9 @@ static int pinnable(struct tree *after)
 
 /*
  * 5.10: the hint that mends HEAD's error V, then contract commit: what is no
- * record goes, the init file is written again, records go back to GOOD;
- * RERUN runs the command again.
+ * record goes, the init file is written again, records go back to GOOD
  */
-char *head_repair(struct verdict *v, int rerun)
+char *head_repair(struct verdict *v)
 {
 	struct strbuf hint = STRBUF_INIT;
 	const char *commit = "'ait contract commit -m <why>'";
@@ -678,8 +677,6 @@ char *head_repair(struct verdict *v, int rerun)
 		return NULL;
 	if (commit)
 		strbuf_addf(&hint, "%s%s", hint.len ? ", then " : "run ", commit);
-	if (rerun)
-		strbuf_addstr(&hint, ", then rerun this command");
 	return strbuf_detach(&hint, NULL);
 }
 
@@ -697,7 +694,7 @@ int error_at_head(struct record *r, const char *word, struct verdict *out)
 
 		if ((!word || !strcmp(e->word, word)) && (!strcmp(e->k->id, r->id) || (e->o && !strcmp(e->o->id, r->id)))) {
 			*out = *e;
-			out->hint = head_repair(out, 0);
+			out->hint = head_repair(out);
 			return 1;
 		}
 	}
@@ -749,5 +746,6 @@ void head_stops(void)
 	if (!j->errors.nr)
 		return;
 	v = *(struct verdict *)j->errors.items[0].util;
-	reject(v.code, head_repair(&v, 1), "%s", v.msg);
+	v.hint = head_repair(&v);
+	reject(v.code, v.hint ? xstrfmt("%s, then rerun this command", v.hint) : NULL, "%s", v.msg);
 }

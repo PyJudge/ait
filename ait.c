@@ -771,7 +771,7 @@ static int cmd_init(int argc, const char **argv)
 		struct state one = { 1, 1, &r };
 
 		if (malformed(&one, &v))
-			reject(v.code, head_repair(&v, 0), "%s", v.msg);
+			reject(v.code, head_repair(&v), "%s", v.msg);
 		puts("init exists");
 		return 0;
 	}
@@ -862,7 +862,7 @@ static int pre_push(void)
 		if (!check_state(&s, tree_load(commit), &v))
 			continue;
 		/* 7.1.6: ait records on a branch only, so a commit that is not this branch's HEAD has no repair here */
-		reject(v.code, headref && (!strcmp(local, "HEAD") || !strcmp(local, headref)) ? head_repair(&v, 0) : NULL,
+		reject(v.code, headref && (!strcmp(local, "HEAD") || !strcmp(local, headref)) ? head_repair(&v) : NULL,
 		       "%s", v.msg);
 	}
 	/* 5.6: a message is one line */
@@ -1060,7 +1060,7 @@ static int post_hook(const char *before)
 		if (was && unsorted_string_list_has_string(&was->errors, item->string))
 			continue;
 		warning("%s", ((struct verdict *)item->util)->msg);
-		suggest("%s", head_repair(item->util, 0) ?: "");
+		suggest("%s", head_repair(item->util) ?: "");
 	}
 	for (i = 0; was && i < now->s.nr; i++) {
 		struct version *then = version_in(before, now->s.r[i]->id), *v_now = version_in(head, now->s.r[i]->id);
@@ -1354,7 +1354,7 @@ static int cmd_todo(int argc, const char **argv)
 	 */
 	for_each_string_list_item(item, broken) {
 		warning("%s", ((struct verdict *)item->util)->msg);
-		suggest("%s", head_repair(item->util, 0) ?: "");
+		suggest("%s", head_repair(item->util) ?: "");
 	}
 	for (i = 0; i < s.nr; i++) {
 		struct record *r = s.r[i], *target;

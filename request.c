@@ -1170,9 +1170,9 @@ static char *transition_hint(struct request *q, struct record *r, const char *fr
 static char *gate_hint(struct request *q, struct verdict *v)
 {
 	if (at_head(v))
-		return head_repair(v, 0);
+		return head_repair(v);
 	if (!strcmp(v->word, "format"))
-		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v, 0) :
+		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v) :
 		       xstrfmt("fix it in this request (see the error line), then %s", through_ait(single(xstrfmt(".ait/%s", v->k->id))));
 	if (!strcmp(v->word, "incomplete"))
 		return xstrfmt("make the spec files of '%s' match it, or reopen it with them: %s", v->k->id, reopen_inside(q, v->k));
@@ -2274,11 +2274,11 @@ static int finish(struct request *q)
 	char *input = NULL;
 	size_t k;
 
-	/* 5.10: what the request writes is judged from its base version, GOOD's when entangled with HEAD's errors */
 	for (k = 0; k < q->s.nr; k++)
 		if (!q->s.r[k]->bad && !unchanged(q->s.r[k]))
 			string_list_insert(&written, q->s.r[k]->id);
-	if (!q->pull_tree)
+	/* 5.10: contract commit, the one request on a HEAD with errors, judges what it writes from GOOD's version when entangled */
+	if (q->direct)
 		base_versions(&q->s, &written);
 	/* 2.2.5, 6.2: a contract's creator never changes, so it is its base's; without a base it is new, made by this session */
 	for_each_string_list_item(item, &written) {
@@ -2296,7 +2296,6 @@ static int finish(struct request *q)
 	}
 	transitions(q);
 	check_set(q);
-	elsewhere(q);
 	if (!q->gate && !q->fulfill && !q->check_set.nr && !q->first.code) {
 		/* 7.7a.1: nothing to check is a plain commit, without validate, session or trailers (5.10) */
 		for (k = 0; k < q->s.nr; k++)
@@ -2308,9 +2307,10 @@ static int finish(struct request *q)
 			reject(1, "rerun this command", "HEAD moved while running; nothing changed");
 		return 0;
 	}
-	/* 5.10: a commit with something to check stops on HEAD's error as the others did */
+	/* 5.10: a commit with something to check stops on HEAD's error as the others did, before any other word */
 	if (!q->gate && !q->fulfill)
 		head_stops();
+	elsewhere(q);
 	/* 5.13-6: the state is valid; HEAD's errors reach this only in contract commit, which may mend them (5.10) */
 	if (q->gate && (q->pull_tree ? check_records(&q->s, &v) : check_state(&q->s, q->v, &v)))
 		reject(v.code, gate_hint(q, &v), "%s", v.msg);
