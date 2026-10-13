@@ -1,6 +1,6 @@
 #!/bin/sh
 # Make a playground: a small repository with a spec and no implementation, ait set up,
-# the ait-mini skill in .claude/skills, and a worktree for each of two agents, a and b.
+# the ait-v2 skill in .claude/skills, and a worktree for each of two agents, a and b.
 #   sh try.sh [DIR]      (default ./ait-playground)
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
@@ -11,7 +11,7 @@ command -v ait >/dev/null 2>&1 || { echo "fatal: ait is not on PATH; run 'sh $he
 mkdir -p "$dir/main" && cd "$dir/main"
 git init -q -b master
 mkdir -p doc src tests .claude/skills
-cp -R "$here/skills/ait-mini" .claude/skills/
+cp -R "$here/skills/ait-v2" .claude/skills/
 cat > doc/spec.md <<'SPEC'
 # 재고와 주문
 
@@ -25,8 +25,8 @@ SPEC
 cat > CLAUDE.md <<'MD'
 # ait playground
 
-여러 에이전트가 `doc/spec.md`를 함께 구현하는 실험용 저장소다. 이 저장소는 ait-mini를 쓴다.
-코드를 고치거나 커밋하기 전에 ait-mini 스킬(`.claude/skills/ait-mini`)을 읽고 그 절차를 따른다.
+여러 에이전트가 `doc/spec.md`를 함께 구현하는 실험용 저장소다. 이 저장소는 ait(v2 판)를 쓴다.
+코드를 고치거나 커밋하기 전에 ait-v2 스킬(`.claude/skills/ait-v2`)을 읽고 그 절차를 따른다.
 구현은 아직 없다. 스킬의 references/spec-only.md가 이 경우의 절차다.
 MD
 printf 'stock.txt\n' > .gitignore
@@ -44,7 +44,7 @@ playground ready: $top
   b/     worktree of agent b, branch b
 
 Open one Claude Code session in each of a/ and b/. For example:
-  a: "너는 에이전트 a다. doc/spec.md를 ait-mini로 b와 함께 구현한다. 먼저 명세의 조항을 계약으로 걸고, 주문(3조)을 맡아라."
-  b: "너는 에이전트 b다. doc/spec.md를 ait-mini로 a와 함께 구현한다. a가 건 조항 계약을 들인 뒤 재고(1, 2조)를 맡아라."
-Watch: git -C $top/main log --branches --graph --oneline
+  a: "너는 에이전트 a다. doc/spec.md를 ait로 b와 함께 구현한다. 먼저 명세의 조항을 계약으로 걸고, 주문(3조)을 맡아라."
+  b: "너는 에이전트 b다. doc/spec.md를 ait로 a와 함께 구현한다. a가 건 조항 계약을 contract pull로 받은 뒤 재고(1, 2조)를 맡아라."
+Watch: cd $top/main && sh $here/ait-graph.sh
 MSG

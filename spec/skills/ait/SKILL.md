@@ -15,7 +15,8 @@ description: 여러 에이전트가 같은 코드를 동시에 고치는 저장�
   4. 확인된 계약의 코드를 한 커밋으로 바꾸면, 같은 커밋에서 그 조건을 다시 확인한다(`ait commit -r <결과>`).
   5. 확인된 계약의 코드를 여러 커밋에 걸쳐 바꾸려면(리팩터링), 먼저 그 계약을 약속(future)으로 되돌리고(`ait future amend …`), 끝에서 다시 이행한다(`ait fulfill … -r <결과>`).
 - 계약이 바뀌면 관련 에이전트에게 알림이 온다(`ait listen`이 알림을 파일에 쌓아 둔다).
-- 출력은 git과 같다. `fatal:`·`error:`·`warning:`은 무엇이 어디서 왜 그런지이고, 이어지는 `hint:`가 다음에 실행할 명령이다. 알림과 보고에도 `hint:`가 붙는다. **hint를 그대로 따른다.** hint가 없으면 할 일이 없거나, 첫 행이 가리킨 대상(파일과 행, 범위, 과제)을 고치면 된다.
+- 출력은 git과 같다. `fatal:`·`error:`·`warning:`은 무엇이 어디서 왜 그런지이고, 이어지는 `hint:`가 다음에 실행할 명령이다. 알림과 보고에도 `hint:`가 붙는다. **hint를 그대로 따른다.** hint가 없으면 할 일이 없거나, ait 명령으로는 고칠 수 없으니 첫 행이 가리킨 대상(파일과 행, 범위, 과제)을 직접 고친다.
+- hint는 ait 명령이나, 만들어 둘 **상태**를 준다. 상태는 git으로 만든다: `restore 'P…' as in 'C'`는 index와 작업 폴더의 P…를 커밋 C의 판으로(`git checkout C -- P…`. C에 없는 경로는 `git rm -q -- P`), `restore 'P' from HEAD`는 `git checkout HEAD -- P`, `remove 'P…'`는 `git rm -q -- P…`, `stage`·`unstage`는 `git add`·`git restore --staged`다. `then rerun this command`는 앞의 일을 마친 뒤 거절된 그 명령을 그대로 다시 실행하라는 것이다.
 
 예: 너는 주문 코드(`src/order.c`)를 쓰다가, 재고 코드(`src/stock.c`)가 "재고가 0이면 예약을 거절"해야 네 코드가 맞다는 것을 안다.
 1. 그 조건을 `specs/no-oversell.yaml`에 적고 요구를 건다(`ait future demand src/order.c src/stock.c specs/no-oversell.yaml -m "재고 초과 판매 금지"`). 출력의 `new D…` 행이 그 요구의 ID다. 그리고 그 조건이 있다고 보고 주문 코드를 계속 쓴다.
@@ -33,6 +34,7 @@ description: 여러 에이전트가 같은 코드를 동시에 고치는 저장�
 6. **바뀐 상태를 기준으로 일한다.** 내가 건 계약이 amend되거나, cancel되거나, 약속으로 되돌려졌어도, 지금 있는 계약대로 일한다. 옛 판으로 복원해 우기지 않는다.
 7. **경고가 나오면 hint를 바로 따른다.** 확인된 계약의 코드를 확인 없이 바꾸면 경고와 hint가 나온다. 그 hint대로 다시 확인하거나 약속으로 되돌린다.
 8. **확정된 코드를 고쳐야 할 때는 약속 안에서 고친다.** 한 커밋으로 끝나면 같은 커밋에서 다시 확인한다(`ait commit -r …`). 여러 커밋에 걸치면 그 계약을 먼저 약속으로 되돌리고(`ait future amend …`), 끝에서 다시 이행한다.
+9. **HEAD의 오류가 먼저다.** HEAD에 오류(아래 "HEAD의 오류")가 있으면 도우미·fulfill·확인할 것이 있는 commit·pull은 다른 무엇보다 먼저 그 오류로 멈춘다. git이 unmerged 파일이 있으면 commit·merge·pull을 막는 것과 같다. hint의 복원을 마치고 다시 실행한다.
 
 ## 낱말
 
@@ -41,7 +43,7 @@ description: 여러 에이전트가 같은 코드를 동시에 고치는 저장�
   - **offer**: "이 코드(provider)가 이 조건을 충족한다(하게 하겠다)"
   - **undertake**: offer가 demand를 떠맡는다. "그 요구는 이 약속으로 해낸다". 끊는 것은 `release`다.
   - 범위는 `a.c`(파일 전체), `a.c:10-40`(행)처럼 쓰고, 여럿이면 `,`로 잇는다. 아직 없는 파일은 `new:a.c`다. 어디에 구현될지 모르면 `/`(전체)나 `src/`(디렉터리)로 쓴다(**추상 범위**, future의 provider에만).
-- **명세 정의**(YAML): 계약이 충족할 조건(`body`)과 확인 방법이다. 여럿이면 역시 `,`로 잇는다. 명세 정의와 그것이 선언한 검사 재료(`inputs`)·환경 정의 파일을 **명세 파일**이라 한다.
+- **명세 정의**(YAML): 계약이 충족할 조건(`body`)과 확인 방법이다. 여럿이면 역시 `,`로 잇는다. 명세 정의와 그것이 선언한 검사 재료(`inputs`)·환경 정의 파일을 **명세 파일**이라 한다. 명세 파일은 작업 폴더의 일반 파일이어야 한다(심볼릭 링크나 링크 너머의 파일은 없는 것으로 본다). 레코드가 선언한 정의가 없거나 형식이 틀리면 그 정의를 읽는 명령은 todo와 hook까지 그 오류로 멈춘다. 정의를 고쳐 `ait contract add`·`ait contract commit`으로 다시 고정한다.
   - `engine: exec`: `command`를 돌려 확인한다.
   - `engine` 생략: **prompt**다. 코드를 읽고 판단한다.
   - ait는 아무것도 실행하지 않는다. **확인은 내가 하고**, 결과를 `-r`로 낸다.
@@ -49,7 +51,8 @@ description: 여러 에이전트가 같은 코드를 동시에 고치는 저장�
 - **고정**: 계약이 범위와 명세 파일의 그때 내용을 적어 두는 것이다. 확인하며 커밋하면 지금 내용으로 다시 고정된다.
 - **걸린 계약**: 내 변경이 current 계약의 provider 코드에 닿으면 그 계약은 내 변경에 걸린다. future와 consumer는 걸리지 않는다.
 - **미확인**: current 계약이 확인한 코드가 확인 없이 바뀐 것이다. peek·todo에 `unverified yes` 행으로 나온다. 다시 확인하거나(hint의 명령), 확인한 내용으로 코드를 복원하면 없어진다. `?changed`·`?deleted` 같은 표지는 코드 위치와 변화만 보여 준다.
-- **사고**: 계약(계약 파일)이나 조건(명세 파일)이 ait의 규칙 밖에서 바뀐 것이다. 확인 행이 맞지 않는 current, 끝난 계약을 손으로 되살린 판, 고정과 다른 명세 파일이 그렇다. 미확인과 다른 말이다. 사고가 있는 브랜치는 고칠 때까지 ait 명령이 멈추고 복원하는 hint를 주며, 남의 `contract pull`은 그 판을 건너뛴다.
+- **사고**: 계약(계약 파일)이나 조건(명세 파일)이 ait의 규칙 밖에서 바뀐 것이다. 확인 행이 맞지 않는 current, 끝난 계약을 손으로 되살린 판, 고정과 다른 명세 파일이 그렇다. 미확인과 다른 말이다. 사고가 있는 브랜치는 고칠 때까지 ait 명령이 멈추고 복원하는 hint를 주며(아래 "HEAD의 오류"), 남의 `contract pull`은 그 판을 건너뛴다.
+- **HEAD의 오류**: HEAD의 계약 파일에 있는 잘못. 구조 오류(형식이 틀린 레코드, 허용되지 않는 상태의 조합), 사고 판, 깨진 묶음(명세 파일이 고정과 다르다)이다. ait 밖의 커밋(`git commit --no-verify` 등)만 이것을 만든다.
 - **되돌리기**(`ait future amend K`): current 계약을 다시 약속(future)으로 만든다. 그동안의 코드 변경은 미확인이 아니고, 다시 이행할 때 확인한다. 남의 계약이어도 된다. 거두는 것이 아니라 "지금은 확인되지 않았다"고 적는 것이다. 되돌린 계약은 되돌린 쪽의 약속이 된다. current offer가 떠맡은 current 요구는 그 offer와 한 요청에서 함께 되돌린다(혼자 되돌리면 오류와 hint가 나온다).
 - **`--force`**: 확인 결과 대신 "사소하다고 판단하고 책임진다"는 확인이다. 그 판단이 계약 파일의 확인 행에 `forced`로 기록되고, 그 계약은 확인된 것으로 친다.
 - 기록하는 명령은 모두 `-m "이유"`가 필요하다. `ait contract …`는 `ait ct …`로 줄여 쓴다.
@@ -77,6 +80,15 @@ current를 만들거나 확인하는 명령(`fulfill`, `ait commit`, current `de
      - 확인된 계약을 확인 없이 바꾸는 중이면 hint의 되돌리기를 고른다.
 6. 주석·오타처럼 하찮은 변경이면 `-r` 대신 `--force`. 결과 없이 넘기고 `forced`로 남는다.
 
+## HEAD의 오류
+
+누가 `git commit --no-verify`로 계약 파일이나 명세 파일을 ait 밖에서 바꾸면, 그 커밋 뒤 post-commit hook이 오류마다 `warning:`과 고치는 hint를 쓴다. 그 뒤로는 고칠 때까지:
+
+- 도우미·`fulfill`·확인할 것이 있는 `ait commit`·`contract pull`·`contract push`는 무엇을 하려 했든 먼저 HEAD의 첫 오류로 멈춘다. hint는 그 오류의 복원과 `then 'ait contract commit -m <why>'`, `then rerun this command`다(예: `hint: restore '.ait/D…' as in '<커밋>', then 'ait contract commit -m <why>', then rerun this command`). 그대로 하고 원래 명령을 다시 실행한다.
+- 확인할 것이 없는 `ait commit`과 `git commit`은 막히지 않는다. 고치는 입구인 `ait contract add`·`ait contract commit`은 그 HEAD에서 돈다.
+- `ait todo`·`ait peek`은 HEAD의 오류를 모두 경고와 hint로 보여 준다. 고칠 때까지 todo는 블록의 hint를 쓰지 않는다(그 명령들이 먼저 멈추기 때문이다).
+- hint가 없으면 ait 명령으로는 고칠 수 없는 것이다. 보통 명세 정의가 없는 파일을 `inputs`에 선언한 경우다(관문이 그 계약을 다시 고정할 수 없다). 그 파일을 만들거나 정의에서 빼고 `ait contract add <정의>`·`ait contract commit -m "왜"`.
+
 ## 일의 흐름
 
 **시작·재시작**
@@ -86,7 +98,7 @@ current를 만들거나 확인하는 명령(`fulfill`, `ait commit`, current `de
 - `ait session list`에서 `agent`가 내 이름인 session이 있으면 그것을 쓴다(재시작). 그 session의 `worktree`로 가서(`cd`) 일한다. 다른 worktree의 session은 쓸 수 없다. 그 session이 자기 worktree의 기본(`default yes`)이 아니면 명령마다 `AIT_SESSION=<그 SID>`를 붙인다. 그 worktree가 없어졌으면(그 session으로 명령을 실행하면 hint가 그렇게 알린다, 예: `AIT_SESSION=<그 SID> ait todo`) 그 session의 inbox를 다 읽은 뒤 그 session을 닫고, 내 브랜치의 worktree에서 같은 이름으로 연다(내 약속의 구현은 내 브랜치에 있다). 내 이름의 session이 없으면 `ait session open --agent <내 이름>`. 이름이 겹치거나 다른 에이전트의 worktree면 출력의 hint를 따른다.
 - `git remote`가 비어 있지 않으면 다른 clone과 일하는 것이다. 그때는 착수·이행 전에 `git fetch`하고, 계약을 바꾼 뒤 `ait contract push`한다(아래 흐름의 "원격이 있으면" 행들).
 - 내 session이 `listening no`이면 알림 받기를 띄운다(`ait listen >> "$(git rev-parse --git-common-dir)/ait-inbox.<내 SID>" 2>&1 &`). 다른 clone의 소식도 일하는 중에 받으려면 `--fetch 60`을 붙인다. 띄운 뒤 `ait session list`에서 `listening yes`인지 본다(띄우기에 실패하면 그 이유는 inbox 파일에만 남는다).
-- `ait todo`로 내 약속과, 내 요구 중 확인 없이 바뀐 것을 본다. 블록마다 hint가 다음 할 일을 준다. 떠맡아 둔 것 중 이어서 하지 않을 것은 지금 거둔다(아래 "그만둔다").
+- `ait todo`로 HEAD의 오류, 내 약속, 내 요구 중 확인 없이 바뀐 것을 본다. HEAD의 오류가 있으면 그것부터 고친다(위 "HEAD의 오류"). 블록마다 hint가 다음 할 일을 준다. 떠맡아 둔 것 중 이어서 하지 않을 것은 지금 거둔다(아래 "그만둔다").
 
 **착수한다** (코드에 손대기 직전)
 1. 원격이 있으면 `git fetch`. inbox를 읽는다(아래 "알림을 읽는다").

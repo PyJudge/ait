@@ -144,7 +144,7 @@ ait는 여러 에이전트가 코드 범위에 **계약을 요구하고(demand),
 
 - 2.1.1 `.ait/<ID>`: 계약 레코드.
 - 2.1.2 `.ait/undertake/<DID>-<OID>`: 연결 레코드.
-- 2.1.2a `.ait/init`: 이 저장소가 ait를 쓴다는 init 파일이다(7.1.1). 레코드가 아니므로 레코드 규칙(2.2·2.3, 5.9 a~e, 9.2, 7.9.5)에 들지 않는다. `.ait/` 아래 경로이므로 계약 경로(6.1)다. 내용은 정확히 `version 2` 한 행이고 mode는 `100644`다. `version 2`는 확인 행(2.2.2)이 든 레코드 형식이다. ait-mini의 `version 1` 저장소를 옮기는 규칙은 두지 않는다(ait-mini는 시험용이다). 다르면 `E_FORMAT`이고 hint는 5.10의 것이다. 지워져도 다음 `ait init`이 다시 만든다.
+- 2.1.2a `.ait/init`: 이 저장소가 ait를 쓴다는 init 파일이다(7.1.1). 레코드가 아니므로 레코드 규칙(2.2·2.3, 5.9 a~e, 9.2, 7.9.5)에 들지 않는다. `.ait/` 아래 경로이므로 계약 경로(6.1)다. 내용은 정확히 `version 2` 한 행이고 mode는 `100644`다. `version 2`는 확인 행(2.2.2)이 든 레코드 형식이다. 옛 판(`version 1`) 저장소를 옮기는 규칙은 두지 않는다. 계약이 없으면 hint대로 init 파일을 고쳐 contract commit하면 된다. 다르면 `E_FORMAT`이고 hint는 5.10의 것이다. 지워져도 다음 `ait init`이 다시 만든다.
 - 2.1.3 `.ait/` 아래에 그 밖의 경로가 있으면 `E_FORMAT`이다. 레코드 파일의 mode는 `100644`다.
 - 2.1.4 명세 파일은 `.ait/` 밖의 경로이고, mode는 `100644` 또는 `100755`다.
 - 2.1.5 레코드는 삭제하지 않는다. 거두기(cancel, 철회)·놓기·되돌리기는 모두 state 변경으로 표현한다.
@@ -1098,7 +1098,7 @@ git은 커밋을 보낼 때 조상을 모두 함께 보내므로 보내는 쪽�
   - `tree`: 확인할 tree의 OID. fulfill·`ait commit`이면 stage된 상태 T0, 관문이면 정규화된 후보 T다. 모든 파일을 꺼내려면 `top=$(git rev-parse --show-toplevel) && d=$(mktemp -d) && GIT_INDEX_FILE="$d/index" git -C "$top" read-tree TREE && GIT_INDEX_FILE="$d/index" git -C "$top" checkout-index -a --prefix="$d/tree/"`를 쓴다(index 파일은 git이 새로 만들게 둔다. 하위 디렉터리에서 실행해도 전부 꺼내도록 `-C`로 뿌리에서 실행한다).
   - `tasks`: 과제마다 `task`, `contract`, `role`, `consumer`(demand), `provider`, `engine`(`exec`·`prompt`), `body`. 범위 목록은 표시를 `,`로 이은 한 문자열이다. `=SCOPES`를 줬으면 그 범위다.
   - exec 과제면 이어서 `command`, `success`와, environment가 있으면 그 환경 정의 파일의 행들을 들여써서 `environment` 아래에 그대로 싣는다.
-  - 쓰기 규칙(확인 요청 파일과 결과 틀): 읽은 값이 쓴 값과 같도록 YAML의 규칙대로 쓴다. 문자열 값은 `"…"`이고 YAML의 이스케이프를 쓴다. 여러 행이 될 수 있는 문자열(`body`)은 `|` 블록 문자열이고, 앞의 공백이나 끝의 행바꿈은 표시(`|2`, `|-`, `|+`)로 지킨다. 쓰는 쪽(ait-mini에서는 libyaml)이 블록으로 쓰지 않는 값(줄 끝 공백이 있는 값 등)은 `"…"`다. UTF-8이 아닌 바이트가 든 문자열(git이 바이트로 두는 경로)은 git이 그런 경로를 보여 주는 대로(`core.quotePath`) C식으로 인용한 문자열로 쓰고, 결과 파일의 `task`도 그렇게 쓴 이름으로 맞춘다. 문자열의 목록(`command`)은 flow list이고 원소도 `"…"`다. 정수 목록(`success`)은 flow list다. `tasks`는 블록 list이고 키보다 들여쓰지 않을 수 있다. 빈 값은 값을 쓰지 않는다.
+  - 쓰기 규칙(확인 요청 파일과 결과 틀): 읽은 값이 쓴 값과 같도록 YAML의 규칙대로 쓴다. 문자열 값은 `"…"`이고 YAML의 이스케이프를 쓴다. 여러 행이 될 수 있는 문자열(`body`)은 `|` 블록 문자열이고, 앞의 공백이나 끝의 행바꿈은 표시(`|2`, `|-`, `|+`)로 지킨다. 쓰는 쪽(이 구현에서는 libyaml)이 블록으로 쓰지 않는 값(줄 끝 공백이 있는 값 등)은 `"…"`다. UTF-8이 아닌 바이트가 든 문자열(git이 바이트로 두는 경로)은 git이 그런 경로를 보여 주는 대로(`core.quotePath`) C식으로 인용한 문자열로 쓰고, 결과 파일의 `task`도 그렇게 쓴 이름으로 맞춘다. 문자열의 목록(`command`)은 flow list이고 원소도 `"…"`다. 정수 목록(`success`)은 flow list다. `tasks`는 블록 list이고 키보다 들여쓰지 않을 수 있다. 빈 값은 값을 쓰지 않는다.
 
 ```yaml
 input: "5d41402abc4b2a76b9719d911017c592ae2b1c3f"
@@ -1275,7 +1275,7 @@ ait fulfill O…=src/stock.c:1-40,src/inventory.c:1-11 D…=src/inventory.c:1-11
 
 - 13.1 git 2.40 이상(pull이 `git merge-tree --write-tree`를 쓴다), libc(POSIX)와 `flock(2)`만 쓴다(Linux, macOS, BSD).
 - 13.2 git은 fork·execvp로 argv 배열을 넘겨 부른다(5.12).
-- 13.3 행수는 C(주석 포함)로 센다. 상한은 저장소의 CLAUDE.md가 정한다: ait-mini의 기능과 pull을 합쳐 6,500행이다(2026-10-10의 ait-mini 5,030행에 pull 추정 1,500행을 더했다). 아래 표는 1단계 전체의 모듈별 추정이다. pull은 판 정하기와 들이는 커밋을 C로 쓴 뒤 다시 잰다.
+- 13.3 행수는 C(주석 포함)로 센다. 상한은 저장소의 CLAUDE.md가 정한다: pull 전의 기능과 pull을 합쳐 6,500행이다(2026-10-10의 pull 전 5,030행에 pull 추정 1,500행을 더했다). 아래 표는 1단계 전체의 모듈별 추정이다. pull은 판 정하기와 들이는 커밋을 C로 쓴 뒤 다시 잰다.
 
 | 모듈 | 예산 |
 | --- | --- |

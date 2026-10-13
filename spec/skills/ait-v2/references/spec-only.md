@@ -19,21 +19,21 @@ ait future demand doc/spec.md / specs/c1.yaml \
     future demand doc/spec.md / specs/c3.yaml -m "명세 1-3조"
 ```
 
-- **코드보다 먼저, 따로 커밋한다.** 다른 에이전트는 이 계약 커밋을 찾아(SKILL.md "남의 계약을 들인다") 코드 없이 들인다.
+- **코드보다 먼저, 따로 커밋한다.** 다른 에이전트는 이 계약 커밋을 찾아 `ait contract pull D…`로 받는다(SKILL.md "남의 계약을 받는다"). pull은 그 계약이 처음 들어간 커밋과 조상을 받으므로, 계약 커밋이 코드보다 앞에 있어야 코드 없이 받는다.
 - **demand 하나에 조항 하나.** 계약은 통째로 이행되고 통째로 다시 확인된다. 명세 전체를 demand 하나로 걸면 전부 구현할 때까지 이행할 수 없다. 이행한 뒤에는 어느 코드를 고치든 명세 전체를 다시 확인해야 한다. 위처럼 한 명령에 절로 이어 걸면 한 커밋에 모두 걸리고, 출력의 `new D…` 행이 조항마다 하나씩 나온다.
 - **consumer는 명세 문서.** 이 조건에 기대는 것은 명세 자체다. consumer에는 추상 범위(`/`, `src/`)를 쓸 수 없다(추상 범위는 future의 provider에만 쓴다).
-- **provider는 `/`(전체).** 어디에 구현될지 아직 모르기 때문이다. 짐작이 가면 `src/`처럼 좁혀도 된다.
+- **provider는 `/`(전체).** 어디에 구현될지 아직 모르기 때문이다. 짐작이 가면 `src/`처럼 좁혀도 되지만, 디렉터리 범위는 HEAD에 그 디렉터리가 있을 때만 쓸 수 있다(없으면 `fatal: bad scope`). 구현이 하나도 없으면 `/`다.
 - **명세 정의의 `body`는 그 조항.** 명령으로 확인할 수 있으면 `engine: exec`와 그 조항을 검사하는 테스트를 `command`·`inputs`에 둔다. 명세 문서 전체를 `inputs`에 넣지 않는다. 한 줄만 고쳐도 모든 조항이 미확인이 된다.
 
 ## 2. 착수할 때 하나씩 떠맡는다
 
 ```sh
 ait todo doc/spec.md                     # 조항들의 demand. undertaken-by 행이 없으면 아무도 맡지 않은 것
-ait future offer src/ specs/c1.yaml as o undertake D… o -m "명세 1조 착수"
+ait future offer / specs/c1.yaml as o undertake D… o -m "명세 1조 착수"
 ```
 
 - 미리 여러 조항을 잡아 두지 않는다. 잡고만 있으면 남이 그 약속을 기다리므로 병목이다. 손대는 조항만 떠맡고, 그만두면 바로 거둔다(`ait future cancel O… -m …`).
-- offer의 provider도 추상 범위(`src/`, `/`)로 둔다. 어느 파일에 구현할지는 구현하면서 정해진다.
+- offer의 provider도 추상 범위로 둔다(`/`, 그 디렉터리가 HEAD에 있으면 `src/`). 어느 파일에 구현할지는 구현하면서 정해진다.
 - 조항 몇 개를 한 구현으로 해낸다면 offer 하나로 함께 떠맡는다(`… as o undertake D1… o undertake D2… o`). 그래도 demand는 조항마다 따로 남으므로, 한 조항이 바뀌면 그 demand만 다시 확인한다.
 - 다른 조항이 아직 구현되지 않았어도, 그 demand의 조건대로 있다고 보고 개발한다.
 

@@ -41,14 +41,14 @@ install: ait
 	install -d $(prefix)/bin
 	install ait $(prefix)/bin/ait
 
-# ait-mini (records of version 1) stays as its last commit was; its experiment bundle is built from there
-MINI = 190f2d9
-bundle:
-	rm -rf dist/mini && mkdir -p dist/mini
-	git archive $(MINI) | tar -x -C dist/mini
-	$(MAKE) -C dist/mini bundle
-	mv dist/mini/dist/ait-mini.tar.gz dist/
-	rm -rf dist/mini
+# the experiment bundle: ait, its skill and bundle/'s scripts, as dist/ait-v2.tar.gz
+bundle: ait
+	rm -rf dist/ait-v2
+	mkdir -p dist/ait-v2/bin dist/ait-v2/skills
+	cp ait dist/ait-v2/bin/
+	cp -R spec/skills/ait-v2 dist/ait-v2/skills/
+	cp bundle/README.md bundle/install.sh bundle/setup.sh bundle/try.sh bundle/ait-graph.sh dist/ait-v2/
+	tar -czf dist/ait-v2.tar.gz -C dist ait-v2
 
 clean:
 	rm -f ait $(YAML)
