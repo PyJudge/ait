@@ -162,11 +162,13 @@ expect_unchanged expect_err "$desc" E_FORMAT ait fulfill "$O" -m m
 check "9: fulfill O hints restore, contract commit, rerun" err_in_order "restore '.ait/$O' as in '$G'" "ait contract commit -m <why>" "then rerun this command"
 git reset -q --hard
 check "9: HEAD is still Cb" [ "$(git rev-parse HEAD)" = "$CB" ]
+# the last run gave no hint
+not_hint() { ! grep -q '^hint:' "$T/err"; }
 # T13-9 (7.1.6): pre-push checks what is pushed; only HEAD's branch is fixed here
 git switch -q -c ok "$G"
 run git push origin master:refs/heads/x
 check "9: push of master from branch ok is refused" [ "$rc" != 0 ]
-check "9: master cannot be fixed here" grep -qx "hint: 'refs/heads/master' ($CB) cannot be fixed here; fix it where that commit is HEAD on a branch" "$T/err"
+check "9: master is not fixed here: no hint" not_hint
 check "9: no restore hint for master" sh -c "! grep -qF \"restore '.ait/$O'\" '$T/err'"
 git switch -q master
 tick; expect_err "9: contract commit on master" E_FORMAT ait contract commit -m x
@@ -175,12 +177,12 @@ git switch -q master; git branch -qD ok
 git tag bad
 run git push origin bad
 check "9: push of tag bad is refused" [ "$rc" != 0 ]
-check "9: the tag cannot be fixed here" err_has "'refs/tags/bad' ($CB) cannot be fixed here;"
+check "9: nor the tag" not_hint
 git tag -d bad >/dev/null
 git switch -q --detach master
 run git push origin HEAD:refs/heads/y
 check "9: push of a detached HEAD is refused" [ "$rc" != 0 ]
-check "9: a detached HEAD cannot be fixed here" err_has "'HEAD' ($CB) cannot be fixed here;"
+check "9: nor a detached HEAD" not_hint
 git switch -q master
 check "9: origin has neither x nor y" sh -c "! git ls-remote --exit-code origin refs/heads/x refs/heads/y >/dev/null"
 # T13-9 (5.10): the restore the hint names; prev is the last good version

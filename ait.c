@@ -863,9 +863,8 @@ static int pre_push(void)
 		state_load(&s, tree_load(commit));
 		if (!check_state(&s, tree_load(commit), &v))
 			continue;
-		if (!detached && (!strcmp(local, "HEAD") || !strcmp(local, branch)))
-			reject(v.code, head_repair(&v, 0), "%s", v.msg);
-		reject(v.code, xstrfmt("'%s' (%s) cannot be fixed here; fix it where that commit is HEAD on a branch", local, commit),
+		/* 7.1.6: ait records on a branch only, so a commit that is not this branch's HEAD has no repair here */
+		reject(v.code, !detached && (!strcmp(local, "HEAD") || !strcmp(local, branch)) ? head_repair(&v, 0) : NULL,
 		       "%s", v.msg);
 	}
 	/* 5.6: a message is one line */
@@ -1375,7 +1374,7 @@ static int cmd_todo(int argc, const char **argv)
 
 			warning("skipping malformed '%s' at 'index'", path);
 			/* 5.10: one HEAD has too is HEAD's error, mended as such */
-			if (!strcmp(blob_at(t, path) ?: "", blob_at(ht, path) ?: "") && malformed(&one, &v))
+			if (!strcmp(blob_at(t, path) ?: "", blob_at(ht, path) ?: "") && check_records(&one, &v))
 				suggest("%s", head_repair(&v, 0) ?: "");
 			continue;
 		}

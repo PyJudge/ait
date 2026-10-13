@@ -111,6 +111,14 @@ int regular_mode(const char *mode)
 	return !strcmp(mode, "100644") || !strcmp(mode, "100755");
 }
 
+/* PATH is in the work tree as a spec file is there: a regular file (2.1.4) */
+int spec_file_at(const char *path)
+{
+	struct stat st;
+
+	return !lstat(xstrfmt("%s/%s", top, path), &st) && S_ISREG(st.st_mode);
+}
+
 /* the text of a blob, or NULL when it holds a NUL and so is not text; each blob is read once */
 static const char *blob_text(const char *oid)
 {
@@ -973,7 +981,6 @@ char *def_paths(struct record *r)
 	return strbuf_detach(&arg, NULL);
 }
 
-/* validate(state) of spec 5.9 a-d for record R of S, no parents involved; 0 when it holds */
 /*
  * 5.9 a: what is wrong with R's own form, NULL when nothing. Only a current
  * contract has a check line (2.2.2); that version still reads, so the
@@ -986,6 +993,7 @@ const char *format_error(struct record *r)
 	return record_check(r) ?: r->f[CHECK].nr && !is_current(r) ? "check on a contract that is not current" : NULL;
 }
 
+/* validate(state) of spec 5.9 a-d for record R of S, no parents involved; 0 when it holds */
 static int record_error(struct state *s, struct record *r, struct verdict *v)
 {
 	struct record *d, *o;
@@ -1984,18 +1992,19 @@ int expand_files(struct record *r, struct tree *t)
 
 static int files_match_except(struct record *r, struct tree *t, struct string_list *conflicts)
 {
-	struct record *x = record_copy(r);
 	struct string_list_item *item;
+	struct record *x;
 
 	/* a definition not as R pins it is a mismatch already, so what it declares is not read (user decision 53) */
 	for_each_string_list_item(item, &r->f[FILES]) {
+		struct string_list now = STRING_LIST_INIT_DUP;
 		const char *path = scope_path(item->string);
-		struct entry *e = file_entry(t, path);
 
 		if (is_def(item->string) && !(conflicts && string_list_has_string(conflicts, path)) &&
-		    (!e || strcmp(item->string, xstrfmt("%s %s %s def", path, e->mode, e->oid))))
+		    (file_line(&now, t, path, "def") || strcmp(now.items[0].string, item->string)))
 			return 0;
 	}
+	x = record_copy(r);
 	return !expand_files_except(x, t, conflicts) && !strcmp(record_text(x, 1u << FILES), record_text(r, 1u << FILES));
 }
 

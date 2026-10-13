@@ -690,7 +690,12 @@ static const char *incompatible_pins(struct state *state)
 	return NULL;
 }
 
-/* Closure and choice resolution advance together; a provisional result is no choice. */
+/*
+ * 7.12.1: the pulls that pick a version of each diverged selection of P.
+ * ALL is the refusal of 7.12.4's bundle check, which judged the whole
+ * closure: its choices close the names and pass the check. Any other hint
+ * names what P named and tries no pull further (user decision 54).
+ */
 static void choice_commands(struct pull *p, struct string_list *commands,
 			    struct string_list *resolved, int all)
 {
@@ -702,7 +707,10 @@ static void choice_commands(struct pull *p, struct string_list *commands,
 
 	for_each_string_list_item(item, &p->selections)
 		copy_selection(p, &trial, item->string);
-	complete_names(p, &trial, &sources);
+	if (all)
+		complete_names(p, &trial, &sources);
+	else
+		plan(&trial);
 	for_each_string_list_item(item, &trial.selections) {
 		struct selection *s = item->util;
 
@@ -713,10 +721,9 @@ static void choice_commands(struct pull *p, struct string_list *commands,
 		}
 	}
 	if (!next) {
-		struct state state = result_state(&trial);
+		struct state state = all ? result_state(&trial) : (struct state){ 0 };
 		struct verdict v;
 
-		/* a choice is tried against 7.12.4 only for the refusal that judged it (ALL; user decision 54) */
 		if (!all || (!check_records(&state, &v) && (trial.ends.nr || !incompatible_pins(&state))))
 			string_list_insert(commands, pull_command(&trial, NULL, NULL));
 		return;

@@ -53,19 +53,25 @@ B1=$(c D-and-new-Q-B)
 git checkout -q master
 pull "$D"
 cp "$T/err" "$T/hints"
-# Every command must explicitly resolve Q, which was discovered only after choosing D.
-want "closure: choice hint resolves the newly found divergence" eval 'test "$rc" = 1 && grep "^hint: pick one:" "$T/hints" | grep -q "$Q=" && ! grep "^hint: pick one:" "$T/hints" | grep -q "$Q -m"'
+# The choices name what was named; Q, which choosing D brings, is that pull's to ask for (user decision 54).
+want "closure: the choice hint picks D alone" eval 'test "$rc" = 1 && grep "^hint: pick one:" "$T/hints" | grep -q "$D=" && ! grep "^hint: pick one:" "$T/hints" | grep -q "$Q"'
 grep "^hint: pick one:" "$T/hints" | grep -o "'ait contract pull [^']*'" |
 	sed "s/^'//; s/ -m <why>'$//" > "$T/commands"
 HINT_HEAD=$(git rev-parse HEAD)
+# a suggested pull, then the first pull each refusal's hint gives, until one passes (at most four)
 all_hints_work() {
 	while read -r command; do
 		git reset -q --hard "$HINT_HEAD" || return 1
-		run sh -c "$command -m why"
+		for step in 1 2 3 4; do
+			run sh -c "$command -m why"
+			[ "$rc" = 0 ] && break
+			command=$(grep '^hint: ' "$T/err" | grep -o "'ait contract pull [^']*'" | head -1 | sed "s/^'//; s/ -m <why>'$//")
+			[ -n "$command" ] || return 1
+		done
 		[ "$rc" = 0 ] || return 1
 	done < "$T/commands"
 	[ -s "$T/commands" ]
 }
-want "closure: every suggested choice completes the pull" all_hints_work
+want "closure: every suggested choice completes the pull as its refusals say" all_hints_work
 
 done_testing

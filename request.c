@@ -2638,7 +2638,7 @@ static void bundle_complete(struct request *q, struct string_list *paths, struct
 	related_paths(&hs, &ws, w, paths, &related);
 	unstaged_of(&related, &differ);
 	for_each_string_list_item(item, &related)
-		if (!in_work_tree(item->string))
+		if (!spec_file_at(item->string))
 			string_list_insert(&missing, item->string)->util = item->util;
 		else if (string_list_has_string(&differ, item->string) && !unsorted_string_list_has_string(paths, item->string))
 			string_list_insert(&unstaged, item->string);

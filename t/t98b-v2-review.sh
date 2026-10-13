@@ -797,4 +797,20 @@ git switch -q -c b; tick; ait future amend "$D" src/order.c:1-3 - - -m d2 >/dev/
 tick; ait fulfill "$O" --force -m f >/dev/null 2>&1
 run ait contract pull "$D"
 check "a divergence offers both versions" sh -c "grep -q \"pull $D=HEAD -m <why>\" '$T/err' && grep -q \"pull $D=$B -m <why>\" '$T/err'"
+# 7.5.2, 2.1.4: a spec file staged through ait is a regular file; a symbolic link is named as not there, with its fix
+prep
+exec_def pass; git add -A; tick; git commit -qm pass --no-verify
+tick; ait future offer src/stock.c specs/pass.yaml -m o >/dev/null 2>&1
+rm tests/pass.sh; ln -s ../src/stock.c tests/pass.sh
+run ait contract add specs/pass.yaml tests/pass.sh
+check "contract add names the link, with its fix" sh -c "[ $rc = 1 ] && grep -qx 'missing tests/pass.sh' '$T/out' && grep -q \"restore 'tests/pass.sh' from HEAD\" '$T/err'"
+git add tests/pass.sh
+tick; run ait contract commit -m x
+check "contract commit too" sh -c "[ $rc = 1 ] && grep -qx 'missing tests/pass.sh' '$T/out'"
+# 5.10: todo's skip of a record malformed by 5.9 a gives HEAD's repair, as for one that does not parse
+prep
+tick; ait demand src/order.c src/stock.c specs/p.yaml --force -m d >"$T/out" 2>&1; D=$(new_id)
+sed 's/^state current/state future/' ".ait/$D" > "$T/rec" && cat "$T/rec" > ".ait/$D"; git add ".ait/$D"; tick; git commit -q --no-verify -m nv >/dev/null 2>&1
+run ait todo
+check "the skip carries the restore" grep -q "^hint: restore '.ait/$D' as in " "$T/err"
 done_testing
