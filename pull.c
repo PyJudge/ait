@@ -1945,11 +1945,9 @@ static int receive(struct pull *p)
 
 			if (mine && (!is_current(mine->r) || strcmp(pins(mine->r), before_pins)))
 				mine = NULL;
-			if (!changed && !newly_unverified(r, t, &parents)) {
-				if (sel && sel->incoming)
-					warning("'%s' comes in unverified", r->id);
+			/* what was unverified already is not stopped; whether it comes in to me is told as an integration tells it (7.12, 7.1.5) */
+			if (!changed && !newly_unverified(r, t, &parents))
 				continue;
-			}
 			if (!p->force) {
 				char *hint = xstrfmt("%s: '%s'", mine ? "reopen it in the same request" : "take it reopened", pull_command(p, NULL, reopen_clauses(&result, r, NULL)));
 
@@ -2018,6 +2016,8 @@ static int receive(struct pull *p)
 	}
 	if (fresh && !m.conflicts.nr)
 		reopen_warnings(p, &result, t, "by this pull");
+	if (!m.conflicts.nr)
+		unverified_warnings(p, &result, t);
 	if (fresh && !m.conflicts.nr)
 		printf("request %s\n%s", rid, helper_out.buf);
 	for_each_string_list_item(item, &p->selections) {

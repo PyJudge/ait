@@ -69,4 +69,24 @@ echo 'body: new' > specs/p.yaml
 run ait contract commit -m w
 check "a changed one is still unstaged, with the stage hint" sh -c "grep -qx 'unstaged specs/p.yaml' '$T/out' && grep -qF \"stage it: 'ait contract add specs/p.yaml'\" '$T/err'"
 
+# 7.12 (as 7.1.5, 9.3): what a pull brings in unverified is told only to whose demand it is, with H7 or H8
+setup
+SA=$(ait session open --agent a)
+prompt_defs
+git add -A && tick && git commit -q --no-verify -m defs
+tick; ait demand src/order.c src/stock.c specs/p.yaml --force -m d >"$T/out" 2>"$T/err"; D=$(sed -n 's/^new \([^ ]*\).*/\1/p' "$T/out")
+git branch side; git switch -q side
+setl src/stock.c 1 s1x; tick; git commit -qam code 2>/dev/null
+tick; ait amend "$D" src/stock.c - - -m consumer >/dev/null 2>&1
+git switch -q master
+SC=$(ait session open --agent c 2>/dev/null)
+H=$(git rev-parse HEAD)
+tick; AIT_SESSION=$SC run ait contract pull "$D"
+check "taken" test "$rc" = 0
+check "not told to another agent" not err_has "comes in unverified"
+git reset -q --hard "$H"
+tick; AIT_SESSION=$SA run ait contract pull "$D"
+check "told to whose demand it is" err_has "warning: '$D' comes in unverified"
+check "with its hint" err_has "hint: check '$D' again"
+
 done_testing

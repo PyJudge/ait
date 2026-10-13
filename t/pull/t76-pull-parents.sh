@@ -14,7 +14,10 @@ git checkout -q master
 H0=$(git rev-parse HEAD)
 pull "$D" "$Q"
 want "parents: a single end preserves existing unverified" test "$rc" = 0
+want "parents: it comes in to no one but whose demand D is (9.3)" eval '! grep -q "comes in unverified" "$T/err"'
 git reset --hard -q "$H0"
+# the warning is for the session whose demand D is, as in t69 NU2 (7.12, 9.3)
+ait session close "$MSID" && ASID=$(ait session open --agent agent-a)
 pull "$K" "$D" "$Q"
 want "parents: unrelated extra end preserves existing unverified" test "$rc" = 0
 want "parents: existing unverified is warned" eval 'grep -q "comes in unverified" "$T/err"'
