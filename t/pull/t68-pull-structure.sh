@@ -60,9 +60,10 @@ fact "XT1: ... with different bodies" not same_body "$XF" "$XC"
 fact "XT1: ... neither contains the other" test -z "$(contains "$XF" "$XC" && echo y)$(contains "$XC" "$XF" && echo y)"
 want "XT1: pull D X stops, nothing changed" pull_unchanged "$D" "$X"
 want "XT1: X diverged" stops 1 "error: '$X' has diverged between "
-want "XT1: one choice in the hint" test "$(hint_cmds | wc -l | tr -d ' ')" = 1
+want "XT1: both versions are choices, untried (user decision 54)" test "$(hint_cmds | wc -l | tr -d ' ')" = 2
 want "XT1: the hint is 'pull D X=a1 -m <why>'" sh -c "grep '^hint: ' '$T/err' | grep -qE \"'ait contract pull $D $X=[^ ']+ -m <why>'\""
-want "XT1: it offers a1, not HEAD" test "$(picks "$X")" = "$(oids "$A1")"
+want "XT1: it offers a1 and HEAD" test "$(picks "$X")" = "$(oids "$A1" "$(git rev-parse HEAD)")"
+want "XT1: taking HEAD's is refused by that pull itself" pull_unchanged "$D" "$X=HEAD" -m why
 pull "$D" "$X=$A1" -m why
 want "XT1: following it passes (4절)" test "$rc" = 0
 want "XT1: D is a1's withdrawn version" test "$(recat HEAD D)" = "$DW"

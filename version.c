@@ -455,13 +455,14 @@ static int holds(const char *commit, struct string_list *set)
 	return !check_state(&part, t, &v);
 }
 
-/* PATH is in the index and the work tree */
+/* PATH is in the index and the work tree, a regular file as a spec file is (2.1.4) */
 static int checked_out(const char *path)
 {
+	struct stat st;
 	int rc;
 
 	git_run(NULL, NULL, &rc, "ls-files --error-unmatch -- %s", path);
-	return !rc && !access(xstrfmt("%s/%s", top, path), F_OK);
+	return !rc && !lstat(xstrfmt("%s/%s", top, path), &st) && S_ISREG(st.st_mode);
 }
 
 /*

@@ -768,4 +768,33 @@ run ait todo
 check "todo stops with the definition's error" sh -c "[ $rc = 128 ] && grep -q \"bad format: 'specs/p.yaml'\" '$T/err'"
 echo 'body: p' > specs/p.yaml; ait contract add specs/p.yaml >/dev/null 2>&1
 tick; expect_ok "fixed and committed through ait" ait contract commit -m fix
+# 5.10, 2.1.4: the repair restores the spec files GOOD pins that HEAD does not have as spec files, a symbolic link too
+prep
+exec_def pass; git add -A; tick; git commit -qm pass --no-verify
+tick; ait future offer src/stock.c specs/pass.yaml -m o >"$T/out" 2>&1; O=$(new_id)
+sed 's/^state future/state current/' ".ait/$O" > "$T/rec" && cat "$T/rec" > ".ait/$O"; git add ".ait/$O"
+rm tests/pass.sh; ln -s ../src/stock.c tests/pass.sh; git add tests/pass.sh
+tick; run git commit -qm both --no-verify
+check "the repair restores the input with the record" grep -q "^hint: restore '.ait/$O' 'tests/pass.sh' as in " "$T/err"
+G=$(sed -n "s/^hint: restore '.ait\/$O' 'tests\/pass.sh' as in '\([0-9a-f]*\)'.*/\1/p" "$T/err")
+rm tests/pass.sh; git checkout -q "$G" -- ".ait/$O" tests/pass.sh
+tick; expect_ok "and following it mends HEAD" ait contract commit -m fix
+# 5.9a (user decision 54): H9's pull names the contracts that changed, not what that pull will add
+prep
+tick; ait future demand src/order.c src/stock.c specs/p.yaml -m d >"$T/out" 2>&1; D=$(new_id)
+git switch -q -c b
+tick; ait future demand src/order.c src/stock.c specs/w.yaml -m q >/dev/null 2>&1
+tick; ait future amend "$D" src/order.c:1-3 - - -m d2 >/dev/null 2>&1; git switch -q master
+tick; run ait future offer src/stock.c specs/w.yaml as o undertake "$D" o -m o
+check "H9 names the changed contract alone" grep -qx "hint: to include them, run 'ait contract pull $D'" "$T/err"
+run ait contract pull "$D"
+check "and that pull names what else it takes" err_has "name them too"
+# 7.12.1 (user decision 54): a divergence offers each version untried; the pull taken says what else it needs
+prep
+tick; ait future demand src/order.c src/stock.c specs/p.yaml -m d >"$T/out" 2>&1; D=$(new_id)
+tick; ait future offer src/stock.c specs/w.yaml as o undertake "$D" o -m o >"$T/out" 2>&1; O=$(new_id)
+git switch -q -c b; tick; ait future amend "$D" src/order.c:1-3 - - -m d2 >/dev/null 2>&1; B=$(git rev-parse HEAD); git switch -q master
+tick; ait fulfill "$O" --force -m f >/dev/null 2>&1
+run ait contract pull "$D"
+check "a divergence offers both versions" sh -c "grep -q \"pull $D=HEAD -m <why>\" '$T/err' && grep -q \"pull $D=$B -m <why>\" '$T/err'"
 done_testing

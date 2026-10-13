@@ -716,7 +716,8 @@ static void choice_commands(struct pull *p, struct string_list *commands,
 		struct state state = result_state(&trial);
 		struct verdict v;
 
-		if (!check_records(&state, &v) && (trial.ends.nr || !incompatible_pins(&state)))
+		/* a choice is tried against 7.12.4 only for the refusal that judged it (ALL; user decision 54) */
+		if (!all || (!check_records(&state, &v) && (trial.ends.nr || !incompatible_pins(&state))))
 			string_list_insert(commands, pull_command(&trial, NULL, NULL));
 		return;
 	}
@@ -1784,13 +1785,12 @@ static char *first_ref(const char *commit)
  * H9 (6.7a, 5.9a include): the contracts of IDS with changes not in HEAD,
  * each a latest version (7.12) HEAD's does not include and that means
  * otherwise (9.2), warned with the commit that brings it in and the first ref
- * holding it. The hint is the pull that takes them, named as 7.12.3 names
- * them; what stops that pull is its own to say (choice 228).
+ * holding it. The hint is the pull that names them, or 7.12.1's choices
+ * when they diverged; what else that pull needs is its own to say (user decision 54).
  */
 void changes_not_in_head(struct string_list *ids)
 {
 	struct pull p = PULL_INIT, trial;
-	struct string_list sources = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *l;
 
 	if (!head || !ids->nr)
@@ -1828,7 +1828,6 @@ void changes_not_in_head(struct string_list *ids)
 	}
 	if (!trial.selections.nr)
 		return;
-	complete_names(&p, &trial, &sources);
 	suggest("%s", choices_hint(&trial, 0) ?: xstrfmt("to include them, run '%s'", pull_command(&trial, NULL, NULL)));
 }
 
