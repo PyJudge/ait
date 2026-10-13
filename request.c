@@ -558,12 +558,15 @@ static void word(struct strbuf *sb, const char *w)
 }
 
 /*
- * 5.9a, code first for a helper, whose request takes no code (rule 3): commit
- * code that meets the condition with ait commit; contract commit gets none, as
- * ait commit takes nothing while that request is staged (5.2-3)
+ * 5.9a, the code CODE a contract needs: fulfill and commit stage it in their
+ * own request; a helper's request takes no code (rule 3), so it is code first,
+ * committed with ait commit; contract commit gets none, as ait commit takes
+ * nothing while that request is staged (5.2-3)
  */
 static char *code_first(struct request *q, const char *code)
 {
+	if (!q->gate)
+		return xstrfmt("stage %s, then rerun this command", code);
 	return q->direct ? NULL :
 	       xstrfmt("commit code that meets it first: stage %s and run 'ait commit -m <why>', then rerun this command", code);
 }
@@ -774,15 +777,16 @@ static char *again(struct request *q, struct string_list *ks, char mode, const c
 	return xstrfmt("'%s -m <why>'", sb.buf);
 }
 
-/* 5.9a: reopening SET inside this request: the helper again with "future amend", or contract commit's files set so */
-static char *reopen_inside(struct request *q, struct string_list *set)
+/* 5.9a: reopening K, and the current offers 5.9 d takes along, inside this request: the helper again with "future amend", or contract commit's files set so */
+static char *reopen_inside(struct request *q, struct record *k)
 {
-	struct string_list paths = STRING_LIST_INIT_DUP;
+	struct string_list set = STRING_LIST_INIT_DUP, paths = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
+	reopen_set(&q->s, k, &set);
 	if (!q->direct)
-		return again(q, set, 'f', NULL);
-	for_each_string_list_item(item, set)
+		return again(q, &set, 'f', NULL);
+	for_each_string_list_item(item, &set)
 		string_list_append(&paths, xstrfmt(".ait/%s", item->string));
 	return xstrfmt("set 'state future' in %s, then %s", quoted_paths(&paths), through_ait(&paths));
 }
@@ -849,7 +853,6 @@ static char *scope_hint(struct request *q, struct record *r, const char *list, c
 			int allow_new)
 {
 	struct string_list set = STRING_LIST_INIT_DUP;
-	int there = !access(xstrfmt("%s/%s", top, path), F_OK);
 
 	if (q->direct)
 		return NULL;
@@ -858,19 +861,21 @@ static char *scope_hint(struct request *q, struct record *r, const char *list, c
 		reopen_set(&q->s, r, &set);
 	if (allow_new)
 		return xstrfmt("if it does not exist yet, run %s", with_new(q, list, part, &set));
-	if (!q->gate)
-		return there ? xstrfmt("stage %s, then rerun this command", quoted_paths(single(path))) : NULL;
-	if (there)
+	if (in_work_tree(path))
 		return code_first(q, quoted_paths(single(path)));
+	if (!q->gate)
+		return NULL;
 	return xstrfmt("if it does not exist yet, make it future: %s", with_new(q, list, part, &set));
 }
 
 /* spec 3.2a: a scope list "A,B", each pinned at T, its shape checked before (shapes()) */
-static void scope_list(struct request *q, struct record *r, struct string_list *out, const char *list, struct tree *t,
-		       int allow_new, int allow_abs)
+static void scope_list(struct request *q, struct record *r, enum key k, struct string_list *out, const char *list,
+		       struct tree *t)
 {
 	struct string_list parts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
+	/* 3.3: new: is a promise's or a consumer's, an abstract scope a promised provider's */
+	int allow_new = in_state(r, "future") || k == CONSUMER, allow_abs = in_state(r, "future") && k == PROVIDER;
 
 	string_list_split(&parts, list, ",", -1);
 	for_each_string_list_item(item, &parts) {
@@ -892,10 +897,9 @@ static void scope_list(struct request *q, struct record *r, struct string_list *
 static void scopes(struct request *q, struct record *r, enum key k, const char *list)
 {
 	struct string_list vals = STRING_LIST_INIT_DUP;
-	int future = in_state(r, "future");
 
 	if (!keeps(list)) {
-		scope_list(q, r, &vals, list, q->ht, future || k == CONSUMER, future && k == PROVIDER);
+		scope_list(q, r, k, &vals, list, q->ht);
 		r->f[k] = vals;
 	}
 }
@@ -960,15 +964,23 @@ static char *then_rerun(struct request *q, struct string_list *set)
 	return xstrdup("rerun this command");
 }
 
-/* the reopen hint of 5.9a: inside the helper's request, or run first before fulfill or commit again */
-static char *reopen_first(struct request *q, struct record *k)
+/*
+ * the reopen hint of 5.9a: inside the helper's request, or run first before
+ * fulfill or commit again, on HEAD, where the offers that take K along are
+ * the current ones there (5.9 d); K's clause ends in ARGS, a new condition, when given
+ */
+static char *reopen_first(struct request *q, struct record *k, const char *args)
 {
 	struct string_list set = STRING_LIST_INIT_DUP;
+	struct state hs = { 0 };
 
-	reopen_set(&q->s, k, &set);
 	if (q->gate)
-		return xstrfmt("to change '%s' without a check, reopen it: %s", k->id, reopen_inside(q, &set));
-	return xstrfmt("%s, then %s", reopen_hint(&q->s, k), then_rerun(q, &set));
+		return xstrfmt("to change '%s' without a check, reopen it: %s", k->id, reopen_inside(q, k));
+	state_load(&hs, q->ht);
+	k = state_get(&hs, k->id);
+	reopen_set(&hs, k, &set);
+	return xstrfmt("%s: 'ait %s -m <why>', then %s", args ? "to change its condition, reopen it with the new one" :
+		       xstrfmt("to change '%s' without a check, reopen it", k->id), reopen_clauses(&hs, k, args), then_rerun(q, &set));
 }
 
 /* 5.9a transition hint 1: K is HEAD's accident (5.10), whose repair comes first; NULL when it is not */
@@ -979,19 +991,52 @@ static char *head_first(struct record *k)
 	return accident_at_head(k, &v, 1) ? v.hint : NULL;
 }
 
+/* 5.9a LINES: R's scopes as input at T and its definitions, as written by hand (2.2.3), each quoted, joined by ", " */
+static char *written_lines(struct record *r, struct tree *t)
+{
+	static const enum key ks[] = { CONSUMER, PROVIDER, FILES };
+	static const char *const words[] = { "consumer", "provider", "file" };
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+	size_t k;
+
+	for (k = 0; k < ARRAY_SIZE(ks); k++)
+		for_each_string_list_item(item, &r->f[ks[k]])
+			if (ks[k] != FILES || is_def(item->string))
+				strbuf_addf(&sb, "%s'%s %s'", sb.len ? ", " : "", words[k],
+					    ks[k] == FILES ? scope_path(item->string) : input_scope(item->string, t));
+	return strbuf_detach(&sb, NULL);
+}
+
 /*
- * 5.9a transition hint 3 in a helper's form: an ended K stays as it is, so
- * what is needed again is a new contract, as H6 makes it; a drop's withdraw
+ * 5.9a "restore it": R back as its base has it, HEAD's or GOOD's (5.10),
+ * or gone when it has no base
+ */
+static char *restore_it(struct record *r)
+{
+	if (!r->old)
+		return xstrfmt("remove '.ait/%s'", r->id);
+	return xstrfmt("restore '.ait/%s' as in '%s'", r->id, r->base_at ? r->base_at : "HEAD");
+}
+
+/*
+ * 5.9a transition hint 3: an ended K stays as it is, so what is needed again
+ * is a new contract, as H6 makes it, or within contract commit's request a new
+ * record with K's lines before the refused R is restored; a drop's withdraw
  * form is not written, as future drop is not supported here. Hint 1 comes first.
  */
-static char *closed_hint(struct request *q, struct record *k)
+static char *closed_hint(struct request *q, struct record *k, struct record *r)
 {
 	char *first = head_first(k);
 
 	if (first)
 		return first;
 	if (*k->id == 'X')
-		return xstrfmt("'%s' is closed", k->id);
+		return xstrfmt("'%s' is closed%s", k->id, q->direct ? xstrfmt("\n%s", restore_it(r)) : "");
+	if (q->direct)
+		return xstrfmt("'%s' is closed\nto need it again, move your change to a new contract in this request: 'ait "
+			       "contract new %s', fill it with %s, then 'ait contract add' it\n%s", k->id, val(k, ROLE),
+			       written_lines(k, q->ht), restore_it(r));
 	return xstrfmt("'%s' is closed\nto need it again, make a new contract: 'ait future %s%s %s %s -m <why>'", k->id,
 		       val(k, ROLE), *k->id == 'D' ? " <your code>" : "", input_scopes(k, PROVIDER, q->ht), def_paths(k));
 }
@@ -1059,34 +1104,6 @@ static char *moved_inside(struct record *k, struct tree *t)
 		       through_ait(single(xstrfmt(".ait/%s", k->id))));
 }
 
-/* 5.9a LINES: R's scopes as input at T and its definitions, as written by hand (2.2.3), each quoted, joined by ", " */
-static char *written_lines(struct record *r, struct tree *t)
-{
-	static const enum key ks[] = { CONSUMER, PROVIDER, FILES };
-	static const char *const words[] = { "consumer", "provider", "file" };
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
-	size_t k;
-
-	for (k = 0; k < ARRAY_SIZE(ks); k++)
-		for_each_string_list_item(item, &r->f[ks[k]])
-			if (ks[k] != FILES || is_def(item->string))
-				strbuf_addf(&sb, "%s'%s %s'", sb.len ? ", " : "", words[k],
-					    ks[k] == FILES ? scope_path(item->string) : input_scope(item->string, t));
-	return strbuf_detach(&sb, NULL);
-}
-
-/*
- * 5.9a "restore it": R back as its base has it, HEAD's or GOOD's (5.10),
- * or gone when it has no base
- */
-static char *restore_it(struct record *r)
-{
-	if (!r->old)
-		return xstrfmt("remove '.ait/%s'", r->id);
-	return xstrfmt("restore '.ait/%s' as in '%s'", r->id, r->base_at ? r->base_at : "HEAD");
-}
-
 /* 5.9a transition hint 10: the request with the clause undertaking D by O turned into a future offer that does */
 static char *undertake_hint(struct request *q, struct record *d, struct record *o)
 {
@@ -1111,7 +1128,6 @@ static char *undertake_hint(struct request *q, struct record *d, struct record *
  */
 static char *direct_hint(struct request *q, struct record *r, const char *from, const char *to)
 {
-	struct string_list set = STRING_LIST_INIT_DUP;
 	char *path = xstrfmt(".ait/%s", r->id);
 	char *restore = restore_it(r);
 	struct record *as_was = xmemdupz(r, sizeof(*r));
@@ -1123,20 +1139,15 @@ static char *direct_hint(struct request *q, struct record *r, const char *from, 
 		return restore;
 	/* 3: an ended contract changed; the change goes to a new contract before the record is restored */
 	if (!strcmp(from, "cancelled") || !strcmp(from, "withdrawn") || !strcmp(from, "fulfilled"))
-		return *r->id == 'X' ? xstrfmt("'%s' is closed\n%s", r->id, restore) :
-		       xstrfmt("'%s' is closed\nto need it again, move your change to a new contract in this request: 'ait "
-			       "contract new %s', fill it with %s, then 'ait contract add' it\n%s", r->id, val(r, ROLE),
-			       written_lines(r, q->ht), restore);
+		return closed_hint(q, r, r);
 	/* 4: only a fulfil makes a promise current */
 	if (!strcmp(from, "future") && (!strcmp(to, "current") || !strcmp(to, "fulfilled")))
 		return xstrfmt("fulfill it instead: %s, then 'ait fulfill %s -m <why>'",
 			       as_in_base(as_was) ? restore : xstrfmt("set 'state future' back in '%s', then %s", path, through_ait(single(path))),
 			       r->id);
 	/* 5: current to ended: reopen it */
-	if (!strcmp(from, "current")) {
-		reopen_set(&q->s, r, &set);
-		return xstrfmt("to change '%s' without a check, reopen it: %s", r->id, reopen_inside(q, &set));
-	}
+	if (!strcmp(from, "current"))
+		return reopen_first(q, r, NULL);
 	/* 6: a promise is withdrawn only when current; its maker cancels it */
 	if (!strcmp(to, "withdrawn") && mine)
 		return xstrfmt("set 'state cancelled' in '%s', then %s", path, through_ait(single(path)));
@@ -1146,29 +1157,20 @@ static char *direct_hint(struct request *q, struct record *r, const char *from, 
 /* the hint of a verdict on the gate's candidate, as the same request with a clause changed (5.9a) */
 static char *gate_hint(struct request *q, struct verdict *v)
 {
-	struct string_list set = STRING_LIST_INIT_DUP;
-
 	if (at_head(v))
 		return head_repair(v, !strcmp(v->word, "state"));
 	/* 5.10: a malformed record that only this request has is fixed in it; what is no record goes */
-	if (!strcmp(v->word, "format") && v->k)
+	if (!strcmp(v->word, "format"))
 		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v, 0) :
 		       xstrfmt("fix it in this request (see the error line), then %s", through_ait(single(xstrfmt(".ait/%s", v->k->id))));
-	if (!v->k)
-		return v->hint;
-	if (v->o && !v->o->old) {
-		string_list_append(&set, v->o->id)->util = v->o;
-		return xstrfmt("if it does not hold yet, make it future: %s", reopen_inside(q, &set));
-	}
+	if (v->o && !v->o->old)
+		return xstrfmt("if it does not hold yet, make it future: %s", reopen_inside(q, v->o));
 	if (v->o && !was_current(v->k))
 		return undertake_hint(q, v->k, v->o);
-	reopen_set(&q->s, v->k, &set);
-	if (v->o && !string_list_has_string(&set, v->o->id))
-		string_list_append(&set, v->o->id)->util = v->o;
 	if (v->o)
 		return xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: %s", v->k->id,
-			       v->o->id, reopen_inside(q, &set));
-	return xstrfmt("make the spec files of '%s' match it, or reopen it with them: %s", v->k->id, reopen_inside(q, &set));
+			       v->o->id, reopen_inside(q, v->k));
+	return xstrfmt("make the spec files of '%s' match it, or reopen it with them: %s", v->k->id, reopen_inside(q, v->k));
 }
 
 /*
@@ -1185,13 +1187,10 @@ static void next_hints(struct request *q, struct string_list *ids, int promise)
 		struct record *r = item->util;
 
 		if (q->gate && !r->old && promise) {
-			struct string_list set = STRING_LIST_INIT_DUP;
-
 			/* a demand this request has current offers undertake makes them promises too (5.9 d) */
-			reopen_set(&q->s, r, &set);
-			add_hint(q, xstrfmt("if it does not hold yet, make it future: %s", reopen_inside(q, &set)));
+			add_hint(q, xstrfmt("if it does not hold yet, make it future: %s", reopen_inside(q, r)));
 		} else if (was_current(r) && !carried(q, r)) {
-			add_hint(q, reopen_first(q, r));
+			add_hint(q, reopen_first(q, r, NULL));
 		}
 	}
 }
@@ -1218,10 +1217,8 @@ static void fix_hints(struct request *q, struct string_list *ids)
 			else if (q->direct)
 				add_hint(q, xstrfmt("fix '%s', then %s", path, through_ait(single(path))));
 			else if (q->gate && unsorted_string_list_has_string(&q->files, path))
-				/* 7.3.3: a version staged apart from HEAD's would be partly staged once the file is fixed */
-				add_hint(q, xstrfmt(same_entry(file_entry(q->noted, path), file_entry(q->ht, path)) ?
-						    "fix '%s', then rerun this command" : "fix '%s' and stage it again, then rerun this command",
-						    path));
+				/* a staged version the fix leaves apart is the rerun's to say (7.3.3, choice 228) */
+				add_hint(q, xstrfmt("fix '%s', then rerun this command", path));
 			else if (q->gate)
 				add_hint(q, xstrfmt("fix '%s' and carry it in this request: %s", path, again(q, &none, 0, amend)));
 			else
@@ -1237,17 +1234,8 @@ static void fix_hints(struct request *q, struct string_list *ids)
  */
 static void condition_hint(struct request *q, struct record *k)
 {
-	struct string_list set = STRING_LIST_INIT_DUP;
-	struct state hs = { 0 };
-
-	if (q->gate || !was_current(k))
-		return;
-	/* the reopen runs on HEAD, where the offers that take K along are the current ones there (5.9 d) */
-	state_load(&hs, q->ht);
-	k = state_get(&hs, k->id);
-	reopen_set(&hs, k, &set);
-	add_hint(q, xstrfmt("to change its condition, reopen it with the new one: 'ait %s -m <why>', then %s",
-			    reopen_clauses(&hs, k, *k->id == 'D' ? " - - <new defs>" : " - <new defs>"), then_rerun(q, &set)));
+	if (!q->gate && was_current(k))
+		add_hint(q, reopen_first(q, k, *k->id == 'D' ? " - - <new defs>" : " - <new defs>"));
 }
 
 /*
@@ -1692,8 +1680,8 @@ static char *step_hint(struct request *q, struct record *r, const char *from, co
 	if (*r->id == 'u')
 		return NULL;
 	if (r->old && !is_live(r->old))
-		return closed_hint(q, r->old);
-	return head_first(r) ?: was_current(r) ? reopen_first(q, r) : NULL;
+		return closed_hint(q, r->old, r);
+	return head_first(r) ?: was_current(r) ? reopen_first(q, r, NULL) : NULL;
 }
 
 /* spec 7.3.2: a clause applies to the records as the earlier clauses left them */
@@ -1707,7 +1695,7 @@ static void apply(struct request *q, struct clause *c)
 	} else if (!strcmp(c->verb, "amend")) {
 		r = resolve(q, c->k[0]);
 		if (*r->id == 'u' || !is_live(r))
-			reject(1, *r->id == 'u' ? NULL : closed_hint(q, r), "not allowed: '%s' is not a future or current contract", r->id);
+			reject(1, *r->id == 'u' ? NULL : closed_hint(q, r, r), "not allowed: '%s' is not a future or current contract", r->id);
 		if (c->b && ((*r->id == 'D') != !!c->a || (*r->id == 'X') != !c->f))
 			reject(129, NULL, "amend '%s' takes A B FILES (a demand), B FILES (an offer) or K (a drop)", c->k[0]);
 		if (c->future)
@@ -1773,7 +1761,7 @@ static void transitions(struct request *q)
 			struct record *end = link_end(&q->s, r, j), *d = link_end(&q->s, r, 0);
 
 			if (!is_live(end))
-				reject(1, j ? undertake_hint(q, d, end) : closed_hint(q, end), "not allowed: '%s' is %s", end->id,
+				reject(1, j ? undertake_hint(q, d, end) : closed_hint(q, end, r), "not allowed: '%s' is %s", end->id,
 				       val(end, STATE));
 		}
 		if (!record_step(r->id, from, to, q->gate))
@@ -1828,13 +1816,14 @@ static void code_present(struct request *q)
 		struct string_list write = STRING_LIST_INIT_DUP, stage = STRING_LIST_INIT_DUP, missing = STRING_LIST_INIT_DUP;
 		struct string_list one = STRING_LIST_INIT_DUP;
 		struct record *k = item->util;
-		int moved = 0;
 
 		string_list_append(&one, k->id)->util = k;
 		if (is_abstract(k))
 			reject(128, xstrfmt("give it the scope you implemented: '%s'", rerun(q, &one, "<scope>")),
 			       "bad scope: '%s' becomes current without a scope", k->id);
 		missing_code(k, q->v, &missing);
+		if (!missing.nr)
+			continue;
 		for_each_string_list_item(sc, &missing) {
 			char *file = scope_path(sc->string);
 			int written = in_work_tree(file), new = starts_with(sc->string, "new:");
@@ -1842,30 +1831,27 @@ static void code_present(struct request *q)
 			/* 7.3.3: the file came in another case; git add keeps that spelling */
 			if (case_twin(q->v, file))
 				reject(128, xstrfmt("give it as git has it: '%s'", case_twin(q->v, file)), "bad scope: '%s'", sc->string);
-			/* An existing file with an unmappable range needs a scope, not staging. */
-			if (blob_at(q->v, file)) {
-				moved = 1;
+			/* an existing file with an unmappable range needs a scope, not staging */
+			if (blob_at(q->v, file))
 				continue;
-			}
 			if (!written && new)
 				string_list_append(&write, file);
 			if (written || new)
 				string_list_append(&stage, file);
-			/* 5.8: a contract HEAD has may have moved its code anyway */
-			moved |= !(written || new) || k->old;
 		}
-		/* 5.8 E_CODE_REQUIRED, a hint per kind with all its paths: write, stage (the gate commits code first), or moved */
+		/*
+		 * 5.8 E_CODE_REQUIRED, a hint per kind with all its paths: write, stage
+		 * (the gate commits code first), or moved, as a contract HEAD has may have
+		 * moved its code whatever else is missing
+		 */
 		if (write.nr)
 			add_hint(q, xstrfmt("write %s", quoted_paths(&write)));
 		if (stage.nr)
-			add_hint(q, q->gate ? code_first(q, quoted_paths(&stage)) :
-				 xstrfmt("stage %s, then rerun this command", quoted_paths(&stage)));
-		if (moved && k->old)
+			add_hint(q, code_first(q, quoted_paths(&stage)));
+		if (k->old)
 			add_hint(q, q->direct ? moved_inside(k, q->v) :
 				 q->gate ? xstrfmt("if it was moved, run %s", again(q, &one, 'm', NULL)) :
 				 xstrfmt("if it was moved, rerun with '%s=%s'", k->id, moved_arg(k, q->v)));
-		if (!write.nr && !stage.nr && !moved)
-			continue;
 		string_list_append(&q->missing, item->string)->util = item->util;
 		/* 5.8: each contract's hints in turn: then a promise or a reopen, a carried demand released, my chosen promise gone */
 		next_hints(q, &one, 1);
@@ -1952,17 +1938,15 @@ static const char *kind_of(struct request *q, struct record *r)
 	return is_current(r) && in_state(r->old, "future") ? "fulfilled" : "";
 }
 
+/* the change line of R (6.7): an alias is a new record's, and the gate carries nothing */
 static char *change_line(struct request *q, struct record *r)
 {
 	if (*r->id == 'u')
 		return xstrfmt("%s %.13s %s\n", val(r, STATE), r->id + 10, r->id + 24);
-	else if (!r->old)
-		return xstrfmt("new %s%s%s\n", r->id, r->alias ? " " : "", r->alias ? r->alias : "");
-	else
-		return xstrfmt("%s %s%s\n", kind_of(q, r), r->id, q->gate ? "" : via(q, r));
+	return xstrfmt("%s %s%s%s%s\n", kind_of(q, r), r->id, r->alias ? " " : "", r->alias ? r->alias : "",
+		       q->gate ? "" : via(q, r));
 }
 
-/* spec 7.7.4 and 6.5: pin the check set at the judged tree, add what changed to it and commit */
 /*
  * spec 6.2: the spec files of every live contract of the request, expanded and
  * pinned at its tree. What the arguments give was checked before, so a file
@@ -2002,7 +1986,7 @@ static struct tree *worktree_state(struct request *q, struct state *ws)
 	/* a written record names its definitions only (2.2.3); one the work tree lacks is gone from W too */
 	for (i = 0; i < ws->nr; i++)
 		for_each_string_list_item(f, &ws->r[i]->f[FILES])
-			if (is_live(ws->r[i]) && in_work_tree(scope_path(f->string)))
+			if (is_live(ws->r[i]) && spec_file_at(scope_path(f->string)))
 				string_list_insert(&files, scope_path(f->string));
 			else if (is_live(ws->r[i]))
 				index_line(&gone, NULL, NULL, scope_path(f->string));
@@ -2018,7 +2002,7 @@ static struct tree *worktree_state(struct request *q, struct state *ws)
 		def_inputs(w, &defs, &declared);
 		for_each_string_list_item(item, &declared) {
 			string_list_append(&ws->r[i]->f[FILES], xstrfmt("%s - - input", item->string));
-			if (in_work_tree(item->string))
+			if (spec_file_at(item->string))
 				string_list_insert(&files, item->string);
 			else
 				index_line(&gone, NULL, NULL, item->string);
@@ -2297,14 +2281,14 @@ static void given_scopes(struct request *q, struct record *r, const char *list)
 		if (is_abstract(r) && !inside)
 			reject(128, NULL, "bad scope: '%s' is outside the scope of '%s'", item->string, r->id);
 	}
-	scope_list(q, r, &vals, list, q->v, 0, 0);
+	scope_list(q, r, PROVIDER, &vals, list, q->v);
 	r->f[PROVIDER] = vals;
 }
 
 static void select_promise(struct request *q, struct record *r)
 {
 	if (!in_state(r, "future"))
-		reject(1, !is_current(r) ? closed_hint(q, r) : head_first(r) ?:
+		reject(1, !is_current(r) ? closed_hint(q, r, r) : head_first(r) ?:
 		       xstrfmt("'%s' is already current; to check it again, run 'ait amend %s -m <why>'", r->id, r->id),
 		       "not allowed: '%s' is %s", r->id, val(r, STATE));
 	put(r, STATE, "current");
@@ -2419,28 +2403,13 @@ static const char *not_a_file(const char *path)
 	       "is not a regular file" : NULL;
 }
 
-/*
- * 5.8 E_INCOMPLETE "missing": restore PATH from HEAD, or create it, or stop
- * declaring it in DECL, the definitions of this request and the records of
- * HEAD that declare it
- */
-static char *missing_hint(struct request *q, const char *path)
+/* 5.8 E_INCOMPLETE "missing": restore PATH from HEAD, or create it, or stop declaring it in DECL, what declares it */
+static char *missing_hint(struct request *q, const char *path, struct string_list *decl)
 {
-	struct string_list decl = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	struct strbuf in = STRBUF_INIT;
-	size_t i;
+	const char *in = decl && decl->nr ? xstrfmt(" in %s", quoted_paths(decl)) : "";
 
-	for_each_string_list_item(item, &q->declared)
-		if (!strcmp(item->string, path))
-			string_list_append(&decl, item->util);
-	for (i = 0; i < q->s.nr; i++)
-		if (q->s.r[i]->old && declares(q->s.r[i]->old, path))
-			string_list_append(&decl, xstrfmt(".ait/%s", q->s.r[i]->id));
-	if (decl.nr)
-		strbuf_addf(&in, " in %s", quoted_paths(&decl));
-	return blob_at(q->ht, path) ? xstrfmt("restore '%s' from HEAD, or stop declaring it%s", path, in.buf) :
-	       xstrfmt("create it or stop declaring it%s", in.buf);
+	return blob_at(q->ht, path) ? xstrfmt("restore '%s' from HEAD, or stop declaring it%s", path, in) :
+	       xstrfmt("create it or stop declaring it%s", in);
 }
 
 /*
@@ -2452,7 +2421,10 @@ static void judge_file(struct request *q, const char *path)
 {
 	const char *why = not_a_file(path), *in_head = case_twin(q->ht, path), *in_index = case_twin(q->index, path);
 	const char *twin = in_head ? in_head : in_index, *slash;
+	struct string_list decl = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
 	struct stat st;
+	size_t i;
 
 	/* git add stages nothing for a path that differs in case only from one git has */
 	if (in_head && in_index && strcmp(in_head, in_index))
@@ -2474,8 +2446,16 @@ static void judge_file(struct request *q, const char *path)
 			reject(1, xstrfmt("remove '%s' and run 'ait commit -m <why>' first, then rerun this command", up),
 			       "spec files do not match the contract: '%s' is under the file '%s' in git", path, up);
 	}
-	if (lstat(xstrfmt("%s/%s", top, path), &st))
-		reject(1, missing_hint(q, path), "spec files do not match the contract: missing '%s'", path);
+	if (lstat(xstrfmt("%s/%s", top, path), &st)) {
+		/* what declares it: the definitions of this request and the records of HEAD */
+		for_each_string_list_item(item, &q->declared)
+			if (!strcmp(item->string, path))
+				string_list_append(&decl, item->util);
+		for (i = 0; i < q->s.nr; i++)
+			if (q->s.r[i]->old && declares(q->s.r[i]->old, path))
+				string_list_append(&decl, xstrfmt(".ait/%s", q->s.r[i]->id));
+		reject(1, missing_hint(q, path, &decl), "spec files do not match the contract: missing '%s'", path);
+	}
 }
 
 /*
@@ -2587,7 +2567,8 @@ static void related_paths(struct state *hs, struct state *ws, struct tree *w, st
 				struct record *r = (j ? hs : ws)->r[i];
 				struct string_list defs = STRING_LIST_INIT_DUP, declared = STRING_LIST_INIT_DUP;
 
-				if ((j && state_get(ws, r->id)) || !is_live(r) ||
+				/* a record is read as the work tree has it; one removed there has none (7.5.2) */
+				if ((j && (state_get(ws, r->id) || !in_work_tree(xstrfmt(".ait/%s", r->id)))) || !is_live(r) ||
 				    (strcmp(p->string, xstrfmt(".ait/%s", r->id)) && !declares(r, p->string)))
 					continue;
 				declared_by(out, xstrfmt(".ait/%s", r->id), NULL);
@@ -2649,9 +2630,7 @@ static void bundle_complete(struct request *q, struct string_list *paths, struct
 	for_each_string_list_item(item, &missing) {
 		printf("missing %s\n", item->string);
 		string_list_insert(&wrong, item->string);
-		add_hint(q, xstrfmt("%s, or stop declaring it in %s", blob_at(q->ht, item->string) ?
-				    xstrfmt("restore '%s' from HEAD", item->string) : xstrfmt("create '%s'", item->string),
-				    quoted_paths(item->util)));
+		add_hint(q, missing_hint(q, item->string, item->util));
 	}
 	for_each_string_list_item(item, &unstaged) {
 		printf("unstaged %s\n", item->string);
@@ -2757,8 +2736,7 @@ static void normalize(struct request *q, struct record *r, struct record *w)
 			if (kept_scope(r->old, ks[k], item->string))
 				string_list_append(&vals, kept_scope(r->old, ks[k], item->string));
 			else
-				scope_list(q, r, &vals, item->string, q->ht, in_state(r, "future") || ks[k] == CONSUMER,
-					   in_state(r, "future") && ks[k] == PROVIDER);
+				scope_list(q, r, ks[k], &vals, item->string, q->ht);
 		r->f[ks[k]] = vals;
 	}
 	string_list_clear(&r->f[CHECK], 0);
@@ -2864,6 +2842,7 @@ static int contract_commit(struct request *q)
 		if (!w->bad && strcmp(id, "init"))
 			normalize(q, r, w);
 	}
+	link_ends(&q->s);
 	expand_request(q);
 	return finish(q);
 }

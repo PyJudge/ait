@@ -85,6 +85,7 @@ struct state {
 	size_t alloc;
 	struct record **r;
 };
+void link_ends(struct state *s);
 void state_load(struct state *s, struct tree *t);
 struct record *record_decode(const char *id, const char *oid);
 struct record *record_written(const char *id, const char *text);
@@ -198,6 +199,7 @@ void def_inputs(struct tree *t, struct string_list *defs, struct string_list *ou
 char *def_text(struct tree *t, const char *path, const char *indent);
 char *def_paths(struct record *r);
 const char *engine_of(struct tree *t, const char *def);
+int pinned_as(struct tree *t, const char *line);
 int expand_files(struct record *r, struct tree *t);
 int files_match(struct record *r, struct tree *t);
 int declares(struct record *r, const char *path);

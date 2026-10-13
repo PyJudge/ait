@@ -434,6 +434,14 @@ static void entangle(struct state *s, struct string_list *set)
 	} while (set->nr != nr);
 }
 
+/* 2.3.3: the version of contract ID at COMMIT is an accident */
+int accident_at(const char *commit, const char *id)
+{
+	struct version *v = commit ? version_in(commit, id) : NULL;
+
+	return v && !v->r->bad && strcmp(id, "init") && accident(v) == 1;
+}
+
 /* 5.10: COMMIT holds the records of SET as versions that are no accidents, pass 5.9 a-d together and keep their bundles */
 static int holds(const char *commit, struct string_list *set)
 {
@@ -448,7 +456,7 @@ static int holds(const char *commit, struct string_list *set)
 
 		if (!string_list_has_string(set, r->id))
 			continue;
-		if (r->bad || (strcmp(r->id, "init") && accident(version_in(commit, r->id)) == 1))
+		if (r->bad || accident_at(commit, r->id))
 			return 0;
 		*state_add(&part, r->id) = *r;
 	}
@@ -498,27 +506,90 @@ static const char *find_good(struct string_list *set, struct state *gs)
 	return good;
 }
 
-/*
- * 5.10: into HINT, the records entangled with V's go back together to GOOD,
- * or go when there is none, and GOOD's spec files they declare come back
- * where the index or work tree lacks them
- */
-static void entangled_restore(struct verdict *v, struct strbuf *hint)
+/* 5.10 E_ACCIDENT: R's version at COMMIT, HEAD as it is judged, is an accident (2.3.3), as a verdict without its hint */
+static int accident_verdict(const char *commit, struct record *r, struct verdict *out)
 {
-	struct string_list set = STRING_LIST_INIT_DUP, restore = STRING_LIST_INIT_DUP, remove = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	struct state gs = { 0 };
-	const char *good;
+	if (!accident_at(commit, r->id))
+		return 0;
+	*out = (struct verdict){ 1, "accident", NULL, xstrfmt("'%s' at HEAD was changed outside ait's rules", r->id), r, NULL };
+	return 1;
+}
 
-	if (v->k)
-		string_list_insert(&set, v->k->id);
-	if (v->o)
-		string_list_insert(&set, v->o->id);
-	good = find_good(&set, &gs);
-	for_each_string_list_item(item, &set) {
+/* 5.10: the errors of the state at COMMIT, each a verdict under its first line: structure, format and bundle (5.9), and accidents */
+void commit_errors(const char *commit, struct string_list *out)
+{
+	struct tree *t = tree_load(commit);
+	struct state s = { 0 };
+	struct verdict v;
+	size_t i;
+
+	state_load(&s, t);
+	state_errors(&s, t, out);
+	for (i = 0; i < s.nr; i++)
+		if (accident_verdict(commit, s.r[i], &v))
+			string_list_insert(out, v.msg)->util = xmemdupz(&v, sizeof(v));
+}
+
+/*
+ * 5.10: HEAD's entangled records, from those its errors point to (a broken
+ * bundle aside, as the gate pins it again, 6.2), into *SET, and GOOD with its
+ * state into *GS. One set and one GOOD serve every repair and every request
+ * judged on HEAD, so they are sought once for each HEAD.
+ */
+static const char *head_good(struct string_list **set, struct state **gs)
+{
+	static struct string_list ids = STRING_LIST_INIT_DUP;
+	static struct state good_state;
+	static const char *good, *seen;
+	struct string_list errors = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+
+	if (head && (!seen || strcmp(seen, head))) {
+		seen = xstrdup(head);
+		string_list_clear(&ids, 0);
+		commit_errors(head, &errors);
+		for_each_string_list_item(item, &errors) {
+			struct verdict *e = item->util;
+
+			if (!strcmp(e->word, "incomplete"))
+				continue;
+			string_list_insert(&ids, e->k->id);
+			if (e->o)
+				string_list_insert(&ids, e->o->id);
+		}
+		good = ids.nr ? find_good(&ids, &good_state) : NULL;
+	}
+	*set = &ids;
+	*gs = &good_state;
+	return good;
+}
+
+/* ID is among HEAD's entangled records (5.10) */
+static int entangled_at_head(const char *id)
+{
+	struct string_list *set;
+	struct state *gs;
+
+	head_good(&set, &gs);
+	return string_list_has_string(set, id);
+}
+
+/*
+ * 5.10: into HINT, HEAD's entangled records go back together to GOOD, or go
+ * when there is none, and GOOD's spec files they declare come back where the
+ * index or work tree lacks them
+ */
+static void entangled_restore(struct strbuf *hint)
+{
+	struct string_list restore = STRING_LIST_INIT_DUP, remove = STRING_LIST_INIT_DUP, *set;
+	struct string_list_item *item;
+	struct state *gs;
+	const char *good = head_good(&set, &gs);
+
+	for_each_string_list_item(item, set) {
 		char *path = xstrfmt(".ait/%s", item->string);
 		struct entry *now = file_entry(head_tree(), path), *then = good ? file_entry(tree_load(good), path) : NULL;
-		struct record *r = good ? state_get(&gs, item->string) : NULL;
+		struct record *r = good ? state_get(gs, item->string) : NULL;
 		struct string_list_item *f;
 
 		if (then && (!now || strcmp(now->oid, then->oid) || strcmp(now->mode, then->mode)))
@@ -547,19 +618,19 @@ char *head_repair(struct verdict *v, int rerun)
 	struct strbuf hint = STRBUF_INIT;
 	const char *commit = "'ait contract commit -m <why>'";
 
-	if (v->k && v->k->mend) {
+	if (v->k->mend) {
 		/* what is no record goes; it is committed only when HEAD has it */
 		strbuf_addstr(&hint, v->k->mend);
 		if (!file_entry(head_tree(), xstrfmt(".ait/%s", v->k->id)))
 			commit = NULL;
-	} else if (v->k && !strcmp(v->k->id, "init")) {
+	} else if (!strcmp(v->k->id, "init")) {
 		/* 2.1.2a: the init file has one content */
 		strbuf_addstr(&hint, "rewrite '.ait/init' as the single line 'version 2' with mode 100644");
 		commit = through_ait(single(".ait/init"));
-	} else if (strcmp(v->word, "incomplete")) {
-		/* back to GOOD; a broken bundle (5.8 E_INCOMPLETE) needs no restore, as the gate pins it again (6.2) */
-		entangled_restore(v, &hint);
-	} else if (v->k && expand_files(record_copy(v->k), head_tree())) {
+	} else if (strcmp(v->word, "incomplete") || entangled_at_head(v->k->id)) {
+		/* back to GOOD; a broken bundle (5.8 E_INCOMPLETE) entangled with no other error needs none, as the gate pins it again (6.2) */
+		entangled_restore(&hint);
+	} else if (expand_files(record_copy(v->k), head_tree())) {
 		/* but not when the gate cannot pin it again, a spec file it declares not at HEAD: no command mends that (5.9a) */
 		return NULL;
 	}
@@ -568,23 +639,6 @@ char *head_repair(struct verdict *v, int rerun)
 	if (rerun)
 		strbuf_addstr(&hint, ", then rerun this command");
 	return strbuf_detach(&hint, NULL);
-}
-
-/* 2.3.3: the version of contract ID at COMMIT is an accident */
-int accident_at(const char *commit, const char *id)
-{
-	struct version *v = commit ? version_in(commit, id) : NULL;
-
-	return v && !v->r->bad && strcmp(id, "init") && accident(v) == 1;
-}
-
-/* 5.10 E_ACCIDENT: R's version at COMMIT, HEAD as it is judged, is an accident (2.3.3), as a verdict without its hint */
-static int accident_verdict(const char *commit, struct record *r, struct verdict *out)
-{
-	if (!accident_at(commit, r->id))
-		return 0;
-	*out = (struct verdict){ 1, "accident", NULL, xstrfmt("'%s' at HEAD was changed outside ait's rules", r->id), r, NULL };
-	return 1;
 }
 
 /* 5.10: R of HEAD is an accident (2.3.3), as a verdict whose repair reruns the command when RERUN */
@@ -596,21 +650,6 @@ int accident_at_head(struct record *r, struct verdict *out, int rerun)
 	return 1;
 }
 
-/* 5.10: the errors of the state at COMMIT, each a verdict under its first line: structure, format and bundle (5.9), and accidents */
-void commit_errors(const char *commit, struct string_list *out)
-{
-	struct tree *t = tree_load(commit);
-	struct state s = { 0 };
-	struct verdict v;
-	size_t i;
-
-	state_load(&s, t);
-	state_errors(&s, t, out);
-	for (i = 0; i < s.nr; i++)
-		if (accident_verdict(commit, s.r[i], &v))
-			string_list_insert(out, v.msg)->util = xmemdupz(&v, sizeof(v));
-}
-
 /*
  * 5.10: the base versions a request on HEAD's records S judges the records
  * it writes, WRITTEN, against: for those entangled with HEAD's errors (its
@@ -620,29 +659,16 @@ void commit_errors(const char *commit, struct string_list *out)
  */
 void base_versions(struct state *s, struct string_list *written)
 {
-	struct string_list set = STRING_LIST_INIT_DUP, errors = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct state gs = { 0 };
+	struct string_list *set;
+	struct state *gs;
 	const char *good;
 
 	if (!written->nr)
 		return;
-	commit_errors(head, &errors);
-	for_each_string_list_item(item, &errors) {
-		struct verdict *e = item->util;
-
-		/* a broken bundle is pinned again by the gate (6.2), so no version of it is wrong */
-		if (!strcmp(e->word, "incomplete"))
-			continue;
-		string_list_insert(&set, e->k->id);
-		if (e->o)
-			string_list_insert(&set, e->o->id);
-	}
-	if (!set.nr)
-		return;
-	good = find_good(&set, &gs);
-	for_each_string_list_item(item, &set) {
-		struct record *r = state_get(s, item->string), *then = good ? state_get(&gs, item->string) : NULL;
+	good = head_good(&set, &gs);
+	for_each_string_list_item(item, set) {
+		struct record *r = state_get(s, item->string), *then = good ? state_get(gs, item->string) : NULL;
 		const char *blob = good ? blob_at(tree_load(good), xstrfmt(".ait/%s", item->string)) : NULL;
 
 		if (!r || !strcmp(r->id, "init") || !string_list_has_string(written, r->id) || !strcmp(r->base ?: "", blob ?: ""))

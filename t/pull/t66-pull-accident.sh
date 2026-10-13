@@ -268,4 +268,14 @@ want "MF2: specs/z.yaml stays my Z's pin" test "$(at HEAD specs/z.yaml)" = "$(pi
 want "MF2: no specs/w.yaml" test -z "$(at HEAD specs/w.yaml)"
 want "MF2: the code comes (src/stock.c is a3's)" test "$(at HEAD src/stock.c)" = "$(at "$A3" src/stock.c)"
 want "MF2: a merge commit of HEAD and a3" test "$(parents)" = 2 -a "$(par 2)" = "$A3"
+# RV3s  RV3 with another file staged: a pull that makes no merge leaves the index's other changes alone (7.12.0)
+pbase
+git checkout -q -b a; cond D c-A; DA=$(rec D); A1=$(c "a: D c-A"); git checkout -q master; nohook merge -q --ff-only a
+tick; nohook revert --no-edit HEAD >/dev/null
+echo extra > other.txt; git add other.txt
+pull "$D"
+want "RV3s: pull D passes with other.txt staged" test "$rc" = 0
+want "RV3s: D is D@A" test "$(recat HEAD D)" = "$DA"
+want "RV3s: other.txt stays staged" sh -c "git diff --cached --name-only | grep -qx other.txt"
+
 done_testing

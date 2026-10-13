@@ -743,18 +743,39 @@ struct record *record_from_entry(struct entry *e, const char *id, int written)
 
 	if (!strcmp(id, "init")) {
 		r->bad = text && !strcmp(text, "version 2\n") ? NULL : xstrdup("must be the single line 'version 2'");
-	} else if (strcmp(e->mode, "100644") || !id_ok(id)) {
-		/* 7.12: malformed entries still declare changes that must be excluded. */
-		if (id_ok(id))
-			*r = *record_decode(id, e->oid);
+	} else if (!id_ok(id)) {
 		r->bad = xstrdup("not a record path");
 		r->mend = xstrfmt("remove '.ait/%s'", id);
+	} else if (strcmp(e->mode, "100644")) {
+		/* 2.1.3; 7.12: a malformed entry still declares changes that must be excluded */
+		*r = *record_decode(id, e->oid);
+		r->bad = xstrdup("its mode is not 100644");
 	} else if (!text) {
 		r->bad = xstrdup("not a text file");
 	} else {
 		*r = *(written ? record_written(id, text) : record_decode(id, e->oid));
 	}
 	return r;
+}
+
+/* 5.9 c: a link whose demand or offer does not exist is malformed, as it was; what went is its end */
+void link_ends(struct state *s)
+{
+	size_t i;
+
+	for (i = 0; i < s->nr; i++) {
+		struct record *r = s->r[i], *d, *o;
+
+		if (*r->id != 'u' || r->bad)
+			continue;
+		d = link_end(s, r, 0);
+		o = link_end(s, r, 1);
+		if (!d || !o || *d->id != 'D' || *o->id != 'O') {
+			r->bad = xstrdup("its demand or offer does not exist");
+			if (r->old)
+				r->old->bad = r->bad;
+		}
+	}
 }
 
 /* the records of T; a malformed one carries why in ->bad (spec 5.9 a-c, 5.10) */
@@ -774,18 +795,7 @@ void state_load(struct state *s, struct tree *t)
 		r->old = record_copy(r);
 		r->base = xstrdup(e->oid);
 	}
-	for (i = 0; i < s->nr; i++) {
-		struct record *r = s->r[i], *d, *o;
-
-		if (*r->id != 'u' || r->bad)
-			continue;
-		d = link_end(s, r, 0);
-		o = link_end(s, r, 1);
-		if (!d || !o || *d->id != 'D' || *o->id != 'O') {
-			/* the link is as it was; what went is its end */
-			r->bad = r->old->bad = xstrdup("its demand or offer does not exist");
-		}
-	}
+	link_ends(s);
 }
 
 static void hunk_part(const char *text, int *start, int *length)
@@ -1032,12 +1042,8 @@ static int record_error(struct state *s, struct record *r, struct verdict *v)
 	o = link_end(s, r, 1);
 	if (!in_state(r, "undertaken") || !is_current(o) || !in_state(d, "future"))
 		return 0;
-	fail_with(v, 1, "state", was_current(d) ?
-		  xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: "
-			  "'ait future amend %s future amend %s -m <why>'", d->id, o->id, d->id, o->id) :
-		  xstrfmt("undertake it with a future offer: 'ait future offer %s %s as o undertake %s o -m <why>'",
-			  input_scopes(d, PROVIDER, head_tree()), def_paths(d), d->id),
-		  xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
+	/* the hint is the refusing entry's, which knows how it is fixed there (5.9a hints 10, 11) */
+	fail_with(v, 1, "state", NULL, xstrfmt("not allowed: current '%s' undertakes future '%s'", o->id, d->id));
 	v->k = d;
 	v->o = o;
 	return 1;
@@ -1945,6 +1951,14 @@ static int file_line(struct string_list *out, struct tree *t, const char *path, 
 	return 0;
 }
 
+/* the file line LINE pins its path as T has it (2.4) */
+int pinned_as(struct tree *t, const char *line)
+{
+	struct string_list now = STRING_LIST_INIT_DUP;
+
+	return !file_line(&now, t, scope_path(line), strrchr(line, ' ') + 1) && !strcmp(now.items[0].string, line);
+}
+
 /*
  * spec 2.4, 6.2: R's file lines again at T: its definitions and what they
  * declare, pinned at T; -1 when T lacks one. A path in CONFLICTS is unmerged
@@ -1996,14 +2010,10 @@ static int files_match_except(struct record *r, struct tree *t, struct string_li
 	struct record *x;
 
 	/* a definition not as R pins it is a mismatch already, so what it declares is not read (user decision 53) */
-	for_each_string_list_item(item, &r->f[FILES]) {
-		struct string_list now = STRING_LIST_INIT_DUP;
-		const char *path = scope_path(item->string);
-
-		if (is_def(item->string) && !(conflicts && string_list_has_string(conflicts, path)) &&
-		    (file_line(&now, t, path, "def") || strcmp(now.items[0].string, item->string)))
+	for_each_string_list_item(item, &r->f[FILES])
+		if (is_def(item->string) && !(conflicts && string_list_has_string(conflicts, scope_path(item->string))) &&
+		    !pinned_as(t, item->string))
 			return 0;
-	}
 	x = record_copy(r);
 	return !expand_files_except(x, t, conflicts) && !strcmp(record_text(x, 1u << FILES), record_text(r, 1u << FILES));
 }
@@ -2084,8 +2094,8 @@ int at_head(struct verdict *v)
 		}
 	}
 	if (!strcmp(v->word, "incomplete"))
-		return v->k && string_list_has_string(&broken, v->k->id);
-	return (v->k && string_list_has_string(&held, v->k->id)) || (v->o && string_list_has_string(&held, v->o->id));
+		return string_list_has_string(&broken, v->k->id);
+	return string_list_has_string(&held, v->k->id) || (v->o && string_list_has_string(&held, v->o->id));
 }
 
 /* R is a future or current demand or offer that has PATH as a spec file */

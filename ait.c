@@ -843,11 +843,9 @@ static char *push_record(const char *p, const char *e, char **local)
 static int pre_push(void)
 {
 	struct strbuf in = STRBUF_INIT;
-	const char *p, *e, *branch;
+	const char *p, *e;
 	char *oid, *local, commit[48];
-	int detached;
 
-	branch = line1(git_run(NULL, NULL, &detached, "symbolic-ref -q HEAD"));
 	strbuf_read(&in, 0, 0);
 	/* LOCAL may hold line feeds: a line that ends no record joins the next */
 	for (p = e = in.buf; (e = strchr(e, '\n')); e++) {
@@ -864,7 +862,7 @@ static int pre_push(void)
 		if (!check_state(&s, tree_load(commit), &v))
 			continue;
 		/* 7.1.6: ait records on a branch only, so a commit that is not this branch's HEAD has no repair here */
-		reject(v.code, !detached && (!strcmp(local, "HEAD") || !strcmp(local, branch)) ? head_repair(&v, 0) : NULL,
+		reject(v.code, headref && (!strcmp(local, "HEAD") || !strcmp(local, headref)) ? head_repair(&v, 0) : NULL,
 		       "%s", v.msg);
 	}
 	/* 5.6: a message is one line */
@@ -1019,12 +1017,9 @@ static char *back_commands(struct state *was, struct version *then, struct versi
 	if (*t->id == 'X' || !is_live(t) || !is_live(n) || !files_match(n, head_tree()) || strstr(consumer, "<scope>") ||
 	    strstr(provider, "<scope>"))
 		return NULL;
-	for_each_string_list_item(item, &n->f[FILES]) {
-		struct entry *e = file_entry(at, scope_path(item->string));
-
-		if (!e || !starts_with(item->string, xstrfmt("%s %s %s ", e->path, e->mode, e->oid)))
+	for_each_string_list_item(item, &n->f[FILES])
+		if (!pinned_as(at, item->string))
 			string_list_append(&restore, scope_path(item->string));
-	}
 	/* 7.3.1: what NOW has otherwise, as input at AT (5.9a), and "-" for the rest, which a helper keeps unpinned */
 	new_consumer = strcmp(consumer, input_scopes(t, CONSUMER, at));
 	new_provider = strcmp(provider, input_scopes(t, PROVIDER, at));
@@ -1075,7 +1070,7 @@ static int post_hook(const char *before)
 		struct version *then = version_in(before, now.r[i]->id), *v_now = version_in(head, now.r[i]->id);
 		char *back;
 
-		if (!then || !v_now || then == v_now || !contains(then, v_now))
+		if (!then || !v_now || !strcmp(then->oid, v_now->oid) || !contains(then, v_now))
 			continue;
 		warning("this commit put '%s' back to an older version; only this branch has it", now.r[i]->id);
 		if ((back = back_commands(&was, then, v_now, tree_load(before))))
@@ -1187,7 +1182,6 @@ static int cmd_hook(int argc, const char **argv)
 	return 0;
 }
 
-/* spec 3.9: two scopes overlap; "DIR/" and "/" cover what is under them */
 /* the scope ARG of todo overlaps one of R's scopes or spec files at T, a drop's by its target's (7.8.1) */
 static int named(struct state *s, struct record *r, const char *arg, struct tree *t)
 {

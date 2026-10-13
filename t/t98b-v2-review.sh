@@ -178,7 +178,7 @@ run ait contract add .ait/$O
 check "contract add of a filled record beside an unfilled frame" sh -c "[ $rc = 0 ] && grep -qx 'staged .ait/$O' '$T/out'"
 run ait contract add .ait/$D
 check "the frame itself: its missing definition is a missing line" grep -qx "missing PATH" "$T/out"
-check "with 5.8's hint" err_has "hint: create 'PATH', or stop declaring it in '.ait/$D'"
+check "with 5.8's hint" err_has "hint: create it or stop declaring it in '.ait/$D'"
 
 # H9 is judged on the commit a command makes, and before a refusal's error on HEAD (5.9a)
 prep
@@ -813,4 +813,53 @@ tick; ait demand src/order.c src/stock.c specs/p.yaml --force -m d >"$T/out" 2>&
 sed 's/^state current/state future/' ".ait/$D" > "$T/rec" && cat "$T/rec" > ".ait/$D"; git add ".ait/$D"; tick; git commit -q --no-verify -m nv >/dev/null 2>&1
 run ait todo
 check "the skip carries the restore" grep -q "^hint: restore '.ait/$D' as in " "$T/err"
+# 5.9 c: a link's ends exist, judged for every state a request builds, contract commit's too
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(new_id)
+mkdir -p .ait/undertake; printf 'state undertaken\n' > ".ait/undertake/D000000000000-$O"
+ait contract add ".ait/undertake/D000000000000-$O" >/dev/null 2>&1
+tick; run ait contract commit -m x
+check "a link to no demand: refused for its form, no crash" sh -c "[ $rc = 128 ] && grep -q 'its demand or offer does not exist' '$T/err'"
+# 5.9a hint 3: contract commit's refusal of a closed end gives the in-request form
+prep
+tick; ait future demand src/order.c src/stock.c specs/p.yaml -m d >"$T/out" 2>&1; D=$(new_id)
+tick; ait future offer src/stock.c specs/w.yaml -m o >"$T/out" 2>&1; O=$(new_id)
+tick; ait future cancel "$D" -m c >/dev/null 2>&1
+mkdir -p .ait/undertake; printf 'state undertaken\n' > ".ait/undertake/$D-$O"
+ait contract add ".ait/undertake/$D-$O" >/dev/null 2>&1
+tick; run ait contract commit -m x
+check "the closed demand's hint is in the request, not a helper" sh -c "[ $rc = 1 ] && grep -q 'in this request' '$T/err' && ! grep -q \"'ait future demand\" '$T/err'"
+# 7.5.2, 2.1.4: a definition that is a symbolic link is not there as a spec file, for contract add too
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >/dev/null 2>&1
+echo 'body: y' > specs/real.yaml; rm specs/p.yaml; ln -s real.yaml specs/p.yaml
+run ait contract add specs/p.yaml
+check "contract add names the linked definition as missing" sh -c "[ $rc = 1 ] && grep -qx 'missing specs/p.yaml' '$T/out'"
+# 5.8 E_INCOMPLETE: one form of the missing hint for helpers and contract add
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >/dev/null 2>&1
+printf 'body: x\ninputs: [tests/none.sh]\n' > specs/p.yaml
+run ait contract add specs/p.yaml
+check "contract add: create it or stop declaring it in DECL" grep -qx "hint: create it or stop declaring it in 'specs/p.yaml'" "$T/err"
+# 7.5.2: a record removed from the work tree has no related paths; contract add stages the removal, the gate judges it
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(new_id)
+rm ".ait/$O"
+run ait contract add ".ait/$O"
+check "contract add stages a removed record" sh -c "[ $rc = 0 ] && grep -qx 'staged .ait/$O' '$T/out'"
+tick; run ait contract commit -m x
+check "and the gate refuses removing it" err_has "records are never removed"
+# 7.12.1: a pull with nothing new to write once 7.12.5 has applied is "already", with --force too
+prep
+tick; ait future demand src/order.c src/stock.c specs/p.yaml -m d >"$T/out" 2>&1; D=$(new_id)
+H=$(git rev-parse HEAD)
+tick; run ait contract pull "$D" --force -m why
+check "nothing to take with --force: already, no commit" sh -c "[ $rc = 0 ] && grep -q '^already' '$T/out' && [ \$(git rev-parse HEAD) = $H ]"
+# 7.1.8: a commit that only changes a record's mode does not put it back to an older version
+prep
+tick; ait future offer src/stock.c specs/p.yaml -m o >"$T/out" 2>&1; O=$(new_id)
+chmod +x ".ait/$O"; git add ".ait/$O"
+tick; run git commit -qm mode --no-verify
+check "no 'put back' for a mode change" sh -c "! grep -q 'back to an older version' '$T/err'"
+check "a record with the wrong mode is restored, not removed" sh -c "grep -q \"^hint: restore '.ait/$O' as in \" '$T/err' && ! grep -q \"remove '.ait/$O'\" '$T/err'"
 done_testing
