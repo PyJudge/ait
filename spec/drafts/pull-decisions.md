@@ -767,3 +767,10 @@ r24 검수 뒤 사용자와 하나씩 정한 것을 적는다. `pull-criteria.md
 250. **작업 폴더에서 지운 레코드는 관련 경로가 없다**(7.5.2): HEAD의 판으로 관련 경로를 읽어 그 레코드 자신을 `missing`으로 거절했다. 이제 그 삭제를 stage하고 관문이 판정한다.
 251. **validate의 5.9 d 판정은 hint를 갖지 않는다**: 그 hint는 어디서도 쓰이지 않았다(관문은 다시 만들고 pull은 덮어쓴다). hint는 거절하는 쪽이 고른다.
 252. **pull의 고르기 hint에서 고른 수(순서)는 만들 때 센다**: 만든 명령 문장을 다시 읽어 세던 것을 지웠다.
+253. **한 명세 파일의 고정은 정확히 하나여야 맞는다**(코드 리뷰): `restore_pins`가 `incompatible_pins`를 쓰게 합치면서 "둘 이상"만 보아, 고정이 없는 경로(읽지 못한 행)에서 빈 목록을 읽을 수 있었다. 판정은 예전 뜻대로 "하나가 아니면"이다.
+254. **레코드 경로가 없을 때의 hint는 복원뿐이다**(코드 리뷰): 레코드를 선언하는 것은 없으므로 `or stop declaring it`을 붙이지 않는다. 복원할 HEAD 판도 없으면 hint가 없다.
+
+**V. 판정과 안내의 구조** (2026-10-13, 사용자: "깃은 어떻게 판정을 불러서 처리해? 우리는 왜 이렇게 많아", "함수로 알고리즘으로 바꾸라고 했는데"). git은 판정을 아는 층이 한 번 하고 이유 코드로 돌려주며(`transport.c` REJECT_*, `unpack-trees.h` ERROR_*), 상태를 한 번 모으고(`wt_status_collect`), 안내는 이유에서 고른다(`builtin/push.c:401`, `ERRORMSG`). ait는 같은 판정을 부르는 쪽마다 다시 했다.
+
+255. **한 커밋의 판정은 한 번 모은다**(`judge`): 그 커밋의 레코드, validate의 오류(5.9 a~e, validate 차례), 사고 판(2.3.3). HEAD라면 그 오류들이 얽은 레코드와 GOOD도 처음 물을 때 한 번 구한다. `head_error`·`at_head`·`accident_at_head`·GOOD·post-commit의 새 오류 비교가 모두 이것을 읽는다(전에는 HEAD의 오류를 세 곳이 각자 다시 계산했다). validate도 한 함수다: `state_errors`가 모든 오류를 validate 차례로 내고 `check_state`는 그 첫째다.
+256. **전이 hint는 명세 5.9a의 목록 그대로 한 함수(`transition_hint`)가 1번부터 차례로 판정한다**: 도우미·contract commit·fulfill·commit·연결의 끝이 각자 일부를 판정하던 다섯 곳(`step_hint`, `direct_hint`, `select_promise`, `transitions`, `gate_hint`의 10·11번)을 합쳤다. 형만 입구에 따라 고른다. validate 판정의 hint(`gate_hint`)는 이유 낱말(format, incomplete, state)로 고르고, 5.9 d는 그 연결의 전이 hint다. hint 1은 contract commit이 쓴 그 레코드에는 쓰지 않는다(수정이 그 파일에 있어 복원이 지운다).

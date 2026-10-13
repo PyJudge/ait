@@ -121,8 +121,7 @@ struct verdict {
 };
 int check_state(struct state *s, struct tree *t, struct verdict *v);
 int check_records(struct state *s, struct verdict *v);
-void state_errors(struct state *s, struct tree *t, struct string_list *out);
-int at_head(struct verdict *v);
+void state_errors(struct state *s, struct tree *t, struct string_list *conflicts, struct string_list *out);
 void integrate_at(struct tree *t);
 void integration_validate(struct tree *t);
 void integration_message(const char *path);
@@ -160,7 +159,17 @@ char *head_repair(struct verdict *v, int rerun);
 void base_versions(struct state *s, struct string_list *written);
 int accident_at(const char *commit, const char *id);
 int accident_at_head(struct record *r, struct verdict *out, int rerun);
-void commit_errors(const char *commit, struct string_list *out);
+/* 5.10: a commit's state judged once (judge()): its records and errors; for HEAD, GOOD and what its errors entangle */
+struct judgment {
+	struct state s;
+	struct string_list errors;
+	struct string_list entangled;
+	struct state good_state;
+	const char *good;
+	int good_sought;
+};
+struct judgment *judge(const char *commit);
+int at_head(struct verdict *v);
 int head_error(struct verdict *v);
 
 /* record.c: names: paths, scopes, object, session and agent IDs (3, 1.10, 7.2.1) */

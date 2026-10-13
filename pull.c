@@ -680,7 +680,7 @@ static const char *incompatible_pins(struct state *state)
 	for (i = 0; i < state->nr; i++)
 		if (is_live(state->r[i]))
 			for_each_string_list_item(item, &state->r[i]->f[FILES])
-				if (pins_at(state, scope_path(item->string)).nr > 1)
+				if (pins_at(state, scope_path(item->string)).nr != 1)
 					return scope_path(item->string);
 	return NULL;
 }
@@ -1415,7 +1415,7 @@ static void check_integration(struct pull *p, struct string_list *sources, struc
 	struct string_list_item *item;
 	size_t i;
 
-	state_errors(state, t, &errors);
+	state_errors(state, t, NULL, &errors);
 	for_each_string_list_item(item, &errors) {
 		struct verdict *v = item->util;
 

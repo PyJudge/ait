@@ -276,6 +276,6 @@ echo extra > other.txt; git add other.txt
 pull "$D"
 want "RV3s: pull D passes with other.txt staged" test "$rc" = 0
 want "RV3s: D is D@A" test "$(recat HEAD D)" = "$DA"
-want "RV3s: other.txt stays staged" sh -c "git diff --cached --name-only | grep -qx other.txt"
+want "RV3s: other.txt stays staged, not committed" sh -c "git diff --cached --name-only | grep -qx other.txt && ! git cat-file -e HEAD:other.txt 2>/dev/null"
 
 done_testing

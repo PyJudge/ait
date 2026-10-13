@@ -515,63 +515,82 @@ static int accident_verdict(const char *commit, struct record *r, struct verdict
 	return 1;
 }
 
-/* 5.10: the errors of the state at COMMIT, each a verdict under its first line: structure, format and bundle (5.9), and accidents */
-void commit_errors(const char *commit, struct string_list *out)
+/*
+ * 5.10: the state at COMMIT judged once, as git's wt_status_collect gathers
+ * once what it prints: its records, and its errors, each a verdict under its
+ * first line in this order: validate's (5.9 a-e), then the accidents (2.3.3)
+ */
+struct judgment *judge(const char *commit)
 {
+	static struct string_list judged = STRING_LIST_INIT_DUP;
+	struct string_list_item *item = string_list_lookup(&judged, commit);
 	struct tree *t = tree_load(commit);
-	struct state s = { 0 };
+	struct judgment *j;
 	struct verdict v;
 	size_t i;
 
-	state_load(&s, t);
-	state_errors(&s, t, out);
-	for (i = 0; i < s.nr; i++)
-		if (accident_verdict(commit, s.r[i], &v))
-			string_list_insert(out, v.msg)->util = xmemdupz(&v, sizeof(v));
+	if (item)
+		return item->util;
+	j = xcalloc(1, sizeof(*j));
+	string_list_init_dup(&j->errors);
+	string_list_init_dup(&j->entangled);
+	state_load(&j->s, t);
+	state_errors(&j->s, t, NULL, &j->errors);
+	for (i = 0; i < j->s.nr; i++)
+		if (accident_verdict(commit, j->s.r[i], &v))
+			string_list_append(&j->errors, v.msg)->util = xmemdupz(&v, sizeof(v));
+	string_list_insert(&judged, commit)->util = j;
+	return j;
 }
 
 /*
- * 5.10: HEAD's entangled records, from those its errors point to (a broken
- * bundle aside, as the gate pins it again, 6.2), into *SET, and GOOD with its
- * state into *GS. One set and one GOOD serve every repair and every request
- * judged on HEAD, so they are sought once for each HEAD.
+ * 5.10: HEAD's judgment with its entangled records, from those its errors
+ * point to (a broken bundle aside, as the gate pins it again, 6.2), and GOOD;
+ * one set and one GOOD serve every repair and every request on HEAD
  */
-static const char *head_good(struct string_list **set, struct state **gs)
+static struct judgment *head_good(void)
 {
-	static struct string_list ids = STRING_LIST_INIT_DUP;
-	static struct state good_state;
-	static const char *good, *seen;
-	struct string_list errors = STRING_LIST_INIT_DUP;
+	struct judgment *j = judge(head);
 	struct string_list_item *item;
 
-	if (head && (!seen || strcmp(seen, head))) {
-		seen = xstrdup(head);
-		string_list_clear(&ids, 0);
-		commit_errors(head, &errors);
-		for_each_string_list_item(item, &errors) {
-			struct verdict *e = item->util;
+	if (j->good_sought++)
+		return j;
+	for_each_string_list_item(item, &j->errors) {
+		struct verdict *e = item->util;
 
-			if (!strcmp(e->word, "incomplete"))
-				continue;
-			string_list_insert(&ids, e->k->id);
+		if (strcmp(e->word, "incomplete")) {
+			string_list_insert(&j->entangled, e->k->id);
 			if (e->o)
-				string_list_insert(&ids, e->o->id);
+				string_list_insert(&j->entangled, e->o->id);
 		}
-		good = ids.nr ? find_good(&ids, &good_state) : NULL;
 	}
-	*set = &ids;
-	*gs = &good_state;
-	return good;
+	j->good = j->entangled.nr ? find_good(&j->entangled, &j->good_state) : NULL;
+	return j;
 }
 
-/* ID is among HEAD's entangled records (5.10) */
-static int entangled_at_head(const char *id)
+/*
+ * 5.9a transition hint 1, 7.1.3-7, 5.8: HEAD had the error V already, so the
+ * state judged now did not make it: a record V points to is one that a
+ * structure error of HEAD (5.9 a-d) points to, or, for a broken bundle, one
+ * whose bundle HEAD breaks too
+ */
+int at_head(struct verdict *v)
 {
-	struct string_list *set;
-	struct state *gs;
+	struct string_list held = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	int bundle = !strcmp(v->word, "incomplete");
 
-	head_good(&set, &gs);
-	return string_list_has_string(set, id);
+	/* a broken bundle answers a broken bundle, a structure error a structure error; an accident is no validate error */
+	for_each_string_list_item(item, &judge(head)->errors) {
+		struct verdict *e = item->util;
+
+		if (strcmp(e->word, "accident") && bundle == !strcmp(e->word, "incomplete")) {
+			string_list_insert(&held, e->k->id);
+			if (e->o)
+				string_list_insert(&held, e->o->id);
+		}
+	}
+	return string_list_has_string(&held, v->k->id) || (v->o && string_list_has_string(&held, v->o->id));
 }
 
 /*
@@ -581,15 +600,15 @@ static int entangled_at_head(const char *id)
  */
 static void entangled_restore(struct strbuf *hint)
 {
-	struct string_list restore = STRING_LIST_INIT_DUP, remove = STRING_LIST_INIT_DUP, *set;
+	struct string_list restore = STRING_LIST_INIT_DUP, remove = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct state *gs;
-	const char *good = head_good(&set, &gs);
+	struct judgment *j = head_good();
+	const char *good = j->good;
 
-	for_each_string_list_item(item, set) {
+	for_each_string_list_item(item, &j->entangled) {
 		char *path = xstrfmt(".ait/%s", item->string);
 		struct entry *now = file_entry(head_tree(), path), *then = good ? file_entry(tree_load(good), path) : NULL;
-		struct record *r = good ? state_get(gs, item->string) : NULL;
+		struct record *r = good ? state_get(&j->good_state, item->string) : NULL;
 		struct string_list_item *f;
 
 		if (then && (!now || strcmp(now->oid, then->oid) || strcmp(now->mode, then->mode)))
@@ -627,7 +646,7 @@ char *head_repair(struct verdict *v, int rerun)
 		/* 2.1.2a: the init file has one content */
 		strbuf_addstr(&hint, "rewrite '.ait/init' as the single line 'version 2' with mode 100644");
 		commit = through_ait(single(".ait/init"));
-	} else if (strcmp(v->word, "incomplete") || entangled_at_head(v->k->id)) {
+	} else if (strcmp(v->word, "incomplete") || string_list_has_string(&head_good()->entangled, v->k->id)) {
 		/* back to GOOD; a broken bundle (5.8 E_INCOMPLETE) entangled with no other error needs none, as the gate pins it again (6.2) */
 		entangled_restore(&hint);
 	} else if (expand_files(record_copy(v->k), head_tree())) {
@@ -641,13 +660,21 @@ char *head_repair(struct verdict *v, int rerun)
 	return strbuf_detach(&hint, NULL);
 }
 
-/* 5.10: R of HEAD is an accident (2.3.3), as a verdict whose repair reruns the command when RERUN */
+/* 5.10: R of HEAD is an accident (2.3.3), as HEAD's verdict whose repair reruns the command when RERUN */
 int accident_at_head(struct record *r, struct verdict *out, int rerun)
 {
-	if (!accident_verdict(head, r, out))
-		return 0;
-	out->hint = head_repair(out, rerun);
-	return 1;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &judge(head)->errors) {
+		struct verdict *e = item->util;
+
+		if (!strcmp(e->word, "accident") && !strcmp(e->k->id, r->id)) {
+			*out = *e;
+			out->hint = head_repair(out, rerun);
+			return 1;
+		}
+	}
+	return 0;
 }
 
 /*
@@ -660,15 +687,15 @@ int accident_at_head(struct record *r, struct verdict *out, int rerun)
 void base_versions(struct state *s, struct string_list *written)
 {
 	struct string_list_item *item;
-	struct string_list *set;
-	struct state *gs;
+	struct judgment *j;
 	const char *good;
 
 	if (!written->nr)
 		return;
-	good = head_good(&set, &gs);
-	for_each_string_list_item(item, set) {
-		struct record *r = state_get(s, item->string), *then = good ? state_get(gs, item->string) : NULL;
+	j = head_good();
+	good = j->good;
+	for_each_string_list_item(item, &j->entangled) {
+		struct record *r = state_get(s, item->string), *then = good ? state_get(&j->good_state, item->string) : NULL;
 		const char *blob = good ? blob_at(tree_load(good), xstrfmt(".ait/%s", item->string)) : NULL;
 
 		if (!r || !strcmp(r->id, "init") || !string_list_has_string(written, r->id) || !strcmp(r->base ?: "", blob ?: ""))
@@ -680,19 +707,14 @@ void base_versions(struct state *s, struct string_list *written)
 	}
 }
 
-/* 5.10: HEAD's first error (structure, format, bundle, then accident), with the hint that mends it; 0 when none */
+/* 5.10: HEAD's first error (validate's, then an accident), with the hint that mends it; 0 when none */
 int head_error(struct verdict *v)
 {
-	struct state s = { 0 };
-	size_t i;
+	struct judgment *j = judge(head);
 
-	state_load(&s, head_tree());
-	if (check_state(&s, head_tree(), v)) {
-		v->hint = head_repair(v, 0);
-		return v->code;
-	}
-	for (i = 0; i < s.nr; i++)
-		if (accident_at_head(s.r[i], v, 0))
-			return 1;
-	return 0;
+	if (!j->errors.nr)
+		return 0;
+	*v = *(struct verdict *)j->errors.items[0].util;
+	v->hint = head_repair(v, 0);
+	return v->code;
 }

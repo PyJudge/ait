@@ -1023,14 +1023,10 @@ static char *restore_it(struct record *r)
  * 5.9a transition hint 3: an ended K stays as it is, so what is needed again
  * is a new contract, as H6 makes it, or within contract commit's request a new
  * record with K's lines before the refused R is restored; a drop's withdraw
- * form is not written, as future drop is not supported here. Hint 1 comes first.
+ * form is not written, as future drop is not supported here
  */
 static char *closed_hint(struct request *q, struct record *k, struct record *r)
 {
-	char *first = head_first(k);
-
-	if (first)
-		return first;
 	if (*k->id == 'X')
 		return xstrfmt("'%s' is closed%s", k->id, q->direct ? xstrfmt("\n%s", restore_it(r)) : "");
 	if (q->direct)
@@ -1122,55 +1118,82 @@ static char *undertake_hint(struct request *q, struct record *d, struct record *
 }
 
 /*
- * 5.9a transition hints 2-8 and 12 in contract commit's form, for record R
- * written from state FROM to TO: edits of its files in this request; "restore
- * it" brings the record back as HEAD has it, or removes a new one
+ * 5.9a transition hints: for R refused on its step FROM -> TO, or on its link
+ * end END that is no live contract, the first of the list that applies, in
+ * this entry's form: the helper's request changed, contract commit's files,
+ * or for fulfill and commit a helper run first. The record contract commit
+ * writes carries its change in its file, which hint 1's restore would throw
+ * away; its forms restore it once the change is moved. What only a
+ * hand-written record can do (2, 4, 6) is contract commit's alone.
  */
-static char *direct_hint(struct request *q, struct record *r, const char *from, const char *to)
+static char *transition_hint(struct request *q, struct record *r, const char *from, const char *to, struct record *end)
 {
-	char *path = xstrfmt(".ait/%s", r->id);
-	char *restore = restore_it(r);
+	char *path = xstrfmt(".ait/%s", r->id), *first = q->direct && !end ? NULL : head_first(end ? end : r);
 	struct record *as_was = xmemdupz(r, sizeof(*r));
-	int mine = made_by(r->old ? r->old : r, agent);
 
 	as_was->f[STATE] = r->old ? r->old->f[STATE] : r->f[STATE];
-	/* 2: another role, or a new record neither future nor current */
-	if ((r->old && strcmp(val(r->old, ROLE), val(r, ROLE))) || (!r->old && strcmp(to, "future") && strcmp(to, "current")))
-		return restore;
-	/* 3: an ended contract changed; the change goes to a new contract before the record is restored */
-	if (!strcmp(from, "cancelled") || !strcmp(from, "withdrawn") || !strcmp(from, "fulfilled"))
-		return closed_hint(q, r, r);
+	/* 1 (choice 203): what refused is HEAD's accident, whose repair comes first */
+	if (first)
+		return first;
+	/* 2: another role, or a new contract neither future nor current (a link has its own states) */
+	if (q->direct && *r->id != 'u' && ((r->old && strcmp(val(r->old, ROLE), val(r, ROLE))) ||
+					   (!r->old && strcmp(to, "future") && strcmp(to, "current"))))
+		return restore_it(r);
+	/*
+	 * 10, 11: a demand undertaken by an offer that cannot take it: an offer this
+	 * request makes is made a promise, a demand reopened alone takes its offer
+	 * along, else a future offer undertakes it
+	 */
+	if (end && *end->id == 'O') {
+		struct record *d = link_end(&q->s, r, 0);
+
+		if (is_live(end) && !end->old)
+			return xstrfmt("if it does not hold yet, make it future: %s", reopen_inside(q, end));
+		if (is_live(end) && was_current(d))
+			return xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: %s", d->id, end->id,
+				       reopen_inside(q, d));
+		return undertake_hint(q, d, end);
+	}
+	/* 3: an ended contract changed, fulfilled or undertaken; contract commit's change goes to the new one */
+	if (end || !strcmp(from, "cancelled") || !strcmp(from, "withdrawn") || !strcmp(from, "fulfilled"))
+		return closed_hint(q, end ? end : q->direct || !r->old ? r : r->old, r);
 	/* 4: only a fulfil makes a promise current */
-	if (!strcmp(from, "future") && (!strcmp(to, "current") || !strcmp(to, "fulfilled")))
+	if (q->direct && !strcmp(from, "future") && (!strcmp(to, "current") || !strcmp(to, "fulfilled")))
 		return xstrfmt("fulfill it instead: %s, then 'ait fulfill %s -m <why>'",
-			       as_in_base(as_was) ? restore : xstrfmt("set 'state future' back in '%s', then %s", path, through_ait(single(path))),
-			       r->id);
-	/* 5: current to ended: reopen it */
+			       as_in_base(as_was) ? restore_it(r) : xstrfmt("set 'state future' back in '%s', then %s", path,
+									     through_ait(single(path))), r->id);
+	/* 7: what is current is checked again by amend (H7) */
+	if (q->fulfill && !strcmp(from, "current"))
+		return xstrfmt("'%s' is already current; to check it again, run 'ait amend %s -m <why>'", r->id, r->id);
+	/* 5: what was current is reopened */
 	if (!strcmp(from, "current"))
 		return reopen_first(q, r, NULL);
 	/* 6: a promise is withdrawn only when current; its maker cancels it */
-	if (!strcmp(to, "withdrawn") && mine)
+	if (q->direct && !strcmp(to, "withdrawn") && made_by(r->old ? r->old : r, agent))
 		return xstrfmt("set 'state cancelled' in '%s', then %s", path, through_ait(single(path)));
-	return restore;
+	/* 12 */
+	return q->direct ? restore_it(r) : NULL;
 }
 
-/* the hint of a verdict on the gate's candidate, as the same request with a clause changed (5.9a) */
+/*
+ * the hint of validate's verdict V on the gate's candidate (5.9a), by its
+ * reason: an error HEAD had already is mended as 5.10 says; a record's form is
+ * fixed in this request; a link between a future demand and its current
+ * offer (5.9 d) takes the transition hint of that link; a broken bundle is
+ * matched or reopened
+ */
 static char *gate_hint(struct request *q, struct verdict *v)
 {
 	if (at_head(v))
 		return head_repair(v, !strcmp(v->word, "state"));
-	/* 5.10: a malformed record that only this request has is fixed in it; what is no record goes */
 	if (!strcmp(v->word, "format"))
 		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v, 0) :
 		       xstrfmt("fix it in this request (see the error line), then %s", through_ait(single(xstrfmt(".ait/%s", v->k->id))));
-	if (v->o && !v->o->old)
-		return xstrfmt("if it does not hold yet, make it future: %s", reopen_inside(q, v->o));
-	if (v->o && !was_current(v->k))
-		return undertake_hint(q, v->k, v->o);
-	if (v->o)
-		return xstrfmt("'%s' is undertaken by current '%s'; reopen them in the same request: %s", v->k->id,
-			       v->o->id, reopen_inside(q, v->k));
-	return xstrfmt("make the spec files of '%s' match it, or reopen it with them: %s", v->k->id, reopen_inside(q, v->k));
+	if (!strcmp(v->word, "incomplete"))
+		return xstrfmt("make the spec files of '%s' match it, or reopen it with them: %s", v->k->id, reopen_inside(q, v->k));
+	if (v->o && *v->o->id == 'O')
+		return transition_hint(q, state_get(&q->s, xstrfmt("undertake/%s-%s", v->k->id, v->o->id)), "-", "undertaken", v->o);
+	return NULL;
 }
 
 /*
@@ -1672,18 +1695,6 @@ static void unpinned(struct request *q, struct record *r)
 	}
 }
 
-/* 5.9a: the transition hint for R's refused step FROM to TO: contract commit's form, an ended contract, or a reopen first */
-static char *step_hint(struct request *q, struct record *r, const char *from, const char *to)
-{
-	if (q->direct)
-		return direct_hint(q, r, from, to);
-	if (*r->id == 'u')
-		return NULL;
-	if (r->old && !is_live(r->old))
-		return closed_hint(q, r->old, r);
-	return head_first(r) ?: was_current(r) ? reopen_first(q, r, NULL) : NULL;
-}
-
 /* spec 7.3.2: a clause applies to the records as the earlier clauses left them */
 static void apply(struct request *q, struct clause *c)
 {
@@ -1695,7 +1706,8 @@ static void apply(struct request *q, struct clause *c)
 	} else if (!strcmp(c->verb, "amend")) {
 		r = resolve(q, c->k[0]);
 		if (*r->id == 'u' || !is_live(r))
-			reject(1, *r->id == 'u' ? NULL : closed_hint(q, r, r), "not allowed: '%s' is not a future or current contract", r->id);
+			reject(1, transition_hint(q, r, val(r, STATE), val(r, STATE), NULL),
+			       "not allowed: '%s' is not a future or current contract", r->id);
 		if (c->b && ((*r->id == 'D') != !!c->a || (*r->id == 'X') != !c->f))
 			reject(129, NULL, "amend '%s' takes A B FILES (a demand), B FILES (an offer) or K (a drop)", c->k[0]);
 		if (c->future)
@@ -1715,7 +1727,7 @@ static void apply(struct request *q, struct clause *c)
 		/* 7.3.2: K is future; cancelled already is a noop */
 		r = resolve(q, c->k[0]);
 		if (!in_state(r, "future") && !in_state(r, "cancelled"))
-			reject(1, step_hint(q, r, val(r, STATE), "cancelled"), "not allowed: '%s' cannot go from %s to cancelled",
+			reject(1, transition_hint(q, r, val(r, STATE), "cancelled", NULL), "not allowed: '%s' cannot go from %s to cancelled",
 			       r->id, val(r, STATE));
 		put(r, STATE, "cancelled");
 	} else {
@@ -1758,14 +1770,14 @@ static void transitions(struct request *q)
 							       strcmp(val(r, TARGET), val(r->old, TARGET))))))
 			unsupported("drop");
 		for (j = 0; *r->id == 'u' && !strcmp(to, "undertaken") && j < 2; j++) {
-			struct record *end = link_end(&q->s, r, j), *d = link_end(&q->s, r, 0);
+			struct record *end = link_end(&q->s, r, j);
 
 			if (!is_live(end))
-				reject(1, j ? undertake_hint(q, d, end) : closed_hint(q, end, r), "not allowed: '%s' is %s", end->id,
+				reject(1, transition_hint(q, r, from, to, end), "not allowed: '%s' is %s", end->id,
 				       val(end, STATE));
 		}
 		if (!record_step(r->id, from, to, q->gate))
-			reject(1, step_hint(q, r, from, to), "not allowed: '%s' cannot go from %s to %s", r->id, from, to);
+			reject(1, transition_hint(q, r, from, to, NULL), "not allowed: '%s' cannot go from %s to %s", r->id, from, to);
 	}
 }
 
@@ -2288,9 +2300,7 @@ static void given_scopes(struct request *q, struct record *r, const char *list)
 static void select_promise(struct request *q, struct record *r)
 {
 	if (!in_state(r, "future"))
-		reject(1, !is_current(r) ? closed_hint(q, r, r) : head_first(r) ?:
-		       xstrfmt("'%s' is already current; to check it again, run 'ait amend %s -m <why>'", r->id, r->id),
-		       "not allowed: '%s' is %s", r->id, val(r, STATE));
+		reject(1, transition_hint(q, r, val(r, STATE), "current", NULL), "not allowed: '%s' is %s", r->id, val(r, STATE));
 	put(r, STATE, "current");
 	string_list_append(&q->selected, r->id);
 }
@@ -2403,13 +2413,17 @@ static const char *not_a_file(const char *path)
 	       "is not a regular file" : NULL;
 }
 
-/* 5.8 E_INCOMPLETE "missing": restore PATH from HEAD, or create it, or stop declaring it in DECL, what declares it */
+/*
+ * 5.8 E_INCOMPLETE "missing": restore PATH from HEAD, or create it, or stop
+ * declaring it in DECL, what declares it; a record path is declared by nothing
+ */
 static char *missing_hint(struct request *q, const char *path, struct string_list *decl)
 {
-	const char *in = decl && decl->nr ? xstrfmt(" in %s", quoted_paths(decl)) : "";
+	const char *stop = decl && decl->nr ? xstrfmt("stop declaring it in %s", quoted_paths(decl)) : NULL;
 
-	return blob_at(q->ht, path) ? xstrfmt("restore '%s' from HEAD, or stop declaring it%s", path, in) :
-	       xstrfmt("create it or stop declaring it%s", in);
+	if (blob_at(q->ht, path))
+		return xstrfmt("restore '%s' from HEAD%s%s", path, stop ? ", or " : "", stop ?: "");
+	return stop ? xstrfmt("create it or %s", stop) : NULL;
 }
 
 /*

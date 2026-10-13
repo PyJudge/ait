@@ -1955,8 +1955,9 @@ static int file_line(struct string_list *out, struct tree *t, const char *path, 
 int pinned_as(struct tree *t, const char *line)
 {
 	struct string_list now = STRING_LIST_INIT_DUP;
+	const char *what = strrchr(line, ' ');
 
-	return !file_line(&now, t, scope_path(line), strrchr(line, ' ') + 1) && !strcmp(now.items[0].string, line);
+	return what && !file_line(&now, t, scope_path(line), what + 1) && !strcmp(now.items[0].string, line);
 }
 
 /*
@@ -2035,67 +2036,45 @@ static int bundle_error(struct state *s, struct record *r, struct tree *t, struc
 	return 1;
 }
 
-int check_state_except(struct state *s, struct tree *t, struct verdict *v, struct string_list *conflicts)
+/*
+ * validate(state) of spec 5.9 a-e: every error of the state S at T, one per
+ * record, in validate's order: 5.9 a-d over the records, then e for those
+ * without one; a path in CONFLICTS keeps its pin (7.12.6). Each message holds its verdict.
+ */
+void state_errors(struct state *s, struct tree *t, struct string_list *conflicts, struct string_list *out)
 {
-	size_t i;
-
-	if (check_records(s, v))
-		return v->code;
-	for (i = 0; i < s->nr; i++)
-		if (bundle_error(s, s->r[i], t, conflicts, v))
-			return 1;
-	return 0;
-}
-
-int check_state(struct state *s, struct tree *t, struct verdict *v)
-{
-	return check_state_except(s, t, v, NULL);
-}
-
-/* 5.10, 7.1.8: every error of the state S at T, one per record, each message with its verdict */
-void state_errors(struct state *s, struct tree *t, struct string_list *out)
-{
+	char *erred = xcalloc(s->nr ? s->nr : 1, 1);
 	size_t i;
 
 	for (i = 0; i < s->nr; i++) {
 		struct verdict *v = xcalloc(1, sizeof(*v));
 
-		if (record_error(s, s->r[i], v) || bundle_error(s, s->r[i], t, NULL, v))
-			string_list_insert(out, v->msg)->util = v;
+		if ((erred[i] = !!record_error(s, s->r[i], v)))
+			string_list_append(out, v->msg)->util = v;
+	}
+	for (i = 0; i < s->nr; i++) {
+		struct verdict *v = xcalloc(1, sizeof(*v));
+
+		if (!erred[i] && bundle_error(s, s->r[i], t, conflicts, v))
+			string_list_append(out, v->msg)->util = v;
 	}
 }
 
-/*
- * 5.9a transition hint 1, 7.1.3-7, 5.8: HEAD had the error V already, so the
- * state judged now did not make it: a record V points to is one that a
- * structure error of HEAD (5.9 a-d) points to, or, for a broken bundle, one
- * whose bundle HEAD breaks too
- */
-int at_head(struct verdict *v)
+/* validate(state): the first error of S at T as V, its code; 0 when it holds */
+int check_state_except(struct state *s, struct tree *t, struct verdict *v, struct string_list *conflicts)
 {
-	static struct string_list held = STRING_LIST_INIT_DUP, broken = STRING_LIST_INIT_DUP;
-	static int loaded;
 	struct string_list errors = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	struct state hs = { 0 };
 
-	if (!loaded++) {
-		state_load(&hs, head_tree());
-		state_errors(&hs, head_tree(), &errors);
-		for_each_string_list_item(item, &errors) {
-			struct verdict *e = item->util;
+	state_errors(s, t, conflicts, &errors);
+	if (!errors.nr)
+		return 0;
+	*v = *(struct verdict *)errors.items[0].util;
+	return v->code;
+}
 
-			if (!strcmp(e->word, "incomplete"))
-				string_list_insert(&broken, e->k->id);
-			else
-				string_list_insert(&held, e->k->id);
-			if (e->o)
-				string_list_insert(&held, e->o->id);
-		}
-	}
-	if (!strcmp(v->word, "incomplete"))
-		return string_list_has_string(&broken, v->k->id);
-	return string_list_has_string(&held, v->k->id) || (v->o && string_list_has_string(&held, v->o->id));
+int check_state(struct state *s, struct tree *t, struct verdict *v)
+{
+	return check_state_except(s, t, v, NULL);
 }
 
 /* R is a future or current demand or offer that has PATH as a spec file */

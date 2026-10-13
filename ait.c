@@ -1047,33 +1047,29 @@ static char *back_commands(struct state *was, struct version *then, struct versi
  */
 static int post_hook(const char *before)
 {
-	struct state now = { 0 }, was = { 0 };
-	struct string_list errors = STRING_LIST_INIT_DUP, old = STRING_LIST_INIT_DUP;
+	struct judgment *now, *was = NULL;
 	struct string_list_item *item;
 	size_t i;
 
 	if (!head)
 		return 0;
-	state_load(&now, head_tree());
-	commit_errors(head, &errors);
-	if (before) {
-		state_load(&was, tree_load(before));
-		commit_errors(before, &old);
-	}
-	for_each_string_list_item(item, &errors) {
-		if (string_list_has_string(&old, item->string))
+	now = judge(head);
+	if (before)
+		was = judge(before);
+	for_each_string_list_item(item, &now->errors) {
+		if (was && unsorted_string_list_has_string(&was->errors, item->string))
 			continue;
 		warning("%s", ((struct verdict *)item->util)->msg);
 		suggest("%s", head_repair(item->util, 0) ?: "");
 	}
-	for (i = 0; before && i < now.nr; i++) {
-		struct version *then = version_in(before, now.r[i]->id), *v_now = version_in(head, now.r[i]->id);
+	for (i = 0; was && i < now->s.nr; i++) {
+		struct version *then = version_in(before, now->s.r[i]->id), *v_now = version_in(head, now->s.r[i]->id);
 		char *back;
 
 		if (!then || !v_now || !strcmp(then->oid, v_now->oid) || !contains(then, v_now))
 			continue;
-		warning("this commit put '%s' back to an older version; only this branch has it", now.r[i]->id);
-		if ((back = back_commands(&was, then, v_now, tree_load(before))))
+		warning("this commit put '%s' back to an older version; only this branch has it", now->s.r[i]->id);
+		if ((back = back_commands(&was->s, then, v_now, tree_load(before))))
 			suggest("to take it back for others too, once this commit is reverted, %s", back);
 	}
 	return 0;
