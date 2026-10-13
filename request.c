@@ -167,7 +167,7 @@ static struct record *readable(struct request *q, struct record *r)
 	struct verdict v;
 
 	if (malformed(&one, &v))
-		reject(v.code, head_repair(&v, !q->gate), "%s", v.msg);
+		reject(v.code, head_repair(&v, !q->direct), "%s", v.msg);
 	return r;
 }
 
@@ -983,14 +983,6 @@ static char *reopen_first(struct request *q, struct record *k, const char *args)
 		       xstrfmt("to change '%s' without a check, reopen it", k->id), reopen_clauses(&hs, k, args), then_rerun(q, &set));
 }
 
-/* 5.9a transition hint 1: K is HEAD's accident (5.10), whose repair comes first; NULL when it is not */
-static char *head_first(struct record *k)
-{
-	struct verdict v;
-
-	return accident_at_head(k, &v, 1) ? v.hint : NULL;
-}
-
 /* 5.9a LINES: R's scopes as input at T and its definitions, as written by hand (2.2.3), each quoted, joined by ", " */
 static char *written_lines(struct record *r, struct tree *t)
 {
@@ -1128,13 +1120,14 @@ static char *undertake_hint(struct request *q, struct record *d, struct record *
  */
 static char *transition_hint(struct request *q, struct record *r, const char *from, const char *to, struct record *end)
 {
-	char *path = xstrfmt(".ait/%s", r->id), *first = q->direct && !end ? NULL : head_first(end ? end : r);
+	char *path = xstrfmt(".ait/%s", r->id);
 	struct record *as_was = xmemdupz(r, sizeof(*r));
+	struct verdict v;
 
 	as_was->f[STATE] = r->old ? r->old->f[STATE] : r->f[STATE];
 	/* 1 (choice 203): what refused is HEAD's accident, whose repair comes first */
-	if (first)
-		return first;
+	if (!(q->direct && !end) && accident_at_head(end ? end : r, &v, !q->direct))
+		return v.hint;
 	/* 2: another role, or a new contract neither future nor current (a link has its own states) */
 	if (q->direct && *r->id != 'u' && ((r->old && strcmp(val(r->old, ROLE), val(r, ROLE))) ||
 					   (!r->old && strcmp(to, "future") && strcmp(to, "current"))))
@@ -1185,9 +1178,9 @@ static char *transition_hint(struct request *q, struct record *r, const char *fr
 static char *gate_hint(struct request *q, struct verdict *v)
 {
 	if (at_head(v))
-		return head_repair(v, !strcmp(v->word, "state"));
+		return head_repair(v, !q->direct);
 	if (!strcmp(v->word, "format"))
-		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v, 0) :
+		return v->k->mend || !strcmp(v->k->id, "init") ? head_repair(v, !q->direct) :
 		       xstrfmt("fix it in this request (see the error line), then %s", through_ait(single(xstrfmt(".ait/%s", v->k->id))));
 	if (!strcmp(v->word, "incomplete"))
 		return xstrfmt("make the spec files of '%s' match it, or reopen it with them: %s", v->k->id, reopen_inside(q, v->k));
@@ -1998,7 +1991,7 @@ static struct tree *worktree_state(struct request *q, struct state *ws)
 	/* a written record names its definitions only (2.2.3); one the work tree lacks is gone from W too */
 	for (i = 0; i < ws->nr; i++)
 		for_each_string_list_item(f, &ws->r[i]->f[FILES])
-			if (is_live(ws->r[i]) && spec_file_at(scope_path(f->string)))
+			if (is_live(ws->r[i]) && !spec_file_why(scope_path(f->string)))
 				string_list_insert(&files, scope_path(f->string));
 			else if (is_live(ws->r[i]))
 				index_line(&gone, NULL, NULL, scope_path(f->string));
@@ -2014,7 +2007,7 @@ static struct tree *worktree_state(struct request *q, struct state *ws)
 		def_inputs(w, &defs, &declared);
 		for_each_string_list_item(item, &declared) {
 			string_list_append(&ws->r[i]->f[FILES], xstrfmt("%s - - input", item->string));
-			if (spec_file_at(item->string))
+			if (!spec_file_why(item->string))
 				string_list_insert(&files, item->string);
 			else
 				index_line(&gone, NULL, NULL, item->string);
@@ -2215,17 +2208,17 @@ static int finish(struct request *q)
 	if (q->gate && (q->pull_tree ? check_records(&q->s, &v) : check_state(&q->s, q->v, &v)))
 		reject(v.code, gate_hint(q, &v), "%s", v.msg);
 	if (!q->gate && malformed(&q->s, &v)) {
-		v.hint = head_repair(&v, 1);
+		v.hint = head_repair(&v, !q->direct);
 		invalid(q, v);
 	}
 	/* an accident the request leaves is HEAD's; what it writes was judged from its base (5.10) */
 	for (k = 0; k < q->s.nr && !q->pull_tree; k++)
-		if (unchanged(q->s.r[k]) && accident_at_head(q->s.r[k], &v, !q->gate))
+		if (unchanged(q->s.r[k]) && accident_at_head(q->s.r[k], &v, !q->direct))
 			invalid(q, v);
 	code_present(q);
 	if (!q->gate && !q->missing.nr && check_state(&q->s, q->v, &v)) {
 		if (at_head(&v))
-			v.hint = head_repair(&v, 1);
+			v.hint = head_repair(&v, !q->direct);
 		invalid(q, v);
 	}
 	/* 5.13-8: commit asks for its session right before the results */
@@ -2397,23 +2390,6 @@ int cmd_fulfill(int argc, const char **argv)
 }
 
 /*
- * why PATH, there in the work tree, is not a file of it (7.3.3), or NULL: it is
- * reached through a symlink, or is a directory, a FIFO or the like
- */
-static const char *not_a_file(const char *path)
-{
-	const char *slash;
-	struct stat st;
-
-	for (slash = strchr(path, '/'); slash; slash = strchr(slash + 1, '/'))
-		if (!lstat(xstrfmt("%s/%.*s", top, (int)(slash - path), path), &st) && S_ISLNK(st.st_mode))
-			return "is beyond a symbolic link";
-	/* a symlink is staged as git stages it, and judged by its mode then */
-	return !lstat(xstrfmt("%s/%s", top, path), &st) && !S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode) ?
-	       "is not a regular file" : NULL;
-}
-
-/*
  * 5.8 E_INCOMPLETE "missing": restore PATH from HEAD, or create it, or stop
  * declaring it in DECL, what declares it; a record path is declared by nothing
  */
@@ -2433,11 +2409,10 @@ static char *missing_hint(struct request *q, const char *path, struct string_lis
  */
 static void judge_file(struct request *q, const char *path)
 {
-	const char *why = not_a_file(path), *in_head = case_twin(q->ht, path), *in_index = case_twin(q->index, path);
+	const char *why = spec_file_why(path), *in_head = case_twin(q->ht, path), *in_index = case_twin(q->index, path);
 	const char *twin = in_head ? in_head : in_index, *slash;
 	struct string_list decl = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct stat st;
 	size_t i;
 
 	/* git add stages nothing for a path that differs in case only from one git has */
@@ -2450,7 +2425,7 @@ static void judge_file(struct request *q, const char *path)
 	if (twin)
 		reject(1, xstrfmt("give it as git has it: '%s'", twin),
 		       "spec files do not match the contract: '%s' is '%s' in git", path, twin);
-	if (why)
+	if (why && strcmp(why, "is missing"))
 		reject(1, NULL, "spec files do not match the contract: '%s' %s", path, why);
 	for (slash = strchr(path, '/'); slash; slash = strchr(slash + 1, '/')) {
 		char *up = xstrndup(path, slash - path);
@@ -2460,7 +2435,7 @@ static void judge_file(struct request *q, const char *path)
 			reject(1, xstrfmt("remove '%s' and run 'ait commit -m <why>' first, then rerun this command", up),
 			       "spec files do not match the contract: '%s' is under the file '%s' in git", path, up);
 	}
-	if (lstat(xstrfmt("%s/%s", top, path), &st)) {
+	if (why) {
 		/* what declares it: the definitions of this request and the records of HEAD */
 		for_each_string_list_item(item, &q->declared)
 			if (!strcmp(item->string, path))
@@ -2633,7 +2608,7 @@ static void bundle_complete(struct request *q, struct string_list *paths, struct
 	related_paths(&hs, &ws, w, paths, &related);
 	unstaged_of(&related, &differ);
 	for_each_string_list_item(item, &related)
-		if (!spec_file_at(item->string))
+		if (spec_file_why(item->string))
 			string_list_insert(&missing, item->string)->util = item->util;
 		else if (string_list_has_string(&differ, item->string) && !unsorted_string_list_has_string(paths, item->string))
 			string_list_insert(&unstaged, item->string);

@@ -111,12 +111,22 @@ int regular_mode(const char *mode)
 	return !strcmp(mode, "100644") || !strcmp(mode, "100755");
 }
 
-/* PATH is in the work tree as a spec file is there: a regular file (2.1.4) */
-int spec_file_at(const char *path)
+/*
+ * 2.1.4, 7.3.3: why PATH is no spec file in the work tree, where a spec file
+ * is a regular file git can stage as it is: beyond a symbolic link, missing,
+ * or another kind; NULL when it is one
+ */
+const char *spec_file_why(const char *path)
 {
+	const char *slash;
 	struct stat st;
 
-	return !lstat(xstrfmt("%s/%s", top, path), &st) && S_ISREG(st.st_mode);
+	for (slash = strchr(path, '/'); slash; slash = strchr(slash + 1, '/'))
+		if (!lstat(xstrfmt("%s/%.*s", top, (int)(slash - path), path), &st) && S_ISLNK(st.st_mode))
+			return "is beyond a symbolic link";
+	if (lstat(xstrfmt("%s/%s", top, path), &st))
+		return "is missing";
+	return S_ISREG(st.st_mode) ? NULL : "is not a regular file";
 }
 
 /* the text of a blob, or NULL when it holds a NUL and so is not text; each blob is read once */

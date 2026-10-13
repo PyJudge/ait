@@ -468,7 +468,7 @@ static int checked_out(const char *path)
 {
 	const char *staged = git_run(NULL, NULL, NULL, "ls-files -s -- %s", path);
 
-	return regular_mode(xstrndup(staged, strcspn(staged, " "))) && spec_file_at(path);
+	return regular_mode(xstrndup(staged, strcspn(staged, " "))) && !spec_file_why(path);
 }
 
 /*
@@ -707,7 +707,7 @@ void base_versions(struct state *s, struct string_list *written)
 	}
 }
 
-/* 5.10: HEAD's first error (validate's, then an accident), with the hint that mends it; 0 when none */
+/* 5.10: HEAD's first error (validate's, then an accident), with the hint that mends it before the command runs again; 0 when none */
 int head_error(struct verdict *v)
 {
 	struct judgment *j = judge(head);
@@ -715,6 +715,6 @@ int head_error(struct verdict *v)
 	if (!j->errors.nr)
 		return 0;
 	*v = *(struct verdict *)j->errors.items[0].util;
-	v->hint = head_repair(v, 0);
+	v->hint = head_repair(v, 1);
 	return v->code;
 }
