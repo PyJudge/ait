@@ -42,6 +42,7 @@ struct names {
 void names_load(struct names *n);
 const char *init_source(struct names *n, const char *name);
 const char *branch_name(void);
+void refuse_used(const char *branch, const char *commit);
 void refuse_broken(int writes, int fulfils);
 char *checkout_file(void);
 

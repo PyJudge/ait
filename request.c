@@ -488,7 +488,8 @@ static void read_results(struct request *q)
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list kv = STRING_LIST_INIT_DUP, want = STRING_LIST_INIT_DUP, failed = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	char *err;
+	char *err, *fix = xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis",
+				  q->result);
 	size_t n;
 	int i;
 
@@ -514,13 +515,10 @@ static void read_results(struct request *q)
 		struct strbuf block = STRBUF_INIT;
 
 		if (!task || !string_list_has_string(&want, task) || string_list_has_string(&q->results, task))
-			reject(128, xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis",
-					    q->result), "bad format: '%s': task '%s' is unknown or given twice", q->result,
-			       task ? task : "");
+			reject(128, fix, "bad format: '%s': task '%s' is unknown or given twice", q->result, task ? task : "");
 		if (!outcome || (strcmp(outcome, "pass") && strcmp(outcome, "fail") && strcmp(outcome, "unknown")) ||
 		    (!strcmp(outcome, "pass") && (!basis || !*basis)))
-			reject(128, xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis",
-					    q->result), "bad format: '%s': task '%s' has no outcome or basis", q->result, task);
+			reject(128, fix, "bad format: '%s': task '%s' has no outcome or basis", q->result, task);
 		if (strcmp(outcome, "pass"))
 			string_list_append(&failed, task);
 		strbuf_addf(&block, "- task: %s\n  outcome: %s\n  basis: ", task, outcome);
@@ -533,8 +531,7 @@ static void read_results(struct request *q)
 	}
 	for_each_string_list_item(item, &want)
 		if (!string_list_has_string(&q->results, item->string))
-			reject(128, xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis",
-					    q->result), "bad format: '%s': task '%s' is missing", q->result, item->string);
+			reject(128, fix, "bad format: '%s': task '%s' is missing", q->result, item->string);
 	if (failed.nr) {
 		for_each_string_list_item(item, &failed)
 			fprintf(stderr, "%s\n", item->string);
@@ -606,7 +603,7 @@ static void record(struct request *q, struct checkin *ck)
 				strbuf_addf(&body, "%s", (char *)r->util);
 		}
 		if (q->force || !body.len)
-			strbuf_add(&body, (&q->msg)->buf, (&q->msg)->len);
+			strbuf_add(&body, q->msg.buf, q->msg.len);
 		f.body = strbuf_detach(&body, NULL);
 		string_list_append(&c->fulfilled, f.path);
 		string_list_insert(&ck->put, f.path)->util = fulfil_text(&f);
@@ -666,7 +663,7 @@ static void run_request(struct request *q, int fulfilling)
 	string_list_init_dup(&ck.put);
 	ck.violation_hint = violation_hint;
 	ck.data = q;
-	if (!q->msg.len && !fulfilling)
+	if (!q->msg.len)
 		reject(129, NULL, "a message is required: -m <msg> or -F <file>");
 	newid(ck.rid, 'R');
 	if (fulfilling) {
@@ -686,8 +683,6 @@ static void run_request(struct request *q, int fulfilling)
 		}
 		if (q->result)
 			read_results(q);
-		if (!q->msg.len)
-			reject(129, NULL, "a message is required: -m <msg> or -F <file>");
 		/* step 1: the staged code, committed by git */
 		git_run(NULL, NULL, &rc, "diff --cached --quiet");
 		if (rc) {

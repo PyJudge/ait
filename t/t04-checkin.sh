@@ -24,6 +24,11 @@ git worktree add -q "$T/w" ait/master
 run ait future demand src/order.c src/stock.c cond.yaml -m blocked
 check_rc "a branch another worktree has checked out is refused by git (4.4-3a)" 128
 check "git's message" "has err \"refusing to fetch into branch 'refs/heads/ait/master' checked out at\""
+echo x >> src/order.c; git add src/order.c
+run ait fulfill "$D" --force -m "used"
+check_rc "fulfill asks git first, before it commits (4.3-4, 6.7.5-0)" 128
+check "nothing was committed" "test \"\$(git rev-list --count HEAD)\" = 1"
+git reset -q --hard
 git worktree remove --force "$T/w"
 
 git switch -q ait/master
@@ -32,7 +37,7 @@ git commit -qam "break it"
 git switch -q master
 run ait future demand src/order.c src/stock.c cond.yaml -m x
 check_rc "a malformed contract on the branch is refused first (4.3-3)" 128
-check "the message names the file" "has err \"bad format: '$D.yaml'\""
+check "the message names the file, then the branch, then why (4.3-3)" "has err \"^fatal: bad format: '$D.yaml' at 'ait/master': .\""
 check "the hint enters the branch to fix it" "has err \"ait switch ait/master\""
 run ait status
 check_rc "status shows it as a warning and goes on" 0

@@ -731,29 +731,45 @@ const char *branch_name(void)
 	reject(128, hint.buf, "more than one ait branch; none is checked out");
 }
 
+/*
+ * spec 4.3-4, 4.4-3 (a): whether a worktree uses BRANCH, judged by git as it
+ * judges a fetch into a checked-out branch (builtin/fetch.c:1382), with its words
+ */
+void refuse_used(const char *branch, const char *commit)
+{
+	int rc;
+
+	git_run(NULL, NULL, &rc, "fetch -q --dry-run --no-write-fetch-head --no-recurse-submodules . %s",
+		xstrfmt("%s:refs/heads/%s", commit, branch));
+	if (rc == 128)
+		reject(128, NULL, "%s", git_error);
+}
+
 /* spec 4.3: the broken states every contract command refuses first; WRITES < 0 only warns of the format */
 void refuse_broken(int writes, int fulfils)
 {
 	struct branch *b = branch_load(branch_name(), NULL, NULL);
 	struct string_list_item *e;
-	char oid[48];
 
 	for_each_string_list_item(e, &b->errors) {
-		if (writes < 0) {
-			warning("bad format: %s at '%s'", e->string, b->name);
-			continue;
-		}
-		reject(128, xstrfmt("fix %.*s in '%s' (enter it with 'ait switch %s')",
-				    (int)(strchr(e->string + 1, '\'') - e->string + 1), e->string, b->name, b->name),
-		       "bad format: %s at '%s'", e->string, b->name);
+		/* every error is "'<path>': <why>" */
+		int path = strstr(e->string, "': ") - e->string + 1;
+		char *line = xstrfmt("bad format: %.*s at '%s': %s", path, e->string, b->name, e->string + path + 2);
+
+		if (writes < 0)
+			warning("%s", line);
+		else
+			reject(128, xstrfmt("fix %.*s in '%s' (enter it with 'ait switch %s')", path, e->string,
+					    b->name, b->name), "%s", line);
 	}
+	if (writes > 0 && *b->tip)
+		refuse_used(b->name, b->tip);
 	if (!fulfils)
 		return;
 	if (starts_with(line1(git_run(NULL, NULL, NULL, "rev-parse --symbolic-full-name HEAD")), "refs/heads/ait/"))
 		reject(128, NULL, "HEAD is on contract branch '%s'", line1(git("rev-parse --abbrev-ref HEAD")));
 	if (*git("ls-files --unmerged"))
 		reject(1, NULL, "fulfilling is not possible because you have unmerged files");
-	(void)oid;
 }
 
 /* the trailers of a checkin commit (spec 4.5, v14 5.4) */
@@ -818,19 +834,12 @@ static void checkin_invariants(struct checkin *c, const char *tree)
 	}
 }
 
-/*
- * spec 4.4-3: move the branch from T to COMMIT. (a) the worktree that uses
- * the branch is judged by git (builtin/fetch.c:1382); (b) the CAS. Returns
- * update-ref's exit code.
- */
+/* spec 4.4-3: move the branch from T to COMMIT: (a) no worktree uses it, (b) the CAS; update-ref's exit code */
 int checkin_ref(struct checkin *c, const char *commit)
 {
 	int rc;
 
-	git_run(NULL, NULL, &rc, "fetch -q --dry-run --no-write-fetch-head --no-recurse-submodules . %s",
-		xstrfmt("%s:refs/heads/%s", commit, c->branch));
-	if (rc == 128)
-		reject(128, NULL, "%s", git_error);
+	refuse_used(c->branch, commit);
 	git_run(NULL, NULL, &rc, "update-ref -m %s %s %s %s", c->msg, xstrfmt("refs/heads/%s", c->branch), commit,
 		*c->tip ? c->tip : NULL_OID);
 	return rc;
