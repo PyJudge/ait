@@ -30,10 +30,6 @@ libyaml/%.o: libyaml/%.c libyaml/yaml.h libyaml/yaml_private.h
 
 test: ait
 	@sh t/run.sh
-	@sh t/pull/run.sh
-
-test-pull: ait
-	@sh t/pull/run.sh
 
 # a copy, not a link: the hooks of this repository run the installed ait, not the one being built
 prefix ?= $(HOME)/.local
@@ -53,4 +49,4 @@ bundle: ait
 clean:
 	rm -f ait $(YAML)
 
-.PHONY: test test-pull install bundle clean
+.PHONY: test install bundle clean

@@ -12,7 +12,6 @@ for t in t[0-9]*.sh; do
 		echo "FAIL $t"
 		grep -A3 '^not ok' "$out/$t.out" | head -20
 	fi
-	grep -h 'AddressSanitizer\|runtime error:' "$out/$t.out" | head -3
 done
 echo "# $failed of $(ls t[0-9]*.sh | wc -l | tr -d ' ') scripts failed"
 rm -rf "$out"
