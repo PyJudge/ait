@@ -55,6 +55,10 @@ run ait status
 check_rc "a clone with only remote-tracking ait branches (4.3-1)" 128
 run env AIT_SESSION=- ait future demand src/order.c src/stock.c x.yaml -m x
 check "the branch is refused before the session (4.3 first, then 4.6)" "has err 'fatal: no local ait branch'"
+run ait fulfill foo -m x
+check "fulfill asks 4.3 before whether a contract exists" "has err 'fatal: no local ait branch'"
+run ait future offer src/stock.c x.yaml as demand -m x
+check_rc "a reserved alias is a usage error, before 4.3 (6.4)" 129
 mkdir -p .ait; printf 'x' > .ait/Dabcdefabcdef.yaml
 run ait contract add .ait/Dabcdefabcdef.yaml
 check_rc "contract add passes 4.3 too" 128

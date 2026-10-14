@@ -264,23 +264,6 @@ static void stamp(struct request *q, struct contract *c, struct contract *old, i
 		c->change_id = xstrdup(q->rid);
 }
 
-static void new_alias(struct request *q, const char *name, const char *id)
-{
-	static const char *const reserved[] = { "demand", "offer", "future", "undertake", "release", "as", "drop",
-						"amend", "cancel", "contract", "fulfill", NULL };
-	int i;
-
-	if (!name)
-		return;
-	for (i = 0; reserved[i]; i++)
-		if (!strcmp(name, reserved[i]))
-			reject(129, NULL, "'%s' is a reserved word", name);
-	if (!*name || !islower(*name) || name[strspn(name, "abcdefghijklmnopqrstuvwxyz0123456789_")] || strlen(name) > 32)
-		reject(129, NULL, "bad alias '%s'", name);
-	if (string_list_lookup(&q->alias, name))
-		reject(129, NULL, "alias '%s' is given twice", name);
-	string_list_insert(&q->alias, name)->util = xstrdup(id);
-}
 
 static struct contract *make(struct request *q, const char *kind)
 {
@@ -311,16 +294,49 @@ static int target_current(struct request *q, struct contract *x)
 	return t && judge(q->b, t, q->x) == V_CURRENT;
 }
 
+/* spec 6.4: the clause verbs, the one list the grammar and the reserved words come from */
+static const struct verb {
+	const char *verb;
+	int words;		/* the words it always takes */
+	int future;		/* 0 never future, 1 always, 2 either */
+	int fulfils;		/* without future, it fulfils (6.4.1) */
+	int named;		/* it makes a contract an alias can name */
+} verbs[] = {
+	{ "demand", 3, 2, 1, 1 },
+	{ "offer", 2, 2, 1, 1 },
+	{ "drop", 1, 1, 0, 1 },
+	{ "amend", 1, 2, 1, 0 },
+	{ "cancel", 1, 1, 0, 0 },
+	{ "undertake", 2, 0, 0, 0 },
+	{ "release", 2, 0, 0, 0 },
+};
+
+static const struct verb *verb_of(const char *w)
+{
+	size_t v;
+
+	for (v = 0; v < ARRAY_SIZE(verbs); v++)
+		if (!strcmp(w, verbs[v].verb))
+			return &verbs[v];
+	return NULL;
+}
+
 /* a word that starts a clause (v14 7.3.1) */
 static int clause_word(const char *w)
 {
-	static const char *const words[] = { "demand", "offer", "future", "amend", "undertake", "release", NULL };
-	int i;
+	return !strcmp(w, "future") || verb_of(w);
+}
 
-	for (i = 0; words[i]; i++)
-		if (!strcmp(w, words[i]))
-			return 1;
-	return 0;
+/* v14 7.3.1: an alias is a lowercase word that is no clause word, "as" or command */
+static void alias_ok(const char *name, struct string_list *seen)
+{
+	if (clause_word(name) || !strcmp(name, "as") || !strcmp(name, "contract") || !strcmp(name, "fulfill"))
+		reject(129, NULL, "'%s' is a reserved word", name);
+	if (!*name || !islower(*name) || name[strspn(name, "abcdefghijklmnopqrstuvwxyz0123456789_")] || strlen(name) > 32)
+		reject(129, NULL, "bad alias '%s'", name);
+	if (string_list_lookup(seen, name))
+		reject(129, NULL, "alias '%s' is given twice", name);
+	string_list_insert(seen, name);
 }
 
 /* the next word of a clause; only amend's "-" starts with '-' (v14 7.3.1) */
@@ -338,57 +354,41 @@ static const char *word(int argc, const char **argv, int *i)
  */
 static int read_clauses(struct request *q, int argc, const char **argv)
 {
-	static const struct {
-		const char *verb;
-		int words;		/* the words it always takes */
-		int future;		/* 0 never future, 1 always, 2 either */
-		int fulfils;		/* without future, it fulfils (6.4.1) */
-		int named;		/* it makes a contract an alias can name */
-	} verbs[] = {
-		{ "demand", 3, 2, 1, 1 },
-		{ "offer", 2, 2, 1, 1 },
-		{ "drop", 1, 1, 0, 1 },
-		{ "amend", 1, 2, 1, 0 },
-		{ "cancel", 1, 1, 0, 0 },
-		{ "undertake", 2, 0, 0, 0 },
-		{ "release", 2, 0, 0, 0 },
-	};
+	struct string_list aliases = STRING_LIST_INIT_DUP;
 	int i = 0, fulfils = 0;
 
 	while (i < argc) {
 		struct clause *cl;
 		const char *w = argv[i++];
+		const struct verb *v;
 		int future = !strcmp(w, "future");
-		size_t v;
 
 		/* options() leaves only -p and --partial here, and they belong right after undertake */
 		if (*w == '-')
 			reject(129, NULL, "'%s' goes right after 'undertake'", w);
 		if (future)
 			w = word(argc, argv, &i);
-		for (v = 0; v < ARRAY_SIZE(verbs) && strcmp(w, verbs[v].verb); v++)
-			;
-		if (v == ARRAY_SIZE(verbs) || (verbs[v].future != 2 && verbs[v].future != future))
+		if (!(v = verb_of(w)) || (v->future != 2 && v->future != future))
 			reject(129, NULL, "unknown clause '%s%s'", future ? "future " : "", w);
 		REALLOC_ARRAY(q->clauses, q->nclauses + 1);
 		cl = &q->clauses[q->nclauses++];
 		memset(cl, 0, sizeof(*cl));
-		cl->verb = verbs[v].verb;
+		cl->verb = v->verb;
 		cl->future = future;
 		if (!strcmp(w, "undertake") && i < argc && (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--partial"))) {
 			cl->partial = 1;
 			i++;
 		}
-		while (cl->nargs < verbs[v].words)
+		while (cl->nargs < v->words)
 			cl->args[cl->nargs++] = word(argc, argv, &i);
 		/* v14 7.3.1: amend K takes up to three more words; none is the empty amend */
 		while (!strcmp(w, "amend") && i < argc && cl->nargs < 4 && !clause_word(argv[i]))
 			cl->args[cl->nargs++] = argv[i++];
-		if (verbs[v].named && i + 1 < argc && !strcmp(argv[i], "as")) {
-			cl->as = argv[i + 1];
+		if (v->named && i + 1 < argc && !strcmp(argv[i], "as")) {
+			alias_ok(cl->as = argv[i + 1], &aliases);
 			i += 2;
 		}
-		fulfils |= verbs[v].fulfils && !future;
+		fulfils |= v->fulfils && !future;
 	}
 	return fulfils;
 }
@@ -423,13 +423,15 @@ static void apply_clauses(struct request *q)
 				scopes_arg(&c->consumer, a[0], pin_at, 1, 0);
 			scopes_arg(&c->provider, a[demand], pin_at, 1, 1);
 			specs_from_files(c, a[demand + 1]);
-			new_alias(q, cl->as, c->id);
+			if (cl->as)
+				string_list_insert(&q->alias, cl->as)->util = xstrdup(c->id);
 		} else if (!strcmp(cl->verb, "drop")) {
 			struct contract *t = contract_arg(q, a[0], "DO");
 
 			c = make(q, "drop");
 			c->target = xstrdup(t->id);
-			new_alias(q, cl->as, c->id);
+			if (cl->as)
+				string_list_insert(&q->alias, cl->as)->util = xstrdup(c->id);
 		} else if (!strcmp(cl->verb, "amend")) {
 			int more = cl->nargs - 1;
 
@@ -1038,8 +1040,6 @@ int cmd_fulfill(int argc, const char **argv)
 		const char *eq = strchr(rest.v[i], '=');
 		char *id = eq ? xstrndup(rest.v[i], eq - rest.v[i]) : xstrdup(rest.v[i]);
 
-		if (!id_ok(id, "DOX"))
-			reject(128, NULL, "no such contract: '%s'", id);
 		string_list_insert(&q.given, id);
 		if (eq)
 			string_list_insert(&q.scopes, id)->util = xstrdup(eq + 1);
