@@ -374,17 +374,55 @@ static char *default_of(const char *wt)
 	return strbuf_read_file(&sb, pointer_path(wt), 0) < 0 ? NULL : line1(strbuf_detach(&sb, NULL));
 }
 
-static int hold_lock(const char *wt)
+/*
+ * v14 4.1: a lock file is opened, never removed, and held with flock(2);
+ * -1 when NOWAIT finds it held
+ */
+int lock_path(const char *path, int nowait)
 {
-	char *path;
 	int fd;
 
 	state_dirs();
-	path = xstrfmt("%s.lock", pointer_path(wt));
-	fd = open(path, O_RDWR | O_CREAT, 0666);
-	if (fd < 0 || flock(fd, LOCK_EX))
+	if ((fd = open(path, O_RDWR | O_CREAT, 0666)) < 0)
 		write_error(path);
-	return fd;
+	if (!flock(fd, LOCK_EX | (nowait ? LOCK_NB : 0)))
+		return fd;
+	if (!nowait)
+		write_error(path);
+	close(fd);
+	return -1;
+}
+
+/* v14 4.2-4.5: the session S's files: SUFFIX "" its lines, ".lock", ".listen", ".seen" */
+char *session_path(const char *s, const char *suffix)
+{
+	return state_path(xstrfmt("sessions/%s%s", s, suffix));
+}
+
+void session_lines(const char *s, struct string_list *lines)
+{
+	struct strbuf sb = STRBUF_INIT;
+
+	string_list_clear(lines, 0);
+	strbuf_read_file(&sb, session_path(s, ""), 0);
+	string_list_split(lines, sb.buf, "\n", -1);
+}
+
+void session_write(const char *s, struct string_list *lines)
+{
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, lines)
+		if (*item->string)
+			strbuf_addf(&sb, "%s\n", item->string);
+	write_state(session_path(s, ""), sb.buf);
+}
+
+/* v14 4.6: the worktree WT's lock */
+static int hold_lock(const char *wt)
+{
+	return lock_path(xstrfmt("%s.lock", pointer_path(wt)), 0);
 }
 
 static struct string_list *worktrees(void)
@@ -411,7 +449,7 @@ static char *session_read(const char *s, char *name)
 	struct strbuf sb = STRBUF_INIT;
 	char *wt;
 
-	if (!id_ok(s, "S") || strbuf_read_file(&sb, state_path(xstrfmt("sessions/%s", s)), 0) < 0)
+	if (!id_ok(s, "S") || strbuf_read_file(&sb, session_path(s, ""), 0) < 0)
 		return NULL;
 	wt = strstr(sb.buf, "\nworktree ");
 	if (!starts_with(sb.buf, "agent ") || !wt)
@@ -499,8 +537,8 @@ static void session_open(struct string_list *ids, const char *name)
 	if (!agent_ok(name))
 		reject(129, NULL, "bad agent name '%s'", name);
 	newid(sid, 'S');
-	write_state(state_path(xstrfmt("sessions/%s", sid)), xstrfmt("agent %s\nworktree %s\n", name, top));
-	session_tips(sid, NULL);
+	write_state(session_path(sid, ""), xstrfmt("agent %s\nworktree %s\n", name, top));
+	session_tips(sid, NULL, NULL, NULL);
 	for_each_string_list_item(item, ids) {
 		struct session_file *f = item->util;
 
@@ -531,24 +569,20 @@ static void session_list(struct string_list *ids)
 
 	for_each_string_list_item(item, ids) {
 		struct session_file *f = item->util;
-		struct strbuf sb = STRBUF_INIT, subs = STRBUF_INIT;
+		struct strbuf subs = STRBUF_INIT;
 		struct string_list lines = STRING_LIST_INIT_DUP;
 		struct string_list_item *line;
 		const char *d = default_of(f->wt);
-		int fd, n = 0, listening = 0;
+		int fd = lock_path(session_path(item->string, ".listen"), 1), n = 0, listening = fd < 0;
 
-		strbuf_read_file(&sb, state_path(xstrfmt("sessions/%s", item->string)), 0);
-		string_list_split(&lines, sb.buf, "\n", -1);
+		if (fd >= 0)
+			close(fd);
+		session_lines(item->string, &lines);
 		for_each_string_list_item(line, &lines)
 			if (starts_with(line->string, "sub ")) {
 				strbuf_addf(&subs, "%s\n", line->string);
 				n++;
 			}
-		fd = open(state_path(xstrfmt("sessions/%s.listen", item->string)), O_RDONLY);
-		if (fd >= 0) {
-			listening = flock(fd, LOCK_EX | LOCK_NB) != 0;
-			close(fd);
-		}
 		printf("session %s\nagent %s\nworktree %s\ndefault %s\nsubs %d\n%slistening %s\n\n", item->string,
 		       f->agent, f->wt, d && !strcmp(d, item->string) ? "yes" : "no", n, subs.buf,
 		       listening ? "yes" : "no");
@@ -561,23 +595,24 @@ static void session_close(struct string_list *ids, const char *s)
 	struct string_list_item *item = string_list_lookup(ids, s);
 	struct session_file *f;
 	char *dflt;
-	int fd, listen_fd;
+	int fd;
 
 	if (!item)
 		reject(128, "ait session list", "no usable ait session: unknown session '%s'", s);
 	f = item->util;
+	/* v14 4.5: the worktree's lock, the session's, then the listener's tried */
 	fd = hold_lock(f->wt);
-	listen_fd = open(state_path(xstrfmt("sessions/%s.listen", s)), O_RDWR | O_CREAT, 0666);
-	if (listen_fd >= 0 && flock(listen_fd, LOCK_EX | LOCK_NB)) {
+	lock_path(session_path(s, ".lock"), 0);
+	if (lock_path(session_path(s, ".listen"), 1) < 0) {
 		struct strbuf pid = STRBUF_INIT;
 
-		strbuf_read_file(&pid, state_path(xstrfmt("sessions/%s.listen", s)), 0);
-		reject(128, xstrfmt("stop the listener first: kill %s", line1(pid.buf)),
+		strbuf_read_file(&pid, session_path(s, ".listen"), 0);
+		reject(128, xstrfmt("the listener (pid %s) stopped", line1(pid.buf)),
 		       "cannot run now: a listener is running for session '%s'", s);
 	}
-	if (unlink(state_path(xstrfmt("sessions/%s", s))))
+	if (unlink(session_path(s, "")))
 		write_error(state_path("sessions"));
-	unlink(state_path(xstrfmt("sessions/%s.seen", s)));
+	unlink(session_path(s, ".seen"));
 	dflt = default_of(f->wt);
 	if (dflt && !strcmp(dflt, s) && unlink(pointer_path(f->wt)))
 		write_error(state_path("worktrees"));
@@ -939,20 +974,32 @@ static const char hook_text[] =
 	"echo >>\"$w\" 2>/dev/null\n"
 	"exit 0\n";
 
-static void install_hook(void)
+static char *hook_file(void)
 {
-	char *path = line1(git("rev-parse --path-format=absolute --git-path hooks/reference-transaction"));
+	return line1(git("rev-parse --path-format=absolute --git-path hooks/reference-transaction"));
+}
+
+/* the hook is ait's (9.8); another one leaves listen to polling every second */
+int hook_installed(void)
+{
 	struct strbuf now = STRBUF_INIT;
 
-	if (strbuf_read_file(&now, path, 0) >= 0) {
-		if (strcmp(now.buf, hook_text))
+	return strbuf_read_file(&now, hook_file(), 0) >= 0 && !strcmp(now.buf, hook_text);
+}
+
+static void install_hook(void)
+{
+	char *path = hook_file();
+
+	if (!access(path, F_OK)) {
+		if (!hook_installed())
 			warning("'%s' exists; 'ait listen' wakes by polling only", path);
 		return;
 	}
 	mkdir(xstrndup(path, strrchr(path, '/') - path), 0777);
 	write_state(path, hook_text);
 	if (chmod(path, 0755))
-		reject(128, NULL, "write error: '%s': %s", path, strerror(errno));
+		write_error(path);
 	mkdir(state_path(""), 0777);
 }
 

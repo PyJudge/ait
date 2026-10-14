@@ -148,51 +148,41 @@ int cmd_status(int argc, const char **argv)
 	return 0;
 }
 
-/* the session file's lines (v14 4.2), read and written whole under its lock */
-static char *session_file(const char *s)
-{
-	return state_path(xstrfmt("sessions/%s", s));
-}
-
 static int lock_session(const char *s)
 {
-	int fd = open(xstrfmt("%s.lock", session_file(s)), O_RDWR | O_CREAT, 0666);
-
-	if (fd < 0 || flock(fd, LOCK_EX))
-		reject(128, NULL, "write error: '%s.lock': %s", session_file(s), strerror(errno));
-	return fd;
+	return lock_path(session_path(s, ".lock"), 0);
 }
 
-static void read_lines(const char *s, struct string_list *lines)
+/* v14 4.3: keys go to the end of .seen, which is only added to */
+static void append_seen(const char *s, const char *keys)
 {
-	struct strbuf sb = STRBUF_INIT;
+	int fd;
 
-	strbuf_read_file(&sb, session_file(s), 0);
-	string_list_split(lines, sb.buf, "\n", -1);
+	if (!keys || !*keys)
+		return;
+	if ((fd = open(session_path(s, ".seen"), O_WRONLY | O_APPEND | O_CREAT, 0666)) < 0 ||
+	    write_in_full(fd, keys, strlen(keys)) < 0 || close(fd))
+		reject(128, NULL, "write error: '%s': %s", session_path(s, ".seen"), strerror(errno));
 }
 
-static void write_lines(const char *s, struct string_list *lines)
-{
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, lines)
-		if (*item->string)
-			strbuf_addf(&sb, "%s\n", item->string);
-	write_state(session_file(s), sb.buf);
-}
-
-/* spec 9.1: the tip lines, a snapshot of every ait ref */
+/* spec 9.1: the tip lines, a snapshot of the ait refs, local and remote-tracking (2.1.2) */
 static void tips_now(struct string_list *out)
 {
-	struct string_list refs = STRING_LIST_INIT_DUP;
-	struct string_list_item *r;
+	struct string_list refs = STRING_LIST_INIT_DUP, tracking = STRING_LIST_INIT_DUP;
+	struct string_list_item *r, *t;
+	struct strvec args = STRVEC_INIT;
+	struct names n;
 
-	string_list_split(&refs, git("for-each-ref --format=%(objectname) %(refname) refs/heads/ait/ refs/remotes/"), "\n", -1);
+	names_load(&n);
+	for_each_string_list_item(t, &n.remote)
+		for_each_string_list_item(r, (struct string_list *)t->util)
+			string_list_insert(&tracking, r->string);
+	strvec_pushl(&args, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/ait/", "refs/remotes/", NULL);
+	string_list_split(&refs, git_args(&args, NULL, NULL, NULL), "\n", -1);
 	for_each_string_list_item(r, &refs) {
 		const char *name = strchr(r->string, ' ');
 
-		if (name && (starts_with(name + 1, "refs/heads/ait/") || strstr(name + 1, "/ait/")))
+		if (name && (starts_with(name + 1, "refs/heads/ait/") || string_list_has_string(&tracking, name + 1)))
 			string_list_append(out, xstrfmt("tip %s", r->string));
 	}
 }
@@ -207,8 +197,7 @@ static char *receiving(const char *s, struct string_list *lines)
 	struct string_list_item *item;
 	char oid[48] = "";
 
-	string_list_clear(lines, 0);
-	read_lines(s, lines);
+	session_lines(s, lines);
 	for_each_string_list_item(item, lines)
 		if (starts_with(item->string, "sub "))
 			strbuf_addf(&v, "%s\n", item->string);
@@ -218,8 +207,11 @@ static char *receiving(const char *s, struct string_list *lines)
 	return strbuf_detach(&v, NULL);
 }
 
-/* spec 9.1: the session's tip lines become a new snapshot, unless V is no longer AS_OF (v14 9.5-4) */
-void session_tips(const char *s, const char *as_of)
+/*
+ * spec 9.1: the session's tip lines become TIPS (a snapshot now when NULL),
+ * and the keys SKIPPED go to .seen, unless V is no longer AS_OF (v14 9.5-4)
+ */
+void session_tips(const char *s, const char *as_of, struct string_list *tips, const char *skipped)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP, keep = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
@@ -230,8 +222,13 @@ void session_tips(const char *s, const char *as_of)
 		for_each_string_list_item(item, &lines)
 			if (!starts_with(item->string, "tip "))
 				string_list_append(&keep, item->string);
-		tips_now(&keep);
-		write_lines(s, &keep);
+		if (tips)
+			for_each_string_list_item(item, tips)
+				string_list_append(&keep, item->string);
+		else
+			tips_now(&keep);
+		append_seen(s, skipped);
+		session_write(s, &keep);
 	}
 	close(fd);
 }
@@ -264,7 +261,7 @@ static void subscribe(int argc, const char **argv, FILE *out)
 	if (argc < 2)
 		reject(129, NULL, "sub names what to subscribe to");
 	fd = lock_session(sid);
-	read_lines(sid, &lines);
+	session_lines(sid, &lines);
 	for (i = 1; i < argc; i++) {
 		char *line = sub_line(argv[i]);
 
@@ -273,7 +270,7 @@ static void subscribe(int argc, const char **argv, FILE *out)
 		string_list_append(&lines, line);
 		fprintf(out, "%s\n", line);
 	}
-	write_lines(sid, &lines);
+	session_write(sid, &lines);
 	close(fd);
 }
 
@@ -292,7 +289,7 @@ int cmd_unsub(int argc, const char **argv)
 
 	session(1);
 	fd = lock_session(sid);
-	read_lines(sid, &lines);
+	session_lines(sid, &lines);
 	for_each_string_list_item(item, &lines) {
 		int drop = 0;
 
@@ -305,7 +302,7 @@ int cmd_unsub(int argc, const char **argv)
 		else
 			string_list_append(&keep, item->string);
 	}
-	write_lines(sid, &keep);
+	session_write(sid, &keep);
 	close(fd);
 	return 0;
 }
@@ -440,13 +437,17 @@ static void event(const char *name, const char *e, struct string_list *watched, 
 	strbuf_addstr(payload, "ait-event-end\n");
 }
 
-/* one round of spec 9.6 for the session: candidates, events, seen, tips; 0 when it stopped */
-static int deliver(const char *name)
+/*
+ * one round of spec 9.6 (v14 9.5) for the session: the receiving state V and
+ * the snapshot N first, then the candidates; a key goes out once; the tips
+ * and the keys of the events skipped are written at the end, if V held
+ */
+static void deliver(const char *name)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP, subs = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP,
-			   cand = STRING_LIST_INIT_DUP, watched = STRING_LIST_INIT_DUP, now = STRING_LIST_INIT_DUP;
+			   cand = STRING_LIST_INIT_DUP, watched = STRING_LIST_INIT_DUP, tips = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *e;
-	struct strbuf in = STRBUF_INIT, seenbuf = STRBUF_INIT;
+	struct strbuf in = STRBUF_INIT, seenbuf = STRBUF_INIT, skipped = STRBUF_INIT;
 	char *v, *up, oid[48];
 	int rc, fd;
 
@@ -455,6 +456,7 @@ static int deliver(const char *name)
 	head = object("HEAD^{commit}", 0, oid, NULL) ? xstrdup(oid) : NULL;
 	fd = lock_session(sid);
 	v = receiving(sid, &lines);
+	tips_now(&tips);
 	close(fd);
 	for_each_string_list_item(item, &lines) {
 		if (starts_with(item->string, "sub "))
@@ -462,59 +464,110 @@ static int deliver(const char *name)
 		if (starts_with(item->string, "tip "))
 			strbuf_addf(&in, "^%.40s\n", item->string + 4);
 	}
-	strbuf_read_file(&seenbuf, xstrfmt("%s.seen", session_file(sid)), 0);
+	strbuf_read_file(&seenbuf, session_path(sid, ".seen"), 0);
 	string_list_split(&seen, seenbuf.buf, "\n", -1);
 	string_list_sort(&seen);
-	/* 9.2: the local branch and its upstream when that is a remote-tracking ait ref */
+	/* 9.2: the local branch and its upstream when that is a remote-tracking ait ref; at N */
 	string_list_insert(&watched, xstrfmt("refs/heads/%s", name));
 	up = line1(git_run(NULL, NULL, &rc, "rev-parse -q --verify --symbolic-full-name %s", xstrfmt("%s@{upstream}", name)));
 	if (!rc && starts_with(up, "refs/remotes/"))
 		string_list_insert(&watched, up);
-	for_each_string_list_item(item, &watched)
-		strbuf_addf(&in, "%s\n", item->string);
+	for_each_string_list_item(item, &tips)
+		if (string_list_has_string(&watched, item->string + 45))
+			strbuf_addf(&in, "%.40s\n", item->string + 4);
 	string_list_split(&cand, git_run(in.buf, NULL, NULL, "rev-list --reverse --topo-order --ignore-missing --stdin"),
 			  "\n", -1);
 	for_each_string_list_item(e, &cand) {
 		struct strbuf keys = STRBUF_INIT, payload = STRBUF_INIT;
-		int sfd;
+		struct string_list now = STRING_LIST_INIT_DUP, new_keys = STRING_LIST_INIT_DUP;
 
 		if (!*e->string ||
 		    !strcmp(line1(git("log -1 --format=%(trailers:key=Ait-Session,valueonly) %s", e->string)), sid))
 			continue;
 		event(name, e->string, &watched, &subs, &seen, &keys, &payload);
-		if (payload.len) {
-			/* v14 9.5-3: V as it was, or the round stops and is judged again */
-			fd = lock_session(sid);
-			rc = strcmp(receiving(sid, &now), v);
-			close(fd);
-			if (rc)
-				return 0;
-			if (fputs(payload.buf, stdout) == EOF || fflush(stdout))
-				return 0;
+		/* a key goes out once, in this round too */
+		string_list_split(&new_keys, keys.buf, "\n", -1);
+		for_each_string_list_item(item, &new_keys)
+			if (*item->string)
+				string_list_insert(&seen, item->string);
+		if (!payload.len) {
+			strbuf_add(&skipped, keys.buf, keys.len);
+			continue;
 		}
-		sfd = keys.len ? open(xstrfmt("%s.seen", session_file(sid)), O_WRONLY | O_APPEND | O_CREAT, 0666) : -1;
-		if (sfd >= 0) {
-			write_in_full(sfd, keys.buf, keys.len);
-			close(sfd);
+		/* v14 9.5-3: V as it was, or the round stops and is judged again */
+		fd = lock_session(sid);
+		rc = strcmp(receiving(sid, &now), v);
+		close(fd);
+		if (rc)
+			return;
+		/* 5.7: a reader gone ends listen as git ends on EPIPE; any other failure is a write error */
+		if (fputs(payload.buf, stdout) == EOF || fflush(stdout)) {
+			if (errno == EPIPE) {
+				signal(SIGPIPE, SIG_DFL);
+				raise(SIGPIPE);
+			}
+			reject(128, NULL, "write error: standard output: %s", strerror(errno));
 		}
+		append_seen(sid, keys.buf);
 	}
-	session_tips(sid, v);
-	return 1;
+	session_tips(sid, v, &tips, skipped.buf);
+}
+
+/* the listen loop (U51): a round when the hook adds a line to the wake file, and every EVERY seconds */
+static void listen_loop(int fetch)
+{
+	char *wake = state_path("wake");
+	struct stat st;
+	time_t polled = 0, fetched = 0;
+	off_t seen_wake = -1;
+	/* 9.8: polling fills in what no hook of ait's told, every second when there is none */
+	int every = hook_installed() ? 30 : 1, warned = 0;
+
+	while (!stopping) {
+		off_t size = stat(wake, &st) ? -1 : st.st_size;
+
+		if (fetch && time(NULL) - fetched >= fetch) {
+			struct strvec f = STRVEC_INIT;
+
+			strvec_pushl(&f, "fetch", "-q", "--all", NULL);
+			if (git_pass(&f))
+				warning("fetch failed: %s", git_error ? git_error : "");
+			fetched = time(NULL);
+		}
+		if (size != seen_wake || time(NULL) - polled >= every) {
+			struct strbuf hint = STRBUF_INIT;
+			const char *msg, *name = branch_find(&msg, &hint);
+
+			/* 6.8: a branch that cannot be chosen skips the round, said once */
+			if (!name && !warned)
+				warning("%s", msg);
+			warned = !name;
+			seen_wake = size;
+			polled = time(NULL);
+			if (name)
+				deliver(name);
+		}
+		usleep(100000);
+	}
 }
 
 /* v14 7.2.5 */
 int cmd_listen(int argc, const char **argv)
 {
-	int fd, i, fetch = 0;
 	struct strvec args = STRVEC_INIT;
-	time_t last = 0;
+	int i, fetch = 0, sfd, fd;
+	char *end;
 
 	start(START_SESSION);
-	for (i = 1; i < argc; i++)
-		if (!strcmp(argv[i], "--fetch") && i + 1 < argc)
-			fetch = atoi(argv[++i]);
-		else
+	for (i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--fetch") && i + 1 < argc) {
+			fetch = strtol(argv[++i], &end, 10);
+			if (*end || fetch <= 0)
+				reject(129, NULL, "--fetch takes seconds: '%s'", argv[i]);
+		} else {
 			strvec_push(&args, argv[i]);
+		}
+	}
 	if (args.nr) {
 		struct strvec sub = STRVEC_INIT;
 
@@ -522,50 +575,16 @@ int cmd_listen(int argc, const char **argv)
 		strvec_pushv(&sub, args.v);
 		subscribe(sub.nr, sub.v, stderr);
 	}
-	fd = open(xstrfmt("%s.listen", session_file(sid)), O_RDWR | O_CREAT, 0666);
-	if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB))
+	/* v14 4.5: the listener's lock, taken and stamped with the pid under the session's lock */
+	sfd = lock_session(sid);
+	if ((fd = lock_path(session_path(sid, ".listen"), 1)) < 0)
 		reject(128, NULL, "cannot run now: a listener is already running for session '%s'", sid);
 	if (ftruncate(fd, 0) == 0)
 		dprintf(fd, "%d\n", (int)getpid());
+	close(sfd);
 	signal(SIGINT, stop);
 	signal(SIGTERM, stop);
 	signal(SIGPIPE, SIG_IGN);
-	{
-		char *hook = line1(git("rev-parse --path-format=absolute --git-path hooks/reference-transaction"));
-		char *wake = state_path("wake");
-		struct stat st;
-		time_t polled = 0;
-		off_t seen_wake = -1;
-		/* the hook wakes it; polling fills in what no hook told (U51) */
-		int every = access(hook, X_OK) ? 1 : 30, warned = 0;
-
-		while (!stopping) {
-			/* the hook adds a line to the wake file (U51) */
-			off_t mt = stat(wake, &st) ? -1 : st.st_size;
-
-			if (fetch && time(NULL) - last >= fetch) {
-				struct strvec f = STRVEC_INIT;
-
-				strvec_pushl(&f, "fetch", "-q", "--all", NULL);
-				if (git_pass(&f))
-					warning("fetch failed: %s", git_error ? git_error : "");
-				last = time(NULL);
-			}
-			if (mt != seen_wake || time(NULL) - polled >= every) {
-				struct strbuf hint = STRBUF_INIT;
-				const char *msg, *name = branch_find(&msg, &hint);
-
-				/* 6.8: a branch that cannot be chosen skips the round, said once */
-				if (!name && !warned)
-					warning("%s", msg);
-				warned = !name;
-				seen_wake = mt;
-				polled = time(NULL);
-				if (name)
-					deliver(name);
-			}
-			usleep(100000);
-		}
-	}
+	listen_loop(fetch);
 	return 0;
 }

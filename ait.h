@@ -177,6 +177,11 @@ int cmd_sub(int argc, const char **argv);
 int cmd_unsub(int argc, const char **argv);
 int cmd_listen(int argc, const char **argv);
 int cmd_session(int argc, const char **argv);
-void session_tips(const char *s, const char *as_of);
+int lock_path(const char *path, int nowait);
+int hook_installed(void);
+char *session_path(const char *s, const char *suffix);
+void session_lines(const char *s, struct string_list *lines);
+void session_write(const char *s, struct string_list *lines);
+void session_tips(const char *s, const char *as_of, struct string_list *tips, const char *skipped);
 
 #endif
