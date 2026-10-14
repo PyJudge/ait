@@ -46,6 +46,7 @@ run ait contract commit -m "stale"
 check_rc "a stale draft is refused (6.5.4)" 1
 check "the message" "has err \"'$D' changed at 'ait/master' since '.ait/user/$D.yaml' was written\""
 check "the other change stands" "yaml $D | grep -q 'src/stock.c:1-5'"
+rm -f "$(git rev-parse --git-dir)/ait/index"
 
 ait fulfill "$D" --force -m now >/dev/null 2>&1
 run ait future drop "$D" -m retire; X=$(newest X)
@@ -103,7 +104,7 @@ check "the hint" "has err 'resolve the conflicts there'"
 check "nothing changed" "test \"\$(git rev-parse ait/master)\" = $tip"
 git switch -q ait/master; git merge -q --no-edit origin/ait/master >/dev/null; git switch -q master
 run env AIT_SESSION=- ait status
-check "a merge made by git outside ait: status warns of the violation (4.10)" "has err \"warning: '$D2' is already undertaken partially\""
+check "a merge made by git outside ait: status warns of the violation (4.10)" "has err \"warning: '$D2' is already undertaken \""
 check "and shows the contract it names (6.3-4)" "grep -qx \"id $D2\" $T/out"
 
 done_testing

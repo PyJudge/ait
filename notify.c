@@ -69,14 +69,8 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 	putchar('\n');
 	if (me && !strcmp(c->creator, me) && promise(c, v) && strcmp(c->kind, "drop"))
 		suggest("ait fulfill %s -m <why>", c->id);
-	if (!strcmp(c->kind, "demand") && live(c) && !held) {
-		struct strbuf scopes = STRBUF_INIT;
-
-		/* the stored scopes without their base blob: the request fixes them again (3.2) */
-		for_each_string_list_item(item, &c->provider)
-			strbuf_addf(&scopes, "%s%.*s", scopes.len ? "," : "", (int)strcspn(item->string, " "), item->string);
-		suggest("ait future offer %s <files> as o undertake %s o -m <why>", quoted(scopes.buf), c->id);
-	}
+	if (!strcmp(c->kind, "demand") && live(c) && !held)
+		suggest("ait future offer %s <files> as o undertake %s o -m <why>", quoted(scopes_bare(&c->provider)), c->id);
 }
 
 /* spec 6.3-4: a violation (4.10) names ID in its key ("pair:Y:X", "mix:D") */
@@ -127,7 +121,7 @@ int cmd_status(int argc, const char **argv)
 	putchar('\n');
 	b = branch_load(name, NULL, NULL);
 	me = session(0) ? agent : NULL;
-	invariants(b, &bad);
+	invariants(b, b, &bad);
 	for_each_string_list_item(item, &bad)
 		warning("%s", item->string + strcspn(item->string, " ") + 1);
 	for_each_string_list_item(item, &b->contracts) {

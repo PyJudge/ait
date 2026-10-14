@@ -1193,6 +1193,17 @@ char *scope_display(const char *scope, struct tree *x)
 		       starts_with(err, "repository lacks") ? "?nobase" : blob_at(x, scope_path(scope)) ? "?deleted" : "?missing");
 }
 
+/* a scope list as a request takes it: each scope without its base blob, which the request fixes again (3.2) */
+char *scopes_bare(struct string_list *l)
+{
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, l)
+		strbuf_addf(&sb, "%s%.*s", sb.len ? "," : "", (int)strcspn(item->string, " "), item->string);
+	return strbuf_detach(&sb, NULL);
+}
+
 /* a scope list as shown in X, joined with "," */
 char *scopes_display(struct string_list *l, struct tree *x)
 {
@@ -1339,42 +1350,51 @@ int touched(struct branch *b, struct contract *c, struct tree *h, struct tree *x
 	return 0;
 }
 
-/*
- * spec 4.10 (b) and (c): each violation as "KEY message", KEY naming it
- * across trees, so a new tree's violations compare with the old one's
- */
-void invariants(struct branch *b, struct string_list *out)
+/* the live offers that hold the demand ID in the way HOW ('w' or 'p') */
+static void holders(struct branch *b, const char *id, int how, struct string_list *out)
 {
-	struct string_list_item *item, *d;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &b->contracts)
+		if (live(item->util) && holds(item->util, id) == how)
+			string_list_append(out, item->string);
+}
+
+static void pair(struct string_list *out, struct contract *upper, struct contract *lower)
+{
+	string_list_insert(out, xstrfmt("pair:%s:%s changing '%s' would leave '%s' fulfilled on top of an "
+					"unfulfilled '%s'", upper->id, lower->id, lower->id, upper->id, lower->id));
+}
+
+/*
+ * spec 4.10 (b) and (c): each violation of B as "KEY message", KEY naming it
+ * across trees, so a new tree's violations compare with the old one's. A mix
+ * is told from WAS: what held the demand there is what it is "already" held by.
+ */
+void invariants(struct branch *b, struct branch *was, struct string_list *out)
+{
+	struct string_list_item *item, *o;
 
 	for_each_string_list_item(item, &b->contracts) {
-		struct contract *o = item->util;
+		struct contract *d = item->util;
+		struct string_list whole = STRING_LIST_INIT_DUP, part = STRING_LIST_INIT_DUP, before = STRING_LIST_INIT_DUP;
 
-		if (!live(o) || strcmp(o->kind, "offer"))
+		if (!live(d) || strcmp(d->kind, "demand"))
 			continue;
-		for_each_string_list_item(d, &o->undertakes) {
-			struct contract *dc = contract_get(b, d->string);
-			struct string_list_item *other;
-
-			if (!live(dc))
-				continue;
-			if (has_valid(b, o) && !has_valid(b, dc))
-				string_list_insert(out, xstrfmt("pair:%s:%s changing '%s' would leave '%s' fulfilled on top "
-								"of an unfulfilled '%s'", o->id, dc->id, dc->id, o->id, dc->id));
-			for_each_string_list_item(other, &b->contracts) {
-				struct contract *p = other->util;
-
-				if (live(p) && holds(p, dc->id) == 'p')
-					string_list_insert(out, xstrfmt("mix:%s '%s' is already undertaken partially by '%s'",
-									dc->id, dc->id, p->id));
-			}
+		holders(b, d->id, 'w', &whole);
+		holders(b, d->id, 'p', &part);
+		if (whole.nr && part.nr) {
+			holders(was, d->id, 'w', &before);
+			string_list_insert(out, xstrfmt("mix:%s '%s' is already undertaken %s by '%s'", d->id, d->id,
+							before.nr ? "wholly" : "partially",
+							before.nr ? before.items[0].string : part.items[0].string));
 		}
-		for_each_string_list_item(d, &o->partially) {
-			struct contract *dc = contract_get(b, d->string);
-
-			if (live(dc) && has_valid(b, dc) && !has_valid(b, o))
-				string_list_insert(out, xstrfmt("pair:%s:%s changing '%s' would leave '%s' fulfilled on top "
-								"of an unfulfilled '%s'", dc->id, o->id, o->id, dc->id, o->id));
-		}
+		/* 1.8: what leans on an unfulfilled contract may not stand fulfilled on it */
+		for_each_string_list_item(o, &whole)
+			if (has_valid(b, contract_get(b, o->string)) && !has_valid(b, d))
+				pair(out, contract_get(b, o->string), d);
+		for_each_string_list_item(o, &part)
+			if (has_valid(b, d) && !has_valid(b, contract_get(b, o->string)))
+				pair(out, d, contract_get(b, o->string));
 	}
 }

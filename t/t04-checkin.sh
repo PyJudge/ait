@@ -27,7 +27,7 @@ echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$T/bin:||")\" ait future amend $
 run env PATH="$T/bin:$PATH" ait fulfill "$X" -m withdraw
 check_rc "a lost CAS after the code step records nothing (6.7.5-3)" 1
 check "the message says what is not fulfilled" "has err \"error: '$X' not fulfilled: 'ait/master' moved while running; nothing changed\""
-check "the hint fulfills again, as the drop is as it was" "has err \"hint: ait fulfill $X -m 'withdraw'\""
+check "the hint fulfills again, as the drop is as it was" "has err \"hint: ait fulfill $X -m withdraw\""
 
 good=$(git rev-parse ait/master)
 git switch -q ait/master

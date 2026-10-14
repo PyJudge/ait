@@ -54,21 +54,22 @@ struct checkin {
 	char tip[48];			/* T; "" when the branch has no commit */
 	struct string_list put;		/* path -> its new text */
 	const char *msg;		/* the message; its first line is the summary */
-	const char *second_parent;	/* a merge (6.5.6) */
-	char *tree;			/* a merge's tree, instead of put (6.5.6) */
-	const char *refusal;		/* what a broken rule's message starts with (6.5.6) */
-	int no_trailers;		/* ait init's commit */
+	int no_trailers;		/* ait init's commit: no trailers, no summary line (6.1) */
 	char rid[16];			/* this request's ID */
-	char made[48];			/* the commit made */
+	/* contract pull (6.5.6): a merge's tree and second parent, or the commit to fast-forward to */
+	char *tree;
+	const char *second_parent;
+	const char *ff;
+	const char *refusal;		/* what a broken rule's message starts with (6.5.6) */
 	/* the hint for a structural violation the request would add (4.10), or NULL */
-	char *(*violation_hint)(struct checkin *c, const char *key, void *data);
+	char *(*violation_hint)(struct checkin *c, const char *key);
 	/* the command again, when the branch moved from OLD and that is still right (6.7.5-3), or NULL */
 	char *(*retry_hint)(struct checkin *c, const char *old);
-	void *data;
+	void *data;			/* the command's own state, for its judge and hints */
 };
-typedef void (*judge_fn)(struct checkin *c, void *data);
-int checkin_ref(struct checkin *c, const char *commit);
-void checkin_run(struct checkin *c, judge_fn judge, void *data);
+typedef void (*judge_fn)(struct checkin *c);
+char *checkin_judge(struct checkin *c, judge_fn judge);
+void checkin_run(struct checkin *c, judge_fn judge);
 char *tree_with(const char *treeish, const struct strbuf *info);
 
 /* contract.c: trees as git lists them */
@@ -144,9 +145,10 @@ enum verdict judge(struct branch *b, struct contract *c, struct tree *x);
 const char *verdict_word(enum verdict v);
 int promise(struct contract *c, enum verdict v);
 int contract_overlaps(struct contract *c, const char *q, struct tree *t);
+char *scopes_bare(struct string_list *l);
 char *scopes_display(struct string_list *l, struct tree *x);
 char *provider_display(struct branch *b, struct contract *c, struct tree *x);
-void invariants(struct branch *b, struct string_list *out);
+void invariants(struct branch *b, struct branch *was, struct string_list *out);
 char *scope_pin(const char *arg, struct tree *t, char **err);
 char *scope_locate(const char *scope, struct tree *t, char **err);
 char *code_entry(const char *scope, struct tree *t, char **err);

@@ -831,77 +831,90 @@ static char *checkin_tree(struct checkin *c)
  * spec 4.10: a new tree may not add violations of the structural
  * invariants; those of T stay as they were (a git merge made them)
  */
-static void checkin_invariants(struct checkin *c, const char *tree)
+static void checkin_invariants(struct checkin *c, struct branch *now, const char *tree)
 {
-	struct branch *now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
 	struct branch *after = branch_load(c->branch, NULL, tree);
 	struct string_list before = STRING_LIST_INIT_DUP, then = STRING_LIST_INIT_DUP;
 	struct string_list_item *v;
 
-	if (after->errors.nr && !c->tree)
+	if (after->errors.nr && !c->refusal)
 		BUG("ait wrote a malformed contract: %s", after->errors.items[0].string);
 	if (after->errors.nr)
-		reject(1, c->violation_hint(c, "", c->data), "%s%s", c->refusal, after->errors.items[0].string);
-	invariants(now, &before);
-	invariants(after, &then);
+		reject(1, c->violation_hint(c, ""), "%s%s", c->refusal, after->errors.items[0].string);
+	invariants(now, now, &before);
+	invariants(after, now, &then);
 	for_each_string_list_item(v, &then) {
 		char *key = xstrndup(v->string, strcspn(v->string, " "));
 
 		if (!string_list_has_string(&before, v->string))
-			reject(1, c->violation_hint ? c->violation_hint(c, key, c->data) : NULL, "%s%s",
+			reject(1, c->violation_hint ? c->violation_hint(c, key) : NULL, "%s%s",
 			       c->refusal ? c->refusal : "", v->string + strlen(key) + 1);
 	}
 }
 
-/* spec 4.4-3: move the branch from T to COMMIT: (a) no worktree uses it, (b) the CAS; update-ref's exit code */
-int checkin_ref(struct checkin *c, const char *commit)
+/*
+ * spec 4.4-1, 2: everything judged on the tip T, as it is now; the new tree,
+ * the invariants checked. Step 0 of fulfill asks the same (6.7.5-0).
+ */
+char *checkin_judge(struct checkin *c, judge_fn judge)
 {
-	int rc;
+	struct branch *now;
 
-	refuse_used(c->branch, commit);
-	git_run(NULL, NULL, &rc, "update-ref -m %s %s %s %s", c->msg, xstrfmt("refs/heads/%s", c->branch), commit,
-		*c->tip ? c->tip : NULL_OID);
-	return rc;
+	if (!object(xstrfmt("refs/heads/%s^{commit}", c->branch), 0, c->tip, NULL))
+		*c->tip = 0;
+	string_list_clear(&c->put, 0);
+	c->tree = NULL;
+	c->second_parent = c->ff = NULL;
+	if (judge)
+		judge(c);
+	if (c->ff)
+		return NULL;
+	now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
+	if (!c->tree)
+		c->tree = checkin_tree(c);
+	checkin_invariants(c, now, c->tree);
+	return c->tree;
 }
 
 /*
  * spec 4.4: one checkin. JUDGE decides on T what to put; on a lost CAS the
  * whole command is judged again on the new tip, unless a file it puts moved.
+ * A judge that names a commit to fast-forward to (6.5.6) moves the branch there.
  */
-void checkin_run(struct checkin *c, judge_fn judge, void *data)
+void checkin_run(struct checkin *c, judge_fn judge)
 {
 	if (!*c->rid)
 		newid(c->rid, 'R');
 	for (;;) {
-		char old[48], *tree, *commit;
+		char old[48], *tree = checkin_judge(c, judge);
+		const char *commit;
 		struct strbuf parents = STRBUF_INIT;
 		struct strvec args = STRVEC_INIT;
 		struct string_list_item *item;
 		int rc;
 
-		if (!object(xstrfmt("refs/heads/%s^{commit}", c->branch), 0, c->tip, NULL))
-			*c->tip = 0;
-		string_list_clear(&c->put, 0);
-		if (judge)
-			judge(c, data);
-		tree = c->tree ? c->tree : checkin_tree(c);
-		checkin_invariants(c, tree);
 		if (*c->tip)
 			strbuf_addf(&parents, "-p %s ", c->tip);
 		if (c->second_parent)
 			strbuf_addf(&parents, "-p %s ", c->second_parent);
-		commit = line1(git_run(checkin_message(c), NULL, NULL, xstrfmt("commit-tree %s%%s", parents.buf), tree));
-		if (!checkin_ref(c, commit)) {
-			snprintf(c->made, sizeof(c->made), "%s", commit);
+		commit = c->ff ? c->ff :
+			 line1(git_run(checkin_message(c), NULL, NULL, xstrfmt("commit-tree %s%%s", parents.buf), tree));
+		/* 4.4-3: (a) no worktree uses the branch, judged by git; (b) the CAS */
+		refuse_used(c->branch, commit);
+		git_run(NULL, NULL, &rc, "update-ref -m %s %s %s %s", c->msg, xstrfmt("refs/heads/%s", c->branch), commit,
+			*c->tip ? c->tip : NULL_OID);
+		if (!rc && c->ff)
+			printf("Fast-forward %.7s..%.7s\n", c->tip, commit);
+		else if (!rc && !c->no_trailers)
 			printf("[%s %s%s] %s\n", c->branch, line1(git("rev-parse --short %s", commit)),
 			       *c->tip ? "" : " (root-commit)", line1(xstrdup(c->msg)));
+		if (!rc)
 			return;
-		}
 		snprintf(old, sizeof(old), "%s", c->tip);
 		if (!object(xstrfmt("refs/heads/%s^{commit}", c->branch), 0, c->tip, NULL) || !strcmp(old, c->tip))
 			reject(128, NULL, "%s", git_failed());
 		/* a merge reads every file, so any move judges it again (6.5.6) */
-		if (c->tree)
+		if (c->second_parent || c->ff)
 			continue;
 		strvec_pushl(&args, "diff-tree", "--quiet", *old ? old : EMPTY_TREE, c->tip, "--", NULL);
 		for_each_string_list_item(item, &c->put)
@@ -1001,7 +1014,7 @@ static int cmd_init(int argc, const char **argv)
 		}
 		c.branch = xstrfmt("ait/%s", line1(git("var GIT_DEFAULT_BRANCH")));
 		string_list_init_dup(&c.put);
-		checkin_run(&c, NULL, NULL);
+		checkin_run(&c, NULL);
 		printf("branch %s\n", c.branch);
 	}
 	return 0;
