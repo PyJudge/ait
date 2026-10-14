@@ -5,10 +5,20 @@
 #include "ait.h"
 #include "quote.h"
 
+/* one clause of a request as given (6.4): its verb and its words */
+struct clause {
+	const char *verb;		/* demand, offer, drop, amend, cancel, undertake, release */
+	int future;
+	int partial;			/* undertake -p */
+	const char *args[4];		/* its words after the verb: scopes and files, IDs */
+	int nargs;
+	const char *as;
+};
+
 /* a request: what it changes on the branch, and what it fulfils */
 struct request {
-	int argc;
-	const char **argv;		/* as given, for the hints that extend it (4.10) */
+	struct clause *clauses;		/* the clauses, read once from the words (6.4) */
+	size_t nclauses;
 	struct branch *b;		/* the branch at T */
 	struct tree *x;			/* the index's tree (5.1) */
 	struct string_list changed;	/* ID -> struct contract: new and changed contracts */
@@ -283,7 +293,7 @@ static int clause_word(const char *w)
 	return 0;
 }
 
-/* the words of one clause from ARGV at *I */
+/* the next word of a clause; only amend's "-" starts with '-' (v14 7.3.1) */
 static const char *word(int argc, const char **argv, int *i)
 {
 	if (*i >= argc || (*argv[*i] == '-' && strcmp(argv[*i], "-")))
@@ -291,16 +301,69 @@ static const char *word(int argc, const char **argv, int *i)
 	return argv[(*i)++];
 }
 
-static const char *as_name(int argc, const char **argv, int *i)
+/*
+ * spec 6.4: the clauses of ARGV, read once and without the branch, so
+ * whether the request fulfils is known before it is judged (4.3-5);
+ * how many words amend takes is checked against its contract's kind later
+ */
+static int read_clauses(struct request *q, int argc, const char **argv)
 {
-	if (*i + 1 < argc && !strcmp(argv[*i], "as")) {
-		*i += 2;
-		return argv[*i - 1];
+	static const struct {
+		const char *verb;
+		int words;		/* the words it always takes */
+		int future;		/* 0 never future, 1 always, 2 either */
+		int fulfils;		/* without future, it fulfils (6.4.1) */
+		int named;		/* it makes a contract an alias can name */
+	} verbs[] = {
+		{ "demand", 3, 2, 1, 1 },
+		{ "offer", 2, 2, 1, 1 },
+		{ "drop", 1, 1, 0, 1 },
+		{ "amend", 1, 2, 1, 0 },
+		{ "cancel", 1, 1, 0, 0 },
+		{ "undertake", 2, 0, 0, 0 },
+		{ "release", 2, 0, 0, 0 },
+	};
+	int i = 0, fulfils = 0;
+
+	while (i < argc) {
+		struct clause *cl;
+		const char *w = argv[i++];
+		int future = !strcmp(w, "future");
+		size_t v;
+
+		/* options() leaves only -p and --partial here, and they belong right after undertake */
+		if (*w == '-')
+			reject(129, NULL, "'%s' goes right after 'undertake'", w);
+		if (future)
+			w = word(argc, argv, &i);
+		for (v = 0; v < ARRAY_SIZE(verbs) && strcmp(w, verbs[v].verb); v++)
+			;
+		if (v == ARRAY_SIZE(verbs) || (verbs[v].future != 2 && verbs[v].future != future))
+			reject(129, NULL, "unknown clause '%s%s'", future ? "future " : "", w);
+		REALLOC_ARRAY(q->clauses, q->nclauses + 1);
+		cl = &q->clauses[q->nclauses++];
+		memset(cl, 0, sizeof(*cl));
+		cl->verb = verbs[v].verb;
+		cl->future = future;
+		if (!strcmp(w, "undertake") && i < argc && (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--partial"))) {
+			cl->partial = 1;
+			i++;
+		}
+		while (cl->nargs < verbs[v].words)
+			cl->args[cl->nargs++] = word(argc, argv, &i);
+		/* v14 7.3.1: amend K takes up to three more words; none is the empty amend */
+		while (!strcmp(w, "amend") && i < argc && cl->nargs < 4 && !clause_word(argv[i]))
+			cl->args[cl->nargs++] = argv[i++];
+		if (verbs[v].named && i + 1 < argc && !strcmp(argv[i], "as")) {
+			cl->as = argv[i + 1];
+			i += 2;
+		}
+		fulfils |= verbs[v].fulfils && !future;
 	}
-	return NULL;
+	return fulfils;
 }
 
-/* L without ID, in its order (a contract row keeps the order it was written in) */
+/* L without ID, in its order */
 static void remove_id(struct string_list *l, const char *id)
 {
 	size_t i, j = 0;
@@ -314,91 +377,73 @@ static void remove_id(struct string_list *l, const char *id)
 /* spec 6.4.1: the clauses applied in order to the branch at T */
 static void apply_clauses(struct request *q)
 {
-	int i = 0, argc = q->argc;
-	const char **argv = q->argv;
 	struct tree *pin_at = head ? tree_load(head) : tree_load(EMPTY_TREE);
+	size_t n;
 
-	while (i < argc) {
-		const char *w = argv[i++];
-		int future = !strcmp(w, "future"), partial = 0;
+	for (n = 0; n < q->nclauses; n++) {
+		struct clause *cl = &q->clauses[n];
+		const char **a = cl->args;
 		struct contract *c, *d, *o;
 
-		/* options() leaves only -p and --partial here, and they belong right after undertake */
-		if (*w == '-')
-			reject(129, NULL, "'%s' goes right after 'undertake'", w);
-		if (future)
-			w = word(argc, argv, &i);
-		if (!strcmp(w, "demand") || !strcmp(w, "offer")) {
-			int demand = !strcmp(w, "demand");
+		if (!strcmp(cl->verb, "demand") || !strcmp(cl->verb, "offer")) {
+			int demand = !strcmp(cl->verb, "demand");
 
-			c = make(q, w);
+			c = make(q, cl->verb);
 			if (demand)
-				scopes_arg(&c->consumer, word(argc, argv, &i), pin_at, 1, 0);
-			scopes_arg(&c->provider, word(argc, argv, &i), pin_at, 1, 1);
-			specs_from_files(c, word(argc, argv, &i));
-			new_alias(q, as_name(argc, argv, &i), c->id);
-			if (!future)
-				string_list_insert(&q->fulfil, c->id);
-		} else if (!strcmp(w, "drop") && future) {
-			struct contract *t = contract_arg(q, word(argc, argv, &i), "DO");
+				scopes_arg(&c->consumer, a[0], pin_at, 1, 0);
+			scopes_arg(&c->provider, a[demand], pin_at, 1, 1);
+			specs_from_files(c, a[demand + 1]);
+			new_alias(q, cl->as, c->id);
+		} else if (!strcmp(cl->verb, "drop")) {
+			struct contract *t = contract_arg(q, a[0], "DO");
 
 			c = make(q, "drop");
 			c->target = xstrdup(t->id);
-			new_alias(q, as_name(argc, argv, &i), c->id);
-		} else if (!strcmp(w, "amend")) {
-			const char *args[3];
-			int nargs = 0;
+			new_alias(q, cl->as, c->id);
+		} else if (!strcmp(cl->verb, "amend")) {
+			int more = cl->nargs - 1;
 
-			c = contract_arg(q, word(argc, argv, &i), "DOX");
-			/* v14 7.3.1: D takes A B FILES, O takes B FILES, X takes K; none is the empty amend */
-			while (i < argc && nargs < 3 && !clause_word(argv[i]))
-				args[nargs++] = argv[i++];
-			if (nargs && nargs != (*c->id == 'D' ? 3 : *c->id == 'O' ? 2 : 1))
+			c = contract_arg(q, a[0], "DOX");
+			/* v14 7.3.1: D takes A B FILES, O takes B FILES, X takes K */
+			if (more && more != (*c->id == 'D' ? 3 : *c->id == 'O' ? 2 : 1))
 				reject(129, NULL, "amend '%s' takes %s", c->id,
 				       *c->id == 'D' ? "A B FILES" : *c->id == 'O' ? "B FILES" : "the target");
 			c = changing(q, c->id);
-			if (*c->id == 'X' && nargs) {
-				c->target = xstrdup(contract_arg(q, args[0], "DO")->id);
-			} else if (nargs) {
+			if (*c->id == 'X' && more) {
+				c->target = xstrdup(contract_arg(q, a[1], "DO")->id);
+			} else if (more) {
 				if (*c->id == 'D')
-					scopes_arg(&c->consumer, args[0], pin_at, 1, 0);
-				scopes_arg(&c->provider, args[nargs - 2], pin_at, 1, 1);
-				if (strcmp(args[nargs - 1], "-"))
-					specs_from_files(c, args[nargs - 1]);
+					scopes_arg(&c->consumer, a[1], pin_at, 1, 0);
+				scopes_arg(&c->provider, a[more - 1], pin_at, 1, 1);
+				if (strcmp(a[more], "-"))
+					specs_from_files(c, a[more]);
 			}
-			if (future && q->future_force)
+			if (cl->future && q->future_force)
 				string_list_insert(&q->trivial, c->id);
 			/* an empty amend reopens: both IDs move (6.4.1) */
-			if (!nargs) {
+			if (!more) {
 				c->condition_id = xstrdup(q->rid);
 				c->change_id = xstrdup(q->rid);
 			}
-			if (!future)
-				string_list_insert(&q->fulfil, c->id);
-		} else if (!strcmp(w, "cancel") && future) {
-			c = contract_arg(q, word(argc, argv, &i), "DOX");
-			if (!strcmp(c->state, "cancelled"))
-				continue;
-			changing(q, c->id)->state = xstrdup("cancelled");
-		} else if (!strcmp(w, "undertake") || !strcmp(w, "release")) {
-			int take = !strcmp(w, "undertake");
-
-			if (take && i < argc && (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--partial"))) {
-				partial = 1;
-				i++;
-			}
-			d = contract_arg(q, word(argc, argv, &i), "D");
-			o = contract_arg(q, word(argc, argv, &i), "O");
-			if (take && ended(d))
+		} else if (!strcmp(cl->verb, "cancel")) {
+			c = contract_arg(q, a[0], "DOX");
+			if (strcmp(c->state, "cancelled"))
+				changing(q, c->id)->state = xstrdup("cancelled");
+			continue;
+		} else {
+			d = contract_arg(q, a[0], "D");
+			o = contract_arg(q, a[1], "O");
+			if (!strcmp(cl->verb, "undertake") && ended(d))
 				refuse(ENDED, d, NULL);
 			o = changing(q, o->id);
 			remove_id(&o->undertakes, d->id);
 			remove_id(&o->partially, d->id);
-			if (take)
-				string_list_append(partial ? &o->partially : &o->undertakes, d->id);
-		} else {
-			reject(129, NULL, "unknown clause '%s'", w);
+			if (!strcmp(cl->verb, "undertake"))
+				string_list_append(cl->partial ? &o->partially : &o->undertakes, d->id);
+			continue;
 		}
+		if (!cl->future)
+			string_list_insert(&q->fulfil, c->id);
 	}
 }
 
@@ -948,17 +993,11 @@ int cmd_request(int argc, const char **argv)
 {
 	struct request q;
 	struct strvec rest = STRVEC_INIT;
-	int i, fulfilling = 0;
+	int fulfilling;
 
 	request_init(&q, argv);
 	options(&q, argc, argv, &rest);
-	q.argc = rest.nr;
-	q.argv = rest.v;
-	for (i = 0; i < q.argc; i++) {
-		if ((!strcmp(q.argv[i], "demand") || !strcmp(q.argv[i], "offer") || !strcmp(q.argv[i], "amend")) &&
-		    (i == 0 || strcmp(q.argv[i - 1], "future")))
-			fulfilling = 1;
-	}
+	fulfilling = read_clauses(&q, rest.nr, rest.v);
 	/* a --force with no clause that fulfils is the trivial change of 6.4.1 */
 	if (q.force && !fulfilling) {
 		q.future_force = 1;

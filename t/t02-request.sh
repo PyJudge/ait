@@ -80,4 +80,9 @@ check "naming the key and its line" "has err \"bad format: 'cond5.yaml': unknown
 run ait future demand src/order.c src/stock.c cond.yaml -p future offer src/stock.c cond.yaml -m x
 check_rc "-p anywhere but after undertake is a usage error, not a skipped word (6.4)" 129
 
+echo x > amend; git add amend; git commit -qm amend
+run ait future demand src/order.c amend cond.yaml -m "a file named amend"
+check_rc "a word that is a scope is not read as a clause (6.4)" 0
+check "nothing is fulfilled, no code step runs" "! has out '^fulfilled' && ! has err 'nothing to commit'"
+
 done_testing
