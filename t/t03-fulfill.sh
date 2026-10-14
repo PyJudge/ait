@@ -52,6 +52,8 @@ check "the warning says what is recorded" "has err 'nothing to commit; recording
 
 run ait future demand src/order.c src/stock.c cond.yaml -m d3
 D3=$(newest D)
+run ait status
+check "a demand no offer holds hints an offer that undertakes it (6.3)" "has err \"hint: ait future offer 'src/stock.c' <files> as o undertake $D3 o -m <why>\""
 mkdir -p .git/hooks; printf '#!/bin/sh\nexit 1\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit
 echo more >> src/stock.c; git add src/stock.c
 run ait fulfill "$D3" --force -m "blocked"

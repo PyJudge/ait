@@ -23,6 +23,7 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 	enum verdict v = judge(b, c, x);
 	struct string_list_item *item;
 	size_t i;
+	int held = 0;
 
 	printf("id %s\nkind %s\ngroup %s\nstate %s\ncreator %s\n", c->id, c->kind, *c->group ? c->group : "-",
 	       verdict_word(v), c->creator);
@@ -50,6 +51,7 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 			int whole = unsorted_string_list_has_string(&o->undertakes, c->id),
 			    part = unsorted_string_list_has_string(&o->partially, c->id);
 
+			held |= live(o) && (whole || part);
 			if (whole || part)
 				printf("undertaken-by %s %s %s %s\n", o->id, verdict_word(judge(b, o, x)), o->creator,
 				       part ? "partial" : "whole");
@@ -68,6 +70,28 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 	putchar('\n');
 	if (me && !strcmp(c->creator, me) && promise(c, v) && strcmp(c->kind, "drop"))
 		suggest("ait fulfill %s -m <why>", c->id);
+	if (!strcmp(c->kind, "demand") && live(c) && !held) {
+		struct strbuf scopes = STRBUF_INIT;
+
+		/* the stored scopes without their base blob: the request fixes them again (3.2) */
+		for_each_string_list_item(item, &c->provider)
+			strbuf_addf(&scopes, "%s%.*s", scopes.len ? "," : "", (int)strcspn(item->string, " "), item->string);
+		suggest("ait future offer %s <files> as o undertake %s o -m <why>", quoted(scopes.buf), c->id);
+	}
+}
+
+/* spec 6.3-4: a violation (4.10) names ID in its key ("pair:Y:X", "mix:D") */
+static int violates(struct string_list *bad, const char *id)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, bad) {
+		char *key = xstrndup(item->string, strcspn(item->string, " "));
+
+		if (strstr(xstrfmt("%s:", key), xstrfmt(":%s:", id)))
+			return 1;
+	}
+	return 0;
 }
 
 /* spec 6.3 */
@@ -122,7 +146,7 @@ int cmd_status(int argc, const char **argv)
 		} else {
 			pick = (me && !strcmp(c->creator, me) && promise(c, v)) ||
 			       (me && !strcmp(c->creator, me) && !strcmp(c->kind, "demand") && v == V_CURRENT) ||
-			       v == V_UNVERIFIED || (h && touched(b, c, h, x));
+			       v == V_UNVERIFIED || (h && touched(b, c, h, x)) || violates(&bad, c->id);
 		}
 		if (pick)
 			string_list_insert(&wanted, c->id)->util = c;

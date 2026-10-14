@@ -93,5 +93,9 @@ check_rc "a clean merge that mixes undertakes is refused (4.10)" 1
 check "the message" "has err \"merging 'origin/ait/master' breaks contract rules: \""
 check "the hint" "has err 'resolve the conflicts there'"
 check "nothing changed" "test \"\$(git rev-parse ait/master)\" = $tip"
+git switch -q ait/master; git merge -q --no-edit origin/ait/master >/dev/null; git switch -q master
+run env AIT_SESSION=- ait status
+check "a merge made by git outside ait: status warns of the violation (4.10)" "has err \"warning: '$D2' is already undertaken partially\""
+check "and shows the contract it names (6.3-4)" "grep -qx \"id $D2\" $T/out"
 
 done_testing
