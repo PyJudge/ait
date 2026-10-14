@@ -53,6 +53,11 @@ git clone -q "$T/r" "$T/c" 2>/dev/null
 cd "$T/c"
 run ait status
 check_rc "a clone with only remote-tracking ait branches (4.3-1)" 128
+run env AIT_SESSION=- ait future demand src/order.c src/stock.c x.yaml -m x
+check "the branch is refused before the session (4.3 first, then 4.6)" "has err 'fatal: no local ait branch'"
+mkdir -p .ait; printf 'x' > .ait/Dabcdefabcdef.yaml
+run ait contract add .ait/Dabcdefabcdef.yaml
+check_rc "contract add passes 4.3 too" 128
 check "is told to run ait init" "has err 'hint: ait init'"
 run ait checkout ait/master
 check_rc "checkout of a remote-only name is not passed to git (6.2)" 128

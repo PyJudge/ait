@@ -44,7 +44,8 @@ const char *init_source(struct names *n, const char *name);
 const char *branch_find(const char **msg, struct strbuf *hint);
 const char *branch_name(void);
 void refuse_used(const char *branch, const char *commit);
-void refuse_broken(int writes, int fulfils);
+enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8 };
+const char *start(int how);
 char *checkout_file(void);
 
 /* ait.c: one checkin (spec 4.4) */

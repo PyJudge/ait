@@ -108,11 +108,10 @@ int cmd_status(int argc, const char **argv)
 	for (i = 1; i < argc; i++)
 		if (*argv[i] == '-' || (!scope_ok(argv[i], 1, 1) && range_of(argv[i], &rc, &rc) != 1))
 			reject(129, NULL, "status takes scopes only: '%s'", argv[i]);
-	name = branch_name();
+	name = start(START_WARNS);
 	names_load(&n);
 	printf("On contract branch %s%s\n", name,
 	       n.local.nr == 1 && !access(checkout_file(), F_OK) ? "" : n.local.nr == 1 ? " (the only one)" : "");
-	refuse_broken(-1, 0);
 	x = index_tree();
 	h = head ? tree_load(head) : NULL;
 	strvec_push(&args, "status");
@@ -286,8 +285,7 @@ static void subscribe(int argc, const char **argv, FILE *out)
 
 int cmd_sub(int argc, const char **argv)
 {
-	session(1);
-	refuse_broken(0, 0);
+	start(START_SESSION);
 	subscribe(argc, argv, stdout);
 	return 0;
 }
@@ -517,7 +515,7 @@ int cmd_listen(int argc, const char **argv)
 	struct strvec args = STRVEC_INIT;
 	time_t last = 0;
 
-	session(1);
+	start(START_SESSION);
 	for (i = 1; i < argc; i++)
 		if (!strcmp(argv[i], "--fetch") && i + 1 < argc)
 			fetch = atoi(argv[++i]);

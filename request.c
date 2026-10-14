@@ -693,10 +693,8 @@ static void run_request(struct request *q, int fulfilling)
 	struct string_list_item *item;
 	int rc;
 
-	session(1);
-	refuse_broken(1, fulfilling);
+	ck.branch = start(START_SESSION | START_WRITES | (fulfilling ? START_FULFILS : 0));
 	q->x = index_tree();
-	ck.branch = branch_name();
 	string_list_init_dup(&ck.put);
 	ck.violation_hint = violation_hint;
 	ck.retry_hint = retry;
@@ -934,8 +932,7 @@ static int contract_checkout(int argc, const char **argv)
 	struct branch *b;
 	int i;
 
-	refuse_broken(0, 0);
-	b = branch_load(branch_name(), NULL, NULL);
+	b = branch_load(start(0), NULL, NULL);
 	for (i = 1; i < argc; i++) {
 		struct contract *c = contract_get(b, argv[i]);
 
@@ -959,6 +956,7 @@ static int contract_add(int argc, const char **argv)
 
 	if (argc < 2)
 		reject(129, NULL, "add names the drafts");
+	start(0);
 	for (i = 1; i < argc; i++) {
 		const char *rel;
 		struct strbuf sb = STRBUF_INIT;
@@ -1078,8 +1076,7 @@ static int contract_commit(int argc, const char **argv)
 		reject(129, NULL, "contract commit takes -m, -F and --force");
 	if (!st.q.msg.len)
 		reject(129, NULL, "a message is required: -m <msg> or -F <file>");
-	session(1);
-	refuse_broken(1, 0);
+	ck.branch = start(START_SESSION | START_WRITES);
 	st.q.x = index_tree();
 	list = access(stage_index(), F_OK) ? xstrdup("") : git_run(NULL, stage_index(), NULL, "ls-files -s");
 	string_list_split(&lines, list, "\n", -1);
@@ -1093,7 +1090,6 @@ static int contract_commit(int argc, const char **argv)
 	}
 	if (!st.drafts.nr)
 		reject(1, "ait contract add <path>...", "nothing staged");
-	ck.branch = branch_name();
 	string_list_init_dup(&ck.put);
 	ck.msg = xstrfmt("[CONTRACT] %s", st.q.msg.buf);
 	checkin_run(&ck, commit_judge, &st);
@@ -1126,8 +1122,7 @@ static int contract_push(int argc, const char **argv)
 	const char *b;
 	struct strvec args = STRVEC_INIT;
 
-	refuse_broken(0, 0);
-	b = branch_name();
+	b = start(0);
 	strvec_pushl(&args, "push", remote_of(b, "push", argc, argv), xstrfmt("refs/heads/%s:refs/heads/%s", b, b), NULL);
 	return git_pass(&args);
 }
@@ -1165,9 +1160,7 @@ static int contract_pull(int argc, const char **argv)
 	char *up, *head;
 	int rc;
 
-	session(1);
-	refuse_broken(1, 0);
-	ck.branch = branch_name();
+	ck.branch = start(START_SESSION | START_WRITES);
 	head = xstrfmt("refs/heads/%s", ck.branch);
 	strvec_pushl(&args, "fetch", "-q", remote_of(ck.branch, "upstream", argc, argv), NULL);
 	if (git_pass(&args))

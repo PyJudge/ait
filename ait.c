@@ -751,8 +751,12 @@ void refuse_used(const char *branch, const char *commit)
 		reject(128, NULL, "%s", git_error);
 }
 
-/* spec 4.3: the broken states every contract command refuses first; WRITES < 0 only warns of the format */
-void refuse_broken(int writes, int fulfils)
+/*
+ * spec 4.3, then 4.6: what every contract command does first, in one place
+ * (git refuses a broken state at each command's start with one function);
+ * the contract branch it works with
+ */
+const char *start(int how)
 {
 	struct branch *b = branch_load(branch_name(), NULL, NULL);
 	struct string_list_item *e;
@@ -762,20 +766,21 @@ void refuse_broken(int writes, int fulfils)
 		int path = strstr(e->string, "': ") - e->string + 1;
 		char *line = xstrfmt("bad format: %.*s at '%s': %s", path, e->string, b->name, e->string + path + 2);
 
-		if (writes < 0)
+		if (how & START_WARNS)
 			warning("%s", line);
 		else
 			reject(128, xstrfmt("fix %.*s in '%s' (enter it with 'ait switch %s')", path, e->string,
 					    b->name, b->name), "%s", line);
 	}
-	if (writes > 0 && *b->tip)
+	if ((how & START_WRITES) && *b->tip)
 		refuse_used(b->name, b->tip);
-	if (!fulfils)
-		return;
-	if (starts_with(line1(git_run(NULL, NULL, NULL, "rev-parse --symbolic-full-name HEAD")), "refs/heads/ait/"))
+	if ((how & START_FULFILS) &&
+	    starts_with(line1(git_run(NULL, NULL, NULL, "rev-parse --symbolic-full-name HEAD")), "refs/heads/ait/"))
 		reject(128, NULL, "HEAD is on contract branch '%s'", line1(git("rev-parse --abbrev-ref HEAD")));
-	if (*git("ls-files --unmerged"))
+	if ((how & START_FULFILS) && *git("ls-files --unmerged"))
 		reject(1, NULL, "fulfilling is not possible because you have unmerged files");
+	session(!!(how & START_SESSION));
+	return b->name;
 }
 
 /* the trailers of a checkin commit (spec 4.5, v14 5.4) */
