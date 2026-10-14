@@ -82,7 +82,7 @@ static struct contract *changing(struct request *q, const char *id)
 	return c;
 }
 
-/* K, an ID or an alias of this request, of a kind in KINDS ("DOX") (E_ID) */
+/* K, an ID or an alias of this request, of a kind in KINDS ("DOX") */
 static struct contract *contract_arg(struct request *q, const char *k, const char *kinds)
 {
 	struct string_list_item *a = string_list_lookup(&q->alias, k);
@@ -118,7 +118,7 @@ static void specs_from_files(struct contract *c, const char *files)
 		char *err;
 		const char *p = item->string;
 
-		if (!condition_path_ok(p) || read_text(&sb, xstrfmt("%s/%s", top, p)) < 0)
+		if (!condition_path_ok(p) || strbuf_read_file(&sb, xstrfmt("%s/%s", top, p), 0) < 0)
 			reject(128, xstrfmt("ait contract new spec %s exec|prompt", quoted(p)), "could not read '%s'", p);
 		if (yaml_parse(sb.buf, &kv, p, &err))
 			reject(128, NULL, "bad format: %s", err);
@@ -421,7 +421,14 @@ static void cover(struct request *q, struct contract *k, struct string_list *out
 			if (live(now(q, item->string)))
 				string_list_insert(out, item->string);
 	} else if (!strcmp(k->kind, "demand")) {
-		for_each_string_list_item(item, &q->b->contracts) {
+		/* the offers at T and those this request makes */
+		struct string_list ids = STRING_LIST_INIT_DUP;
+
+		for_each_string_list_item(item, &q->b->contracts)
+			string_list_insert(&ids, item->string);
+		for_each_string_list_item(item, &q->order)
+			string_list_insert(&ids, item->string);
+		for_each_string_list_item(item, &ids) {
 			struct contract *o = now(q, item->string);
 
 			if (live(o) && holds(o, k->id) == 'p' && judge(q->b, o, q->x) != V_CURRENT)
@@ -539,7 +546,7 @@ static void read_results(struct request *q)
 	size_t n;
 	int i;
 
-	if (read_text(&sb, q->result) < 0)
+	if (strbuf_read_file(&sb, q->result, 0) < 0)
 		reject(128, NULL, "could not read '%s'", q->result);
 	if (yaml_parse(sb.buf, &kv, q->result, &err))
 		reject(128, NULL, "bad format: %s", err);
@@ -1053,7 +1060,7 @@ static int contract_add(int argc, const char **argv)
 
 		if (!skip_prefix(argv[i], ".ait/", &rel) || !contract_path_id(rel))
 			reject(129, NULL, "'%s' is not a draft: .ait/<group>/<ID>.yaml", argv[i]);
-		if (read_text(&sb, xstrfmt("%s/%s", top, argv[i])) < 0)
+		if (strbuf_read_file(&sb, xstrfmt("%s/%s", top, argv[i]), 0) < 0)
 			reject(128, NULL, "could not read '%s'", argv[i]);
 		if (!contract_parse(sb.buf, rel, 1, &err))
 			reject(128, NULL, "bad format: %s", err);

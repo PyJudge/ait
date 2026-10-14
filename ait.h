@@ -13,14 +13,12 @@ extern const char *top, *head, *gitdir, *commondir;
 extern char agent[72], sid[16];
 extern char *git_error;
 /* set after fulfill committed code: every refusal then says what was not recorded (spec 6.7.5-3) */
-extern char *not_recorded, *retry_hint;
+extern char *not_recorded, *retry_command;
 extern size_t git_out_len;
 char *git_args(struct strvec *args, const char *in, const char *index, int *rc);
 char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...);
-char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...);
 #define git(...) git_run(NULL, NULL, NULL, __VA_ARGS__)
 int git_pass(struct strvec *args);
-char *git_failed(void);
 char *line1(char *s);
 int config_true(const char *key);
 char *object(const char *name, int contents, char *oid, size_t *size);
@@ -40,10 +38,8 @@ struct names {
 	struct string_list remote;	/* ait/<name> -> the remote-tracking refs that have it */
 };
 void names_load(struct names *n);
-const char *init_source(struct names *n, const char *name);
 const char *branch_find(const char **msg, struct strbuf *hint);
 const char *branch_name(void);
-void refuse_used(const char *branch, const char *commit);
 enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8 };
 const char *start(int how);
 char *checkout_file(void);
@@ -68,8 +64,8 @@ struct checkin {
 	void *data;			/* the command's own state, for its judge and hints */
 };
 typedef void (*judge_fn)(struct checkin *c);
-char *checkin_judge(struct checkin *c, judge_fn judge);
-void checkin_run(struct checkin *c, judge_fn judge);
+char *checkin_judge(struct checkin *c, judge_fn decide);
+void checkin_run(struct checkin *c, judge_fn decide);
 char *tree_with(const char *treeish, const struct strbuf *info);
 
 /* contract.c: trees as git lists them */
@@ -85,7 +81,6 @@ struct tree {
 	struct entry *e;
 };
 struct tree *tree_load(const char *treeish);
-struct entry *tree_get(struct tree *t, const char *path);
 const char *blob_at(struct tree *t, const char *path);
 struct tree *index_tree(void);
 
@@ -124,22 +119,18 @@ char *contract_path_id(const char *path);
 struct contract *contract_parse(const char *text, const char *path, int draft, char **err);
 char *contract_text(struct contract *c);
 struct contract *contract_new(const char *kind, const char *group, const char *id);
-struct fulfilment *fulfil_parse(const char *text, const char *path, char **err);
 char *fulfil_text(struct fulfilment *f);
-char *group_of(const char *path);
 int group_ok(const char *group);
 int path_ok(const char *p);
 int scope_ok(const char *v, int allow_new, int allow_abs);
 char *scope_path(const char *v);
 const char *scope_blob(const char *v);
 int range_of(const char *v, int *start, int *end);
-void scopes_split(const char *list, struct string_list *out);
 char *scopes_join(struct string_list *l);
 
 /* contract.c: judgments (spec 1.4, 1.7, 1.8, 4.10, 5) */
 enum verdict { V_FUTURE, V_CURRENT, V_UNVERIFIED, V_FULFILLED, V_CANCELLED, V_WITHDRAWN };
 int live(struct contract *c);
-int has_valid(struct branch *b, struct contract *c);
 int holds(struct contract *o, const char *id);
 enum verdict judge(struct branch *b, struct contract *c, struct tree *x);
 const char *verdict_word(enum verdict v);
@@ -152,19 +143,12 @@ void invariants(struct branch *b, struct branch *was, struct string_list *out);
 char *scope_pin(const char *arg, struct tree *t, char **err);
 char *scope_locate(const char *scope, struct tree *t, char **err);
 char *code_entry(const char *scope, struct tree *t, char **err);
-int scope_same(const char *scope, const char *code, struct tree *x);
-char *scope_display(const char *scope, struct tree *x);
-int scope_overlap(const char *q, const char *r, struct tree *t);
 int touched(struct branch *b, struct contract *c, struct tree *h, struct tree *x);
 
 /* contract.c: the YAML subset (v14 2.5.1) and its writing (v14 8.2) */
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err);
 const char *yget(struct string_list *kv, const char *key);
-int yline(struct string_list *kv, const char *key);
-int yaml_list(struct string_list *kv, const char *key, struct string_list *out);
-int read_text(struct strbuf *sb, const char *path);
 struct spec *spec_from(struct string_list *kv, const char *prefix, char **err);
-void yaml_out_scalar(struct strbuf *sb, const char *s);
 void yaml_out_body(struct strbuf *sb, const char *s, const char *indent);
 void spec_lists(struct strbuf *sb, struct spec *s, int whole);
 
@@ -176,7 +160,6 @@ int cmd_status(int argc, const char **argv);
 int cmd_sub(int argc, const char **argv);
 int cmd_unsub(int argc, const char **argv);
 int cmd_listen(int argc, const char **argv);
-int cmd_session(int argc, const char **argv);
 int lock_path(const char *path, int nowait);
 int hook_installed(void);
 char *session_path(const char *s, const char *suffix);

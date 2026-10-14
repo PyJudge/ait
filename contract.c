@@ -59,7 +59,7 @@ struct tree *tree_load(const char *treeish)
 	return t;
 }
 
-struct entry *tree_get(struct tree *t, const char *path)
+static struct entry *tree_get(struct tree *t, const char *path)
 {
 	struct entry key = { path };
 
@@ -165,24 +165,24 @@ struct yframe {
 	char kind;
 };
 
-static char *yaml_place(struct yframe *top, yaml_event_t *e, const char **why)
+static char *yaml_place(struct yframe *frame, yaml_event_t *e, const char **why)
 {
 	char *path;
 
-	if (!top) {
+	if (!frame) {
 		if (e->type != YAML_MAPPING_START_EVENT)
 			*why = "no key";
 		return NULL;
 	}
-	if (top->kind == 'l')
-		return yaml_path(top->path, xstrfmt("%d", top->n++));
-	if (top->key) {
-		path = yaml_path(top->path, top->key);
-		top->key = NULL;
+	if (frame->kind == 'l')
+		return yaml_path(frame->path, xstrfmt("%d", frame->n++));
+	if (frame->key) {
+		path = yaml_path(frame->path, frame->key);
+		frame->key = NULL;
 		return path;
 	}
 	if (e->type == YAML_SCALAR_EVENT && e->data.scalar.style != YAML_LITERAL_SCALAR_STYLE)
-		top->key = xstrdup((char *)e->data.scalar.value);
+		frame->key = xstrdup((char *)e->data.scalar.value);
 	else
 		*why = "a key that is not a scalar";
 	return NULL;
@@ -315,7 +315,7 @@ static char ykind(struct string_list *kv, const char *key)
 	return item ? ((struct yval *)item->util)->kind : -1;
 }
 
-int yline(struct string_list *kv, const char *key)
+static int yline(struct string_list *kv, const char *key)
 {
 	struct string_list_item *item = unsorted_string_list_lookup(kv, key);
 
@@ -325,7 +325,7 @@ int yline(struct string_list *kv, const char *key)
 }
 
 /* the scalars KEY.0, KEY.1, ... of a list KEY (or of a key with nothing under it): -1 when KEY is no list */
-int yaml_list(struct string_list *kv, const char *key, struct string_list *out)
+static int yaml_list(struct string_list *kv, const char *key, struct string_list *out)
 {
 	char k = ykind(kv, key);
 	int i;
@@ -340,11 +340,6 @@ int yaml_list(struct string_list *kv, const char *key, struct string_list *out)
 	return 0;
 }
 
-int read_text(struct strbuf *sb, const char *path)
-{
-	return strbuf_read_file(sb, path, 0) < 0 ? -1 : 0;
-}
-
 static int yaml_out(void *sb, unsigned char *buf, size_t n)
 {
 	strbuf_add(sb, buf, n);
@@ -352,7 +347,7 @@ static int yaml_out(void *sb, unsigned char *buf, size_t n)
 }
 
 /* S as one "..." scalar into SB, written by libyaml's emitter (v14 8.2) */
-void yaml_out_scalar(struct strbuf *sb, const char *s)
+static void yaml_out_scalar(struct strbuf *sb, const char *s)
 {
 	yaml_emitter_t y;
 	yaml_event_t e;
@@ -434,7 +429,7 @@ int group_ok(const char *group)
 			   !strstr(group, "/fulfill/") && !ends_with(group, "/fulfill"));
 }
 
-char *group_of(const char *path)
+static char *group_of(const char *path)
 {
 	const char *slash = strrchr(path, '/');
 
@@ -496,7 +491,7 @@ int scope_ok(const char *v, int allow_new, int allow_abs)
 	return path_ok(v);
 }
 
-void scopes_split(const char *list, struct string_list *out)
+static void scopes_split(const char *list, struct string_list *out)
 {
 	if (*list)
 		string_list_split(out, list, ",", -1);
@@ -821,7 +816,7 @@ char *contract_text(struct contract *c)
 }
 
 /* spec 2.5: the fulfilment at PATH from TEXT, or NULL with ERR */
-struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
+static struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
 {
 	static const char *const keys[] = { "contract", "condition-id", "by", "session", "commit", "outcome", "code", NULL };
 	struct string_list kv = STRING_LIST_INIT_DUP;
@@ -989,7 +984,7 @@ static void valid_fulfilments(struct branch *b, struct contract *c, struct strin
 	}
 }
 
-int has_valid(struct branch *b, struct contract *c)
+static int has_valid(struct branch *b, struct contract *c)
 {
 	struct string_list v = STRING_LIST_INIT_DUP;
 
@@ -1155,7 +1150,7 @@ char *code_entry(const char *scope, struct tree *t, char **err)
 }
 
 /* spec 5.3: the scope is in X as the code entry CODE recorded it */
-int scope_same(const char *scope, const char *code, struct tree *x)
+static int scope_same(const char *scope, const char *code, struct tree *x)
 {
 	char mode[8], type[8], oid[48], span[32] = "";
 	struct entry *e = tree_get(x, scope_path(scope));
@@ -1179,7 +1174,7 @@ static int recorded_same(struct fulfilment *f, const char *scope, struct tree *x
 }
 
 /* v14 3.8: the scope as shown, located in X */
-char *scope_display(const char *scope, struct tree *x)
+static char *scope_display(const char *scope, struct tree *x)
 {
 	char *err, *where;
 
@@ -1216,7 +1211,7 @@ char *scopes_display(struct string_list *l, struct tree *x)
 }
 
 /* v14 3.9: two scopes overlap in T */
-int scope_overlap(const char *q, const char *r, struct tree *t)
+static int scope_overlap(const char *q, const char *r, struct tree *t)
 {
 	char *pq = scope_path(q), *pr = scope_path(r);
 	int a, b, c, d, cq, cr;

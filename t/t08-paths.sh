@@ -49,4 +49,8 @@ run env PATH="$T/bin:$PATH" ait fulfill "$D2" --force -m mine
 check_rc "a covered set changed after step 0 is not recorded (6.7.2)" 1
 check "the message" "has err \"'$D2' not fulfilled: 'ait/master' moved while running\""
 
+run ait future demand src/order.c src/stock.c:20-21 cond.yaml -m d3; D3=$(newest D)
+run ait future offer src/stock.c cond.yaml as n undertake -p "$D3" n amend "$D3" - - - --force -m "new partial offer"
+check "a partial offer made in the same request is in the demand's covered set (6.7.2)" "has out \"^fulfilled $(newest O)\$\""
+
 done_testing

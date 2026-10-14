@@ -12,7 +12,7 @@
 
 const char *top, *head, *gitdir, *commondir;
 char *git_error;
-char *not_recorded, *retry_hint;
+char *not_recorded, *retry_command;
 size_t git_out_len;
 char agent[72], sid[16];
 static char *git_cmd;
@@ -80,7 +80,7 @@ void reject(int code, const char *hint, const char *fmt, ...)
 	/* 6.7.5-3: after the code commit a refusal says what was not recorded, and only a retry is hinted */
 	if (not_recorded) {
 		code = 1;
-		hint = retry_hint;
+		hint = retry_command;
 	}
 	va_start(ap, fmt);
 	report_line(not_recorded ? xstrfmt("error: %s: ", not_recorded) : code == 128 ? "fatal: " : "error: ", fmt, ap);
@@ -103,12 +103,12 @@ static void at_repository(struct strvec *args)
 	}
 }
 
-char *git_failed(void)
+static char *git_failed(void)
 {
 	return xstrfmt("git failed: 'git %s': %s", git_cmd, git_error);
 }
 
-/* git with ARGS; IN feeds stdin, INDEX sets GIT_INDEX_FILE; without RC a failure is E_GIT */
+/* git with ARGS; IN feeds stdin, INDEX sets GIT_INDEX_FILE; without RC a failure is fatal (4.7) */
 static char *git_args_n(struct strvec *args, const char *in, size_t in_len, const char *index, int *rc)
 {
 	struct child_process cmd = CHILD_PROCESS_INIT;
@@ -160,7 +160,7 @@ static void words_of(struct strvec *args, const char *fmt, va_list ap)
 }
 
 /* git_run() fed the bytes of IN, NULs too (the -z inputs of update-index) */
-char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...)
+static char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...)
 {
 	struct strvec args = STRVEC_INIT;
 	va_list ap;
@@ -197,19 +197,19 @@ int git_pass(struct strvec *args)
 	return finish_command(&cmd);
 }
 
+char *line1(char *s)
+{
+	if (s)
+		s[strcspn(s, "\n")] = 0;
+	return s;
+}
+
 /* the boolean setting KEY as git config reads it (precompose.c asks for core.precomposeUnicode) */
 int config_true(const char *key)
 {
 	int rc;
 
 	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool %s", key)), "true");
-}
-
-char *line1(char *s)
-{
-	if (s)
-		s[strcspn(s, "\n")] = 0;
-	return s;
 }
 
 /* the object NAME resolves to, through one "git cat-file --batch-command" (git-cat-file(1)) */
@@ -309,7 +309,7 @@ static void setup(void)
 	gitdir = lines.items[0].string;
 	commondir = lines.items[1].string;
 	if (strcmp(lines.items[2].string, "sha1"))
-		reject(128, NULL, "not supported: object format %s", lines.items[2].string);
+		reject(128, NULL, "not supported: object format '%s'", lines.items[2].string);
 	top = lines.items[3].string;
 	for (i = 0; clear[i]; i++)
 		unsetenv(clear[i]);
@@ -483,7 +483,7 @@ const char *session(int need)
 	} else if (wt && strcmp(wt, top)) {
 		char *hint = gone(wt) ? xstrfmt("its worktree is gone; close it: 'ait session close %s', then open a session "
 						"with the same name in the worktree of your branch: 'ait session open --agent %s'",
-						env, agent) : xstrfmt("cd %s", quoted(wt));
+						env, agent) : xstrfmt("use it in its worktree '%s'", wt);
 
 		reject(128, hint, "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
 	}
@@ -619,7 +619,7 @@ static void session_close(struct string_list *ids, const char *s)
 	close(fd);
 }
 
-int cmd_session(int argc, const char **argv)
+static int cmd_session(int argc, const char **argv)
 {
 	struct string_list ids = STRING_LIST_INIT_DUP;
 
@@ -682,7 +682,7 @@ void names_load(struct names *n)
  * the one remote that has it, or the one checkout.defaultRemote names (git's
  * DWIM, builtin/checkout.c); NULL when none or more than one
  */
-const char *init_source(struct names *n, const char *name)
+static const char *init_source(struct names *n, const char *name)
 {
 	struct string_list_item *item = string_list_lookup(&n->remote, name);
 	struct string_list *refs;
@@ -776,7 +776,7 @@ const char *branch_name(void)
  * spec 4.3-4, 4.4-3 (a): whether a worktree uses BRANCH, judged by git as it
  * judges a fetch into a checked-out branch (builtin/fetch.c:1382), with its words
  */
-void refuse_used(const char *branch, const char *commit)
+static void refuse_used(const char *branch, const char *commit)
 {
 	int rc;
 
@@ -840,7 +840,7 @@ char *tree_with(const char *treeish, const struct strbuf *info)
 	char *index, *tree;
 
 	if (!mkdtemp(dir))
-		reject(128, NULL, "write error: '%s': %s", dir, strerror(errno));
+		write_error(dir);
 	index = xstrfmt("%s/index", dir);
 	git_run(NULL, index, NULL, "read-tree %s", treeish);
 	git_feed(info, index, NULL, "update-index -z --index-info");
@@ -891,7 +891,7 @@ static void checkin_invariants(struct checkin *c, struct branch *now, const char
  * spec 4.4-1, 2: everything judged on the tip T, as it is now; the new tree,
  * the invariants checked. Step 0 of fulfill asks the same (6.7.5-0).
  */
-char *checkin_judge(struct checkin *c, judge_fn judge)
+char *checkin_judge(struct checkin *c, judge_fn decide)
 {
 	struct branch *now;
 
@@ -900,8 +900,8 @@ char *checkin_judge(struct checkin *c, judge_fn judge)
 	string_list_clear(&c->put, 0);
 	c->tree = NULL;
 	c->second_parent = c->ff = NULL;
-	if (judge)
-		judge(c);
+	if (decide)
+		decide(c);
 	if (c->ff)
 		return NULL;
 	now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
@@ -916,12 +916,12 @@ char *checkin_judge(struct checkin *c, judge_fn judge)
  * whole command is judged again on the new tip, unless a file it puts moved.
  * A judge that names a commit to fast-forward to (6.5.6) moves the branch there.
  */
-void checkin_run(struct checkin *c, judge_fn judge)
+void checkin_run(struct checkin *c, judge_fn decide)
 {
 	if (!*c->rid)
 		newid(c->rid, 'R');
 	for (;;) {
-		char old[48], *tree = checkin_judge(c, judge);
+		char old[48], *tree = checkin_judge(c, decide);
 		const char *commit;
 		struct strbuf parents = STRBUF_INIT;
 		struct strvec args = STRVEC_INIT;
@@ -956,7 +956,7 @@ void checkin_run(struct checkin *c, judge_fn judge)
 			strvec_push(&args, item->string);
 		git_args(&args, NULL, NULL, &rc);
 		if (rc && c->retry_hint)
-			retry_hint = c->retry_hint(c, old);
+			retry_command = c->retry_hint(c, old);
 		if (rc)
 			reject(1, NULL, "'%s' moved while running; nothing changed", c->branch);
 	}
@@ -1085,13 +1085,12 @@ static int contract_form(int argc, const char **argv, struct names *n)
 	return string_list_has_string(&n->local, argv[1]) || string_list_has_string(&n->remote, argv[1]);
 }
 
-static int pass_to_git(const char *cmd, int argc, const char **argv)
+static int pass_to_git(const char *cmd, const char **argv)
 {
 	struct strvec args = STRVEC_INIT;
 
 	strvec_push(&args, cmd);
 	strvec_pushv(&args, argv + 1);
-	(void)argc;
 	return git_pass(&args);
 }
 
@@ -1116,7 +1115,7 @@ static int cmd_checkout(int argc, const char **argv)
 	char *on;
 
 	if (!contract_form(argc, argv, &n))
-		return pass_to_git("checkout", argc, argv);
+		return pass_to_git("checkout", argv);
 	local_or_refuse(&n, argv[1]);
 	write_state(checkout_file(), xstrfmt("%s\n", argv[1]));
 	printf("On contract branch %s\n", argv[1]);
@@ -1137,7 +1136,7 @@ static int cmd_switch(int argc, const char **argv)
 	int rc;
 
 	if (argc != 2 || !contract_form(argc, argv, &n))
-		return pass_to_git("switch", argc, argv);
+		return pass_to_git("switch", argv);
 	local_or_refuse(&n, argv[1]);
 	if (!clean_work_tree())
 		reject(128, NULL, "uncommitted changes in the work tree; commit them before entering '%s'", argv[1]);
