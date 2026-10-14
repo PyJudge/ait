@@ -116,6 +116,7 @@ struct branch {
 };
 struct branch *branch_load(const char *name, const char *tip, const char *treeish);
 struct contract *contract_get(struct branch *b, const char *id);
+char *contract_path_id(const char *path);
 struct contract *contract_parse(const char *text, const char *path, int draft, char **err);
 char *contract_text(struct contract *c);
 struct contract *contract_new(const char *kind, const char *group, const char *id);

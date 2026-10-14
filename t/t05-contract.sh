@@ -9,6 +9,14 @@ check "under .ait/" "grep -q 'engine: exec' .ait/specs/s.yaml"
 run ait contract new spec .ait/specs/s.yaml exec
 check_rc "it does not overwrite" 1
 
+run ait contract new spec ../x.yaml exec
+check_rc "new spec takes a repository path (3.1)" 128
+run ait contract new demand fulfill
+check_rc "a group may not be named fulfill (2.1.3)" 129
+mkdir -p .ait/a; echo x > .ait/a/notes.yaml
+run ait contract add .ait/a/notes.yaml
+check_rc "add takes .ait/<group>/<ID>.yaml only (6.5.3)" 129
+
 run ait contract new demand user
 check_rc "new demand writes a draft in its group (6.5.2)" 0
 P=$(sed -n 's/^path //p' "$T/out")

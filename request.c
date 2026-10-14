@@ -77,6 +77,13 @@ static struct contract *contract_arg(struct request *q, const char *k, const cha
 	return c;
 }
 
+/* spec 3.1: a condition file's path is a repository path, and may be under .ait/ */
+static int condition_path_ok(const char *p)
+{
+	skip_prefix(p, ".ait/", &p);
+	return path_ok(p);
+}
+
 /* v14 2.5.2 without inputs: the condition files of FILES, read from the work tree (6.4.2) */
 static void specs_from_files(struct contract *c, const char *files)
 {
@@ -94,7 +101,7 @@ static void specs_from_files(struct contract *c, const char *files)
 		char *err;
 		const char *p = item->string;
 
-		if (!*p || *p == '/' || strstr(p, "..") || read_text(&sb, xstrfmt("%s/%s", top, p)) < 0)
+		if (!condition_path_ok(p) || read_text(&sb, xstrfmt("%s/%s", top, p)) < 0)
 			reject(128, xstrfmt("ait contract new spec %s exec|prompt", quoted(p)), "could not read '%s'", p);
 		if (yaml_parse(sb.buf, &kv, p, &err))
 			reject(128, NULL, "bad format: %s", err);
@@ -817,11 +824,32 @@ int cmd_fulfill(int argc, const char **argv)
 	return 0;
 }
 
+/* the ".ait/<group>/<ID>.yaml" a draft of C lives at (spec 2.2) */
+static char *draft_path(struct contract *c)
+{
+	return xstrfmt(".ait/%s", c->path);
+}
+
+/* REL written new in the work tree, its directories made; a file there is not overwritten */
+static void write_new_file(const char *rel, const char *text)
+{
+	char *full = xstrfmt("%s/%s", top, rel), *slash;
+	struct stat st;
+
+	if (!lstat(full, &st))
+		reject(1, xstrfmt("edit '%s' or choose another path", rel), "not allowed: '%s' already exists", rel);
+	for (slash = strchr(full + strlen(top) + 1, '/'); slash; slash = strchr(slash + 1, '/'))
+		mkdir(xstrndup(full, slash - full), 0777);
+	write_state(full, text);
+	printf("path %s\n", rel);
+}
+
 /* spec 6.5.1: the condition file template (v14 7.4.1a without inputs) */
 static int contract_new_spec(const char *path, const char *engine)
 {
-	struct stat st;
-	const char *text = !strcmp(engine, "exec") ?
+	if (!condition_path_ok(path))
+		reject(128, NULL, "bad path '%s'", path);
+	write_new_file(path, !strcmp(engine, "exec") ?
 		"# ait spec (exec): the checker runs 'command'; it passes if the exit code is in 'success'.\n"
 		"# Keys: body, engine, command, success, environment. Any other key is a format error.\n"
 		"body: |\n  <the condition the code must keep>\n"
@@ -831,37 +859,8 @@ static int contract_new_spec(const char *path, const char *engine)
 		"# environment: <name>         # optional: specs/environments/<name>.yaml in the code\n" :
 		"# ait spec (prompt): the checker reads the code and judges 'body'.\n"
 		"# Keys: body. Any other key is a format error.\n"
-		"body: |\n  <the condition the code must keep>\n";
-	char *full = xstrfmt("%s/%s", top, path), *slash;
-
-	if (!*path || *path == '/' || strstr(path, ".."))
-		reject(128, NULL, "bad path '%s'", path);
-	if (!lstat(full, &st))
-		reject(1, xstrfmt("edit '%s' or choose another path", path), "not allowed: '%s' already exists", path);
-	for (slash = strchr(full + strlen(top) + 1, '/'); slash; slash = strchr(slash + 1, '/'))
-		mkdir(xstrndup(full, slash - full), 0777);
-	write_state(full, text);
-	printf("path %s\n", path);
+		"body: |\n  <the condition the code must keep>\n");
 	return 0;
-}
-
-/* the ".ait/<group>/<ID>.yaml" a draft of C lives at (spec 2.2) */
-static char *draft_path(struct contract *c)
-{
-	return xstrfmt(".ait/%s", c->path);
-}
-
-static void write_new_file(const char *rel, const char *text)
-{
-	char *full = xstrfmt("%s/%s", top, rel), *slash;
-	struct stat st;
-
-	if (!lstat(full, &st))
-		reject(1, NULL, "not allowed: '%s' already exists", rel);
-	for (slash = strchr(full + strlen(top) + 1, '/'); slash; slash = strchr(slash + 1, '/'))
-		mkdir(xstrndup(full, slash - full), 0777);
-	write_state(full, text);
-	printf("path %s\n", rel);
 }
 
 /* spec 6.5.2 */
@@ -871,11 +870,21 @@ static int contract_new_draft(const char *kind, const char *group)
 	char id[16];
 	struct names n;
 	struct spec s = { 0 };
+	struct strbuf hint = STRBUF_INIT;
+	const char *msg, *chosen = branch_find(&msg, &hint);
+	struct string_list_item *item;
+	int taken;
 
 	if (!group_ok(group))
 		reject(129, NULL, "bad group '%s'", group);
 	names_load(&n);
-	newid(id, !strcmp(kind, "demand") ? 'D' : !strcmp(kind, "offer") ? 'O' : 'X');
+	/* unique on the contract branch, or on every local one when none is chosen (6.5.2) */
+	do {
+		newid(id, !strcmp(kind, "demand") ? 'D' : !strcmp(kind, "offer") ? 'O' : 'X');
+		taken = chosen && contract_get(branch_load(chosen, NULL, NULL), id);
+		for_each_string_list_item(item, &n.local)
+			taken |= !chosen && contract_get(branch_load(item->string, NULL, NULL), id);
+	} while (taken);
 	c = contract_new(kind, group, id);
 	if (strcmp(kind, "drop")) {
 		string_list_append(&c->provider, "<scope>");
@@ -929,8 +938,8 @@ static int contract_add(int argc, const char **argv)
 		struct strbuf sb = STRBUF_INIT;
 		char *err, *oid;
 
-		if (!skip_prefix(argv[i], ".ait/", &rel))
-			reject(129, NULL, "'%s' is not a draft under .ait/", argv[i]);
+		if (!skip_prefix(argv[i], ".ait/", &rel) || !contract_path_id(rel))
+			reject(129, NULL, "'%s' is not a draft: .ait/<group>/<ID>.yaml", argv[i]);
 		if (read_text(&sb, xstrfmt("%s/%s", top, argv[i])) < 0)
 			reject(128, NULL, "could not read '%s'", argv[i]);
 		if (!contract_parse(sb.buf, rel, 1, &err))
@@ -1064,10 +1073,9 @@ static int contract_commit(int argc, const char **argv)
 	checkin_run(&ck, commit_judge, &st);
 	unlink(stage_index());
 	for_each_string_list_item(item, &st.drafts) {
-		const char *id = strrchr(item->string, '/') ? strrchr(item->string, '/') + 1 : item->string;
-		char *bare = xstrndup(id, 13);
+		char *id = contract_path_id(item->string);
 
-		printf("%s %s\n", unsorted_string_list_has_string(&st.q.order, bare) ? "new" : "change", bare);
+		printf("%s %s\n", unsorted_string_list_has_string(&st.q.order, id) ? "new" : "change", id);
 	}
 	return 0;
 }

@@ -603,6 +603,15 @@ static int one_of(const char *w, const char *const *set)
 	return 0;
 }
 
+/* spec 2.1.3: the ID of the contract path "<group>/<ID>.yaml", or NULL */
+char *contract_path_id(const char *path)
+{
+	const char *base = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
+	char *id = xstrndup(base, strcspn(base, "."));
+
+	return !strcmp(base, xstrfmt("%s.yaml", id)) && id_ok(id, "DOX") && group_ok(group_of(path)) ? id : NULL;
+}
+
 /* a new contract of KIND in GROUP with ID, its fields empty (spec 6.4, 6.5.2) */
 struct contract *contract_new(const char *kind, const char *group, const char *id)
 {
@@ -635,14 +644,14 @@ struct contract *contract_parse(const char *text, const char *path, int draft, c
 	struct string_list kv = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct contract *c;
-	const char *const *keys, *base = strrchr(path, '/') ? strrchr(path, '/') + 1 : path, *v;
-	char *id = xstrndup(base, strcspn(base, "."));
+	const char *const *keys, *v;
+	char *id = contract_path_id(path);
 	int i, demand, offer, drop;
 
 	if (yaml_parse(text, &kv, path, err))
 		return NULL;
 	*err = NULL;
-	if (strcmp(base, xstrfmt("%s.yaml", id)) || !id_ok(id, "DOX"))
+	if (!id)
 		return bad(err, "'%s': not a contract path", path);
 	v = yget(&kv, "kind");
 	if (!v || !(keys = keys_of(v)) || "DOX"[!strcmp(v, "demand") ? 0 : !strcmp(v, "offer") ? 1 : 2] != *id)
@@ -921,7 +930,7 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 	for (i = 0; i < b->tree->nr; i++) {
 		struct entry *e = &b->tree->e[i];
 		const char *text;
-		char *err = NULL, *g = group_of(e->path);
+		char *err = NULL;
 
 		if (strcmp(e->type, "blob"))
 			continue;
@@ -932,8 +941,6 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 
 			if (f)
 				string_list_insert(&b->fulfils, e->path)->util = f;
-		} else if (!group_ok(g)) {
-			err = xstrfmt("'%s': not a contract path", e->path);
 		} else {
 			struct contract *c = contract_parse(text, e->path, 0, &err);
 
