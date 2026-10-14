@@ -9,6 +9,8 @@ check "under .ait/" "grep -q 'engine: exec' .ait/specs/s.yaml"
 run ait contract new spec .ait/specs/s.yaml exec
 check_rc "it does not overwrite" 1
 
+run ait contract new spec .ait/z.yaml bogus
+check_rc "new spec takes exec or prompt (6.5.1)" 129
 run ait contract new spec ../x.yaml exec
 check_rc "new spec takes a repository path (3.1)" 128
 run ait contract new demand fulfill

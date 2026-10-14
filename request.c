@@ -461,6 +461,23 @@ static void environment_out(struct strbuf *sb, const char *name)
 		strbuf_addf(sb, "%s%s\n", *lines.items[i].string ? "    " : "", lines.items[i].string);
 }
 
+/* what makes a result template the same one (7.4): its condition-ids and its tasks, in order */
+static char *template_key(const char *text)
+{
+	struct string_list kv = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	struct strbuf sb = STRBUF_INIT;
+	char *err;
+
+	if (yaml_parse(text, &kv, "", &err))
+		return xstrdup("");
+	for_each_string_list_item(item, &kv)
+		if (starts_with(item->string, "condition-ids.") ||
+		    (starts_with(item->string, "results.") && ends_with(item->string, ".task")))
+			strbuf_addf(&sb, "%s=%s\n", item->string, yget(&kv, item->string));
+	return strbuf_detach(&sb, NULL);
+}
+
 /* spec 7.2: the check request and the result template, unless the template is already this one */
 static void write_check_files(struct request *q)
 {
@@ -502,7 +519,8 @@ static void write_check_files(struct request *q)
 	if (!tasks)
 		return;
 	write_state(rq, req.buf);
-	if (strbuf_read_file(&old, rs, 0) < 0 || strcmp(old.buf, res.buf))
+	/* 7.4: a template with these condition-ids and tasks stays, filled or not */
+	if (strbuf_read_file(&old, rs, 0) < 0 || strcmp(template_key(old.buf), template_key(res.buf)))
 		write_state(rs, res.buf);
 	printf("request %s\nresult %s\n", rq, rs);
 	reject(1, xstrfmt("check each task, fill '%s', and rerun with -r '%s'\n"
@@ -525,13 +543,20 @@ static void read_results(struct request *q)
 		reject(128, NULL, "could not read '%s'", q->result);
 	if (yaml_parse(sb.buf, &kv, q->result, &err))
 		reject(128, NULL, "bad format: %s", err);
+	/* 7.3: the condition-ids are those of the covered contracts at T, none missing, none more; else a new template */
+	for_each_string_list_item(item, &kv) {
+		const char *id;
+
+		if (skip_prefix(item->string, "condition-ids.", &id) &&
+		    (!string_list_has_string(&q->covered, id) || strcmp(task_id(q, id), id)))
+			write_check_files(q);
+	}
 	for_each_string_list_item(item, &q->covered) {
 		struct contract *c = now(q, item->string);
 		const char *got = yget(&kv, xstrfmt("condition-ids.%s", item->string));
 
 		if (!strcmp(task_id(q, c->id), c->id) && (!got || strcmp(got, c->condition_id)))
-			reject(1, "run 'ait fulfill' without -r for a new result template",
-			       "check results required: '%s' changed since the result template", c->id);
+			write_check_files(q);
 		for (n = 0; n < c->nspecs; n++)
 			string_list_insert(&want, task_of(task_id(q, c->id), n));
 	}
@@ -1254,7 +1279,8 @@ static int contract_pull(int argc, const char **argv)
 
 int cmd_contract(int argc, const char **argv)
 {
-	if (argc >= 4 && !strcmp(argv[1], "new") && !strcmp(argv[2], "spec") && argc == 5)
+	if (argc == 5 && !strcmp(argv[1], "new") && !strcmp(argv[2], "spec") &&
+	    (!strcmp(argv[4], "exec") || !strcmp(argv[4], "prompt")))
 		return contract_new_spec(argv[3], argv[4]);
 	if (argc >= 3 && !strcmp(argv[1], "new") &&
 	    (!strcmp(argv[2], "demand") || !strcmp(argv[2], "offer") || !strcmp(argv[2], "drop")) && argc <= 4)

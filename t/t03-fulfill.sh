@@ -18,6 +18,11 @@ check "nothing was committed" "test \"\$(git rev-list --count HEAD)\" = 1"
 echo guard >> src/stock.c
 git add src/stock.c
 res=$(pass_all)
+cp "$res" "$T/extra.yaml"; sed -i.bak "s/^condition-ids:$/condition-ids:\n  Dabcdefabcdef: \"R000000000000\"/" "$T/extra.yaml"
+run ait fulfill "$O" -r "$T/extra.yaml" -m "impl"
+check_rc "a condition-id more than the covered set asks for results again (7.3)" 1
+check "with a new template" "has out 'result '"
+check "a filled template with the same condition-ids and tasks is kept (7.4)" "grep -q 'outcome: pass' $res"
 run ait fulfill "$O" -r "$res" -m "impl"
 check_rc "fulfill with results" 0
 check "the code commit is git's (6.7.5-1)" "test \"\$(git log -1 --format=%s)\" = impl"

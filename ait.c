@@ -1098,7 +1098,7 @@ static int pass_to_git(const char *cmd, int argc, const char **argv)
 static void local_or_refuse(struct names *n, const char *name)
 {
 	if (!string_list_has_string(&n->local, name))
-		reject(128, init_hint(n), "no local branch '%s'", name);
+		reject(128, init_source(n, name) ? "ait init" : NULL, "no local branch '%s'", name);
 }
 
 static int clean_work_tree(void)
