@@ -75,48 +75,35 @@ const char *blob_at(struct tree *t, const char *path)
 
 /*
  * spec 5.1: the tree X of the index; an unmerged path is read as HEAD has
- * it, through a temporary index, as git write-tree cannot write the index
+ * it, as git write-tree cannot write an index with one
  */
 struct tree *index_tree(void)
 {
 	static struct tree *x;
-	struct string_list unmerged = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	char *out, *p, *end, *dir, *index;
-	int rc;
+	struct strbuf info = STRBUF_INIT;
+	const char *last = "";
+	char *p, *end;
 
 	if (x)
 		return x;
-	for (p = out = git("ls-files -u -z"), end = out + git_out_len; p < end; p += strlen(p) + 1)
-		string_list_insert(&unmerged, strchr(p, '\t') + 1);
-	if (!unmerged.nr)
-		return x = tree_load(line1(git("write-tree")));
-	dir = xstrfmt("%s/ait-x-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
-	if (!mkdtemp(dir))
-		reject(128, NULL, "write error: '%s': %s", dir, strerror(errno));
-	index = xstrfmt("%s/index", dir);
-	git_run(NULL, index, NULL, "read-tree --empty");
-	{
-		struct strbuf in = STRBUF_INIT;
-		char *staged = git("ls-files -s -z");
+	for (p = git("ls-files -u -z"), end = p + git_out_len; p < end; p += strlen(p) + 1) {
+		const char *path = strchr(p, '\t') + 1;
+		struct entry *e = head ? tree_get(tree_load(head), path) : NULL;
 
-		strbuf_add(&in, staged, git_out_len);
-		git_feed(&in, index, &rc, "update-index -z --index-info");
-	}
-	for_each_string_list_item(item, &unmerged) {
-		struct entry *e = head ? tree_get(tree_load(head), item->string) : NULL;
-		struct strbuf in = STRBUF_INIT;
-
-		warning("'%s' is unmerged; it is read as HEAD has it", item->string);
-		strbuf_addf(&in, "0 %s\t%s%c", NULL_OID, item->string, 0);
+		/* the stages of a path come one after another */
+		if (!strcmp(path, last))
+			continue;
+		last = path;
+		warning("'%s' is unmerged; it is read as HEAD has it", path);
+		strbuf_addf(&info, "0 %s\t%s%c", NULL_OID, path, 0);
 		if (e)
-			strbuf_addf(&in, "%s %s\t%s%c", e->mode, e->oid, item->string, 0);
-		git_feed(&in, index, &rc, "update-index -z --index-info");
+			strbuf_addf(&info, "%s %s\t%s%c", e->mode, e->oid, path, 0);
 	}
-	x = tree_load(line1(git_run(NULL, index, NULL, "write-tree")));
-	unlink(index);
-	rmdir(dir);
-	return x;
+	if (!info.len)
+		return x = tree_load(line1(git("write-tree")));
+	p = git("ls-files -s -z");
+	strbuf_splice(&info, 0, 0, p, git_out_len);
+	return x = tree_load(tree_with(EMPTY_TREE, &info));
 }
 
 /* the YAML subset of v14 2.5.1, read by libyaml (moved from v14 record.c) */

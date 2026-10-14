@@ -65,6 +65,7 @@ struct checkin {
 typedef void (*judge_fn)(struct checkin *c, void *data);
 int checkin_ref(struct checkin *c, const char *commit);
 void checkin_run(struct checkin *c, judge_fn judge, void *data);
+char *tree_with(const char *treeish, const struct strbuf *info);
 
 /* contract.c: trees as git lists them */
 struct entry {

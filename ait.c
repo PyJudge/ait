@@ -784,28 +784,36 @@ static char *checkin_message(struct checkin *c)
 	return strbuf_detach(&sb, NULL);
 }
 
-/* the tree of T with C's files put in, through a temporary index (spec 4.4-2) */
-static char *checkin_tree(struct checkin *c)
+/*
+ * the tree of TREEISH with the entries INFO ("update-index -z --index-info"
+ * lines) put in, through a temporary index: git write-tree writes only an index
+ */
+char *tree_with(const char *treeish, const struct strbuf *info)
 {
 	char *dir = xstrfmt("%s/ait-index-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
-	struct strbuf info = STRBUF_INIT;
-	struct string_list_item *item;
 	char *index, *tree;
 
 	if (!mkdtemp(dir))
 		reject(128, NULL, "write error: '%s': %s", dir, strerror(errno));
 	index = xstrfmt("%s/index", dir);
-	git_run(NULL, index, NULL, "read-tree %s", *c->tip ? c->tip : EMPTY_TREE);
-	for_each_string_list_item(item, &c->put) {
-		char *oid = line1(git_run(item->util, NULL, NULL, "hash-object -w --stdin"));
-
-		strbuf_addf(&info, "100644 %s\t%s%c", oid, item->string, 0);
-	}
-	git_feed(&info, index, NULL, "update-index -z --index-info");
+	git_run(NULL, index, NULL, "read-tree %s", treeish);
+	git_feed(info, index, NULL, "update-index -z --index-info");
 	tree = line1(git_run(NULL, index, NULL, "write-tree"));
 	unlink(index);
 	rmdir(dir);
 	return tree;
+}
+
+/* the tree of T with C's files put in (spec 4.4-2) */
+static char *checkin_tree(struct checkin *c)
+{
+	struct strbuf info = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &c->put)
+		strbuf_addf(&info, "100644 %s\t%s%c", line1(git_run(item->util, NULL, NULL, "hash-object -w --stdin")),
+			    item->string, 0);
+	return tree_with(*c->tip ? c->tip : EMPTY_TREE, &info);
 }
 
 /*

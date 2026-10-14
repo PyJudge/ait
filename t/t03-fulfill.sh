@@ -88,4 +88,16 @@ git add specs; git commit -qm env
 run ait fulfill "$D5" -m x
 check "the environment's lines are under environment: (7.2)" "grep -A3 '^  environment:\$' .git/ait/check-request.yaml | grep -qx '      A: \"1\"'"
 
+git checkout -q -b side; sed -i.bak 's/^o3$/side/' src/order.c; git commit -qam side
+git checkout -q master; sed -i.bak 's/^o3$/main/' src/order.c; git commit -qam main
+git merge -q side >/dev/null 2>&1
+run ait status src/order.c
+check_rc "status reads an unmerged index (5.1)" 0
+check "as HEAD has the path" "has err \"warning: 'src/order.c' is unmerged; it is read as HEAD has it\""
+check "once per path" "test \"\$(grep -c 'is unmerged' $T/err)\" = 1"
+run ait fulfill "$D5" --force -m x
+check_rc "fulfill refuses an unmerged index (4.3-5)" 1
+check "with git's words" "has err 'fulfilling is not possible because you have unmerged files'"
+git merge --abort
+
 done_testing
