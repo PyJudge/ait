@@ -68,5 +68,9 @@ check_rc "a missing file is a bad scope" 128
 
 run ait future demand src/order.c src/stock.c cond.yaml
 check_rc "a request needs a message (4.5)" 129
+echo why > "$T/msg"
+run ait future demand src/order.c src/stock.c cond.yaml -m x -F "$T/msg"
+check_rc "-m and -F together are a usage error (4.5, v14 5.3)" 129
+check "git's words" "has err \"options '-m' and '-F' cannot be used together\""
 
 done_testing

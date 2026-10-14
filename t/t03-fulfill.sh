@@ -31,6 +31,7 @@ check "the demand is current (5.4)" "grep -A3 \"^id $D\" $T/out | grep -qx 'stat
 sed -i.bak 's/^s7$/S7/' src/stock.c; git add src/stock.c
 run ait status src/stock.c
 check "a change in the range: current ?unverified (5.3)" "grep -A3 \"^id $D\" $T/out | grep -qx 'state current ?unverified'"
+check "the changed range is shown ?changed (3.4)" "grep -A6 \"^id $D\" $T/out | grep -q '^provider src/stock.c:5-9 ?changed'"
 check "touch (5.5)" "grep -A12 \"^id $D\" $T/out | grep -qx touch"
 git reset -q; git checkout -q -- src/stock.c
 
@@ -99,5 +100,13 @@ run ait fulfill "$D5" --force -m x
 check_rc "fulfill refuses an unmerged index (4.3-5)" 1
 check "with git's words" "has err 'fulfilling is not possible because you have unmerged files'"
 git merge --abort
+
+sub=$(git rev-parse HEAD)
+git update-index --add --cacheinfo 160000,$sub,lib; git commit -qm gitlink
+run ait future demand src/order.c lib cond.yaml -m g; DG=$(newest D)
+check_rc "a gitlink is a file scope (2.5)" 0
+run ait fulfill "$DG" --force -m g
+check_rc "and is fulfilled" 0
+check "its code entry is '160000 commit OID'" "git show ait/master:fulfill/\$(git ls-tree --name-only ait/master fulfill/ | sed -n \"s|fulfill/\\($DG-.*\\)|\\1|p\") | grep -q '\"lib\": \"160000 commit $sub\"'"
 
 done_testing

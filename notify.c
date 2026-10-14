@@ -31,7 +31,7 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 	if (!strcmp(c->kind, "drop"))
 		printf("target %s\n", c->target);
 	else
-		printf("provider %s\n", scopes_display(&c->provider, x));
+		printf("provider %s\n", provider_display(b, c, x));
 	for (i = 0; i < c->nspecs; i++)
 		printf("spec %s %.*s\n", c->specs[i].engine ? "exec" : "prompt", (int)strcspn(c->specs[i].body, "\n"),
 		       c->specs[i].body);

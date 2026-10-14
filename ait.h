@@ -140,6 +140,7 @@ const char *verdict_word(enum verdict v);
 int promise(struct contract *c, enum verdict v);
 int contract_overlaps(struct contract *c, const char *q, struct tree *t);
 char *scopes_display(struct string_list *l, struct tree *x);
+char *provider_display(struct branch *b, struct contract *c, struct tree *x);
 void invariants(struct branch *b, struct string_list *out);
 char *scope_pin(const char *arg, struct tree *t, char **err);
 char *scope_locate(const char *scope, struct tree *t, char **err);

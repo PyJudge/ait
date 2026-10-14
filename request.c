@@ -726,16 +726,22 @@ static void run_request(struct request *q, int fulfilling)
 /* the options of a request, taken out of ARGV (spec 6.4) */
 static void options(struct request *q, int argc, const char **argv, struct strvec *rest)
 {
-	int i;
+	int i, m = 0, f = 0;
 
 	for (i = 0; i < argc; i++) {
+		/* v14 5.3, with git commit's words */
+		if ((!strcmp(argv[i], "-m") && f) || (!strcmp(argv[i], "-F") && (m || f)))
+			reject(129, NULL, f && !m && argv[i][1] == 'F' ? "-F is given twice" :
+			       "options '-m' and '-F' cannot be used together");
 		if (!strcmp(argv[i], "-m") && i + 1 < argc) {
+			m = 1;
 			if (q->msg.len)
 				strbuf_addstr(&q->msg, "\n\n");
 			strbuf_addstr(&q->msg, argv[++i]);
 		} else if (!strcmp(argv[i], "-F") && i + 1 < argc) {
-			if (q->msg.len || (strcmp(argv[i + 1], "-") ? strbuf_read_file(&q->msg, argv[i + 1], 0) :
-					   strbuf_read(&q->msg, 0, 0)) < 0)
+			f = 1;
+			if ((strcmp(argv[i + 1], "-") ? strbuf_read_file(&q->msg, argv[i + 1], 0) :
+			     strbuf_read(&q->msg, 0, 0)) < 0)
 				reject(128, NULL, "could not read '%s'", argv[i + 1]);
 			i++;
 		} else if ((!strcmp(argv[i], "-r") || !strcmp(argv[i], "--result")) && i + 1 < argc) {

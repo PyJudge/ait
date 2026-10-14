@@ -1101,13 +1101,14 @@ char *scope_pin(const char *arg, struct tree *t, char **err)
 			*err = xstrfmt("'%s' is not a directory", arg);
 		return *err ? NULL : xstrdup(arg);
 	}
-	if (!blob_at(t, path))
+	/* a file scope is any entry but a tree, a gitlink too (2.5); a line range is in a blob */
+	if (!(e = tree_get(t, path)) || !strcmp(e->type, "tree"))
 		return bad(err, "'%s' is not a file", path);
 	if (range_of(arg, &start, &end) == 1) {
 		size_t n;
-		char *text = object(blob_at(t, path), 1, NULL, &n);
+		char *text = blob_at(t, path) ? object(blob_at(t, path), 1, NULL, &n) : NULL;
 
-		if (strlen(text) != n || end > line_count(text, n))
+		if (!text || strlen(text) != n || end > line_count(text, n))
 			return bad(err, "'%s' is not a range of '%s'", arg, path);
 		return xstrfmt("%s:%d-%d %s", path, start, end, blob_at(t, path));
 	}
@@ -1124,7 +1125,8 @@ char *scope_locate(const char *scope, struct tree *t, char **err)
 	if (starts_with(scope, "new:") || ends_with(scope, "/"))
 		return bad(err, "'%s' is not a concrete scope", scope);
 	if (range_of(scope, &start, &end) != 1)
-		return blob_at(t, path) ? path : bad(err, "'%s' is not in the code", scope);
+		return tree_get(t, path) && strcmp(tree_get(t, path)->type, "tree") ? path :
+		       bad(err, "'%s' is not in the code", scope);
 	switch (map_range(scope, t, &start, &end, &changed)) {
 	case NOBASE:
 		return bad(err, "repository lacks the base blob of '%s'", path);
@@ -1164,6 +1166,14 @@ int scope_same(const char *scope, const char *code, struct tree *x)
 	if (sscanf(span, "%d-%d", &a, &b) != 2)
 		return 0;
 	return map_blobs(oid, e->oid, a, b, &s, &end, &changed) == FOUND && !changed;
+}
+
+/* spec 5.3: the fulfilment F recorded SCOPE as X has it */
+static int recorded_same(struct fulfilment *f, const char *scope, struct tree *x)
+{
+	struct string_list_item *code = unsorted_string_list_lookup(&f->code, scope);
+
+	return code && scope_same(scope, code->util, x);
 }
 
 /* v14 3.8: the scope as shown, located in X */
@@ -1261,12 +1271,10 @@ enum verdict judge(struct branch *b, struct contract *c, struct tree *x)
 		}
 	}
 	for_each_string_list_item(f, &valid) {
-		struct fulfilment *ful = f->util;
 		int same = 1;
 
 		for_each_string_list_item(item, &c->provider)
-			same &= scope_same(item->string, unsorted_string_list_lookup(&ful->code, item->string) ?
-					   unsorted_string_list_lookup(&ful->code, item->string)->util : NULL, x);
+			same &= recorded_same(f->util, item->string, x);
 		if (same && whole_ok)
 			return V_CURRENT;
 	}
@@ -1285,6 +1293,27 @@ const char *verdict_word(enum verdict v)
 					    "withdrawn" };
 
 	return words[v];
+}
+
+/* spec 3.4, v14 3.8: C's provider as shown in X; a current C's scope no valid fulfilment has as X does is ?changed */
+char *provider_display(struct branch *b, struct contract *c, struct tree *x)
+{
+	struct string_list valid = STRING_LIST_INIT_DUP;
+	struct string_list_item *item, *f;
+	struct strbuf sb = STRBUF_INIT;
+	enum verdict v = judge(b, c, x);
+
+	valid_fulfilments(b, c, &valid);
+	for_each_string_list_item(item, &c->provider) {
+		char *shown = scope_display(item->string, x);
+		int same = 0;
+
+		for_each_string_list_item(f, &valid)
+			same |= recorded_same(f->util, item->string, x);
+		strbuf_addf(&sb, "%s%s%s", sb.len ? "," : "", shown,
+			    (v == V_CURRENT || v == V_UNVERIFIED) && !same && !strchr(shown, '?') ? " ?changed" : "");
+	}
+	return strbuf_detach(&sb, NULL);
 }
 
 /* spec 5.5: C, current at H, has a provider scope X changed from H */
