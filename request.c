@@ -480,22 +480,20 @@ static void apply_clauses(struct request *q)
 }
 
 
-/* spec 4.10: the hint that extends this request so a violation it would add goes */
-static char *violation_hint(struct checkin *ck, const char *key)
+/* spec 4.10: the hint that extends this request so the violation V it would add goes */
+static char *violation_hint(struct checkin *ck, struct violation *v)
 {
 	struct request *q = ck->data;
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
-	const char *rest;
 
-	if (skip_prefix(key, "pair:", &rest)) {
-		strbuf_addf(&sb, " future amend %.*s", (int)strcspn(rest, ":"), rest);
-	} else if (skip_prefix(key, "mix:", &rest)) {
-		/* the other side: the offers that held D at T, which this request did not touch */
+	/* a pair: what stands fulfilled is reopened; a mix: the other side, the offers that held D at T, released */
+	if (v->kind == PAIR)
+		strbuf_addf(&sb, " future amend %s", v->a);
+	else
 		for_each_string_list_item(item, &q->b->contracts)
-			if (live(item->util) && holds(item->util, rest) && !string_list_lookup(&q->changed, item->string))
-				strbuf_addf(&sb, " release %s %s", rest, item->string);
-	}
+			if (live(item->util) && holds(item->util, v->a) && !string_list_lookup(&q->changed, item->string))
+				strbuf_addf(&sb, " release %s %s", v->a, item->string);
 	return command_again(q, NULL, NULL, sb.buf);
 }
 
@@ -1321,7 +1319,7 @@ struct pull {
 	char *name;			/* U as git's merge message names it (fmt-merge-msg.c) */
 };
 
-static char *pull_hint(struct checkin *ck, const char *key)
+static char *pull_hint(struct checkin *ck, struct violation *v)
 {
 	return xstrfmt("merge '%s' into '%s' and resolve the conflicts there (enter it with 'ait switch %s')",
 		       ((struct pull *)ck->data)->name, ck->branch, ck->branch);

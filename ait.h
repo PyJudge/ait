@@ -49,6 +49,17 @@ int is_ancestor(const char *a, const char *b);
 char *upstream_of(const char *branch);
 char *checkout_file(void);
 
+/* spec 4.10: a structural violation: a mix on demand A, held by B; or A fulfilled on an unfulfilled B */
+enum violation_kind {
+	MIX_WHOLLY,
+	MIX_PARTIALLY,
+	PAIR
+};
+struct violation {
+	enum violation_kind kind;
+	char *a, *b;
+};
+
 /* ait.c: one checkin (spec 4.4) */
 struct checkin {
 	const char *branch;		/* ait/<name> */
@@ -63,7 +74,7 @@ struct checkin {
 	const char *ff;
 	const char *refusal;		/* what a broken rule's message starts with (6.5.6) */
 	/* the hint for a structural violation the request would add (4.10), or NULL */
-	char *(*violation_hint)(struct checkin *c, const char *key);
+	char *(*violation_hint)(struct checkin *c, struct violation *v);
 	/* the command again, when the branch moved from OLD and that is still right (6.7.5-3), or NULL */
 	char *(*retry_hint)(struct checkin *c, const char *old);
 	struct branch *at;		/* the contracts at T, for the judge */
@@ -147,6 +158,7 @@ int contract_overlaps(struct contract *c, const char *q, struct tree *t);
 char *scopes_bare(struct string_list *l);
 char *scopes_display(struct string_list *l, struct tree *x);
 char *provider_display(struct branch *b, struct contract *c, struct tree *x);
+char *violation_words(struct violation *v);
 void invariants(struct branch *b, struct branch *was, struct string_list *out);
 char *scope_pin(const char *arg, struct tree *t, char **err);
 /* where a scope is (6.7.4): found, or why not */

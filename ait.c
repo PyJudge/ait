@@ -907,16 +907,13 @@ static void checkin_invariants(struct checkin *c, struct branch *now, const char
 	if (after->errors.nr && !c->refusal)
 		BUG("ait wrote a malformed contract: %s", after->errors.items[0].string);
 	if (after->errors.nr)
-		reject(1, c->violation_hint(c, ""), "%s%s", c->refusal, after->errors.items[0].string);
+		reject(1, c->violation_hint(c, NULL), "%s%s", c->refusal, after->errors.items[0].string);
 	invariants(now, now, &before);
 	invariants(after, now, &then);
-	for_each_string_list_item(v, &then) {
-		char *key = xstrndup(v->string, strcspn(v->string, " "));
-
+	for_each_string_list_item(v, &then)
 		if (!string_list_has_string(&before, v->string))
-			reject(1, c->violation_hint ? c->violation_hint(c, key) : NULL, "%s%s",
-			       c->refusal ? c->refusal : "", v->string + strlen(key) + 1);
-	}
+			reject(1, c->violation_hint ? c->violation_hint(c, v->util) : NULL, "%s%s",
+			       c->refusal ? c->refusal : "", violation_words(v->util));
 }
 
 /* spec 4.4-4 (E_MOVED): what the checkin read changed meanwhile */

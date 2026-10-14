@@ -73,15 +73,15 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 		suggest("ait future offer %s <files> as o undertake %s o -m <why>", quoted(scopes_bare(&c->provider)), c->id);
 }
 
-/* spec 6.3-4: a violation (4.10) names ID in its key ("pair:Y:X", "mix:D") */
+/* spec 6.3-4: a violation (4.10) names ID */
 static int violates(struct string_list *bad, const char *id)
 {
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, bad) {
-		char *key = xstrndup(item->string, strcspn(item->string, " "));
+		struct violation *v = item->util;
 
-		if (strstr(xstrfmt("%s:", key), xstrfmt(":%s:", id)))
+		if (!strcmp(v->a, id) || (v->kind == PAIR && !strcmp(v->b, id)))
 			return 1;
 	}
 	return 0;
@@ -123,7 +123,7 @@ int cmd_status(int argc, const char **argv)
 	me = session(0) ? agent : NULL;
 	invariants(b, b, &bad);
 	for_each_string_list_item(item, &bad)
-		warning("%s", item->string + strcspn(item->string, " ") + 1);
+		warning("%s", violation_words(item->util));
 	for_each_string_list_item(item, &b->contracts) {
 		struct contract *c = item->util;
 		enum verdict v = judge(b, c, x);

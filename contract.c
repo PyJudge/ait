@@ -1370,16 +1370,28 @@ static void holders(struct branch *b, const char *id, int how, struct string_lis
 			string_list_append(out, item->string);
 }
 
-static void pair(struct string_list *out, struct contract *upper, struct contract *lower)
+/* spec 4.10: one violation under its key, which names it across trees */
+static void violation(struct string_list *out, enum violation_kind kind, const char *a, const char *b)
 {
-	string_list_insert(out, xstrfmt("pair:%s:%s changing '%s' would leave '%s' fulfilled on top of an "
-					"unfulfilled '%s'", upper->id, lower->id, lower->id, upper->id, lower->id));
+	struct violation *v = xcalloc(1, sizeof(*v));
+
+	v->kind = kind;
+	v->a = xstrdup(a);
+	v->b = xstrdup(b);
+	string_list_insert(out, kind == PAIR ? xstrfmt("pair:%s:%s", a, b) : xstrfmt("mix:%s", a))->util = v;
+}
+
+/* spec 4.8: the words of a violation, chosen by its kind */
+char *violation_words(struct violation *v)
+{
+	if (v->kind == PAIR)
+		return xstrfmt("changing '%s' would leave '%s' fulfilled on top of an unfulfilled '%s'", v->b, v->a, v->b);
+	return xstrfmt("'%s' is already undertaken %s by '%s'", v->a, v->kind == MIX_WHOLLY ? "wholly" : "partially", v->b);
 }
 
 /*
- * spec 4.10 (b) and (c): each violation of B as "KEY message", KEY naming it
- * across trees, so a new tree's violations compare with the old one's. A mix
- * is told from WAS: what held the demand there is what it is "already" held by.
+ * spec 4.10 (b) and (c): the violations of B. A mix is told from WAS:
+ * what held the demand there is what it is "already" held by.
  */
 void invariants(struct branch *b, struct branch *was, struct string_list *out)
 {
@@ -1395,16 +1407,15 @@ void invariants(struct branch *b, struct branch *was, struct string_list *out)
 		holders(b, d->id, 'p', &part);
 		if (whole.nr && part.nr) {
 			holders(was, d->id, 'w', &before);
-			string_list_insert(out, xstrfmt("mix:%s '%s' is already undertaken %s by '%s'", d->id, d->id,
-							before.nr ? "wholly" : "partially",
-							before.nr ? before.items[0].string : part.items[0].string));
+			violation(out, before.nr ? MIX_WHOLLY : MIX_PARTIALLY, d->id,
+				  before.nr ? before.items[0].string : part.items[0].string);
 		}
 		/* 1.8: what leans on an unfulfilled contract may not stand fulfilled on it */
 		for_each_string_list_item(o, &whole)
 			if (has_valid(b, contract_get(b, o->string)) && !has_valid(b, d))
-				pair(out, contract_get(b, o->string), d);
+				violation(out, PAIR, o->string, d->id);
 		for_each_string_list_item(o, &part)
 			if (has_valid(b, d) && !has_valid(b, contract_get(b, o->string)))
-				pair(out, d, contract_get(b, o->string));
+				violation(out, PAIR, d->id, o->string);
 	}
 }
