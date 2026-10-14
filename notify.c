@@ -48,13 +48,12 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 	if (!strcmp(c->kind, "demand"))
 		for_each_string_list_item(item, &b->contracts) {
 			struct contract *o = item->util;
-			int whole = unsorted_string_list_has_string(&o->undertakes, c->id),
-			    part = unsorted_string_list_has_string(&o->partially, c->id);
+			int how = holds(o, c->id);
 
-			held |= live(o) && (whole || part);
-			if (whole || part)
+			held |= live(o) && how;
+			if (how)
 				printf("undertaken-by %s %s %s %s\n", o->id, verdict_word(judge(b, o, x)), o->creator,
-				       part ? "partial" : "whole");
+				       how == 'p' ? "partial" : "whole");
 		}
 	for_each_string_list_item(item, &c->fulfilled) {
 		struct string_list_item *f = string_list_lookup(&b->fulfils, item->string);
@@ -341,11 +340,7 @@ static void reasons(struct branch *mine, struct tree *h, struct contract *c, str
 
 		if (strcmp(m->creator, agent) || !promise(m, judge(mine, m, h)))
 			continue;
-		if ((!strcmp(m->kind, "offer") && (unsorted_string_list_has_string(&m->undertakes, k->id) ||
-						   unsorted_string_list_has_string(&m->partially, k->id))) ||
-		    (!strcmp(m->kind, "demand") && !strcmp(k->kind, "offer") &&
-		     (unsorted_string_list_has_string(&k->undertakes, m->id) ||
-		      unsorted_string_list_has_string(&k->partially, m->id))) ||
+		if (holds(m, k->id) || holds(k, m->id) ||
 		    (!strcmp(m->kind, "drop") && m->target && !strcmp(m->target, k->id)))
 			strbuf_addf(out, "reason future %s %s\n", m->kind, m->id);
 	}

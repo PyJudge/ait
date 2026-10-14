@@ -138,6 +138,7 @@ char *scopes_join(struct string_list *l);
 enum verdict { V_FUTURE, V_CURRENT, V_UNVERIFIED, V_FULFILLED, V_CANCELLED, V_WITHDRAWN };
 int live(struct contract *c);
 int has_valid(struct branch *b, struct contract *c);
+int holds(struct contract *o, const char *id);
 enum verdict judge(struct branch *b, struct contract *c, struct tree *x);
 const char *verdict_word(enum verdict v);
 int promise(struct contract *c, enum verdict v);

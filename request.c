@@ -382,9 +382,7 @@ static char *violation_hint(struct checkin *c, const char *key, void *data)
 		for_each_string_list_item(item, &q->b->contracts) {
 			struct contract *o = item->util;
 
-			if (live(o) && !strcmp(o->kind, "offer") && !string_list_lookup(&q->changed, o->id) &&
-			    (unsorted_string_list_has_string(&o->undertakes, rest) ||
-			     unsorted_string_list_has_string(&o->partially, rest)))
+			if (live(o) && holds(o, rest) && !string_list_lookup(&q->changed, o->id))
 				strbuf_addf(&sb, " release %s %s", rest, o->id);
 		}
 	}
@@ -407,8 +405,7 @@ static void cover(struct request *q, struct contract *k, struct string_list *out
 		for_each_string_list_item(item, &q->b->contracts) {
 			struct contract *o = now(q, item->string);
 
-			if (live(o) && !strcmp(o->kind, "offer") && unsorted_string_list_has_string(&o->partially, k->id) &&
-			    judge(q->b, o, q->x) != V_CURRENT)
+			if (live(o) && holds(o, k->id) == 'p' && judge(q->b, o, q->x) != V_CURRENT)
 				string_list_insert(out, o->id);
 		}
 	}

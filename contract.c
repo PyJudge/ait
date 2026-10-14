@@ -1239,6 +1239,15 @@ int contract_overlaps(struct contract *c, const char *q, struct tree *t)
 	return 0;
 }
 
+/* spec 1.7: how the offer O holds the demand ID: 'w' wholly, 'p' partially, 0 not (or O is no offer) */
+int holds(struct contract *o, const char *id)
+{
+	if (!o || strcmp(o->kind, "offer"))
+		return 0;
+	return unsorted_string_list_has_string(&o->undertakes, id) ? 'w' :
+	       unsorted_string_list_has_string(&o->partially, id) ? 'p' : 0;
+}
+
 /* spec 5.4: the judgment of C on branch B in tree X; one definition */
 enum verdict judge(struct branch *b, struct contract *c, struct tree *x)
 {
@@ -1267,8 +1276,7 @@ enum verdict judge(struct branch *b, struct contract *c, struct tree *x)
 		for_each_string_list_item(item, &b->contracts) {
 			struct contract *o = item->util;
 
-			if (live(o) && !strcmp(o->kind, "offer") && unsorted_string_list_has_string(&o->partially, c->id) &&
-			    judge(b, o, x) != V_CURRENT)
+			if (live(o) && holds(o, c->id) == 'p' && judge(b, o, x) != V_CURRENT)
 				whole_ok = 0;
 		}
 	}
@@ -1356,7 +1364,7 @@ void invariants(struct branch *b, struct string_list *out)
 			for_each_string_list_item(other, &b->contracts) {
 				struct contract *p = other->util;
 
-				if (live(p) && !strcmp(p->kind, "offer") && unsorted_string_list_has_string(&p->partially, dc->id))
+				if (live(p) && holds(p, dc->id) == 'p')
 					string_list_insert(out, xstrfmt("mix:%s '%s' is already undertaken partially by '%s'",
 									dc->id, dc->id, p->id));
 			}
