@@ -182,7 +182,7 @@ ait가 받는 하위 명령은 `init`, `checkout`, `switch`, `status`, `demand`,
 
 ### 4.3 먼저 거절할 상태 (CLAUDE.md 절차 3)
 
-계약을 읽거나 쓰는 명령(요청, `contract add`·`commit`·`push`·`pull`, `fulfill`, `status`, `sub`, `listen`)은 처음에 이 목록을 위에서부터 보고 처음 걸린 것으로 멈춘다. 명령별 판정은 이것을 지난 뒤에만 한다. 그 상태를 고치는 명령(`init`, `checkout`, `switch`)과 `session`, `unsub`, `contract new`는 이 목록을 지나지 않는다.
+계약을 읽거나 쓰는 명령(요청, `contract add`·`commit`·`push`·`pull`, `fulfill`, `status`, `sub`, `listen`)은 처음에 이 목록을 위에서부터 보고 처음 걸린 것으로 멈춘다. 명령별 판정은 이것을 지난 뒤에만 한다. 그 상태를 고치는 명령(`init`, `checkout`, `switch`)과 `session`, `unsub`, `contract new`는 이 목록을 지나지 않는다. 사용법(E_USAGE: 문법, 옵션, 메시지)은 이 목록보다 먼저, session(4.6)은 이 목록 뒤에 본다.
 
 0. ait 브랜치가 하나도 없음: `fatal: no ait branch`, `hint: ait init`(E_BRANCH).
 1. 로컬 ait 브랜치가 없고 원격 추적 것만 있음: `fatal: no local ait branch`. `ait init`이 만들 수 있는 이름(원격 하나에만 있거나 `checkout.defaultRemote`가 고르는 이름)이 있으면 `hint: ait init`(E_BRANCH).
@@ -236,7 +236,7 @@ v14 5.6·5.7을 쓴다. 바뀌는 점: 요약 행(4.4의 5, 6.7)의 OID는 짧�
 | `E_GIT` | 128 | `fatal: git failed: …`, 저장소 밖이면 `fatal: not a git repository` |
 | `E_IO` | 128 | `fatal: write error: …` |
 
-  `E_STATE`의 문구: 전이(`error: not allowed: …`), 섞기(`error: 'D' is already undertaken partially by 'O'`·`wholly`), 기대는 짝(`error: changing 'X' would leave 'Y' fulfilled on top of an unfulfilled 'X'`), `--force`의 provider(`error: cannot change the provider of 'K' with --force`), 이행 기록(`error: fulfilments are recorded only by 'ait fulfill'`), 낡은 초안(`error: 'K' changed at 'ait/<name>' since '<path>' was written`), unmerged(4.3의 5), drop(`error: not allowed: 'X' targets 'K', which is not current`), 이미 있는 경로(`error: not allowed: '<path>' already exists`).
+  `E_STATE`의 문구: 전이(`error: not allowed: …`), 섞기(`error: 'D' is already undertaken partially by 'O'`·`wholly`), 기대는 짝(`error: changing 'X' would leave 'Y' fulfilled on top of an unfulfilled 'X'`), `--force`의 provider(`error: cannot change the provider of 'K' with --force`), 이행 기록(`error: fulfilments are recorded only by 'ait fulfill'`), 낡은 초안(`error: 'K' changed at 'ait/<name>' since '<path>' was written`), unmerged(4.3의 5), drop(`error: not allowed: 'X' targets 'K', which is not current`), 이미 있는 경로(`error: not allowed: '<path>' already exists`), 끝난 계약(`error: not allowed: 'K' has ended`), 정체 변경(`error: not allowed: 'K' changes its group, kind or creator`), 정해지지 않은 state 변경(`error: not allowed: 'K' goes from '<old>' to '<new>'`). 섞기의 "already"는 T에서 그 D를 떠맡고 있던 쪽이다. 이 판정들은 이유를 돌려주고 문구는 한 표에서 고른다. `--force`의 provider 거절의 hint는 `--force`를 뺀 같은 명령이다.
 
 ### 4.9 hint
 
@@ -252,7 +252,7 @@ ait 브랜치의 tree 하나에 대해 판정한다: (a) 형식(2.3, 2.5, 배치
 - 5.1 **tree X**: 읽는 명령(`status`)과 이행하는 명령의 0단계에서는 index의 tree다(v14 7.8.1). unmerged 경로는 HEAD 판으로 읽고 경로마다 `warning: 'P' is unmerged; it is read as HEAD has it`(이 경고는 git status 출력 앞에 쓴다). X를 만드는 함수는 하나다(그 경로를 HEAD 판으로 바꾼 임시 index에서 `write-tree`). 이행이 기록하는 코드는 커밋한 뒤의 HEAD다(6.7).
 - 5.2 **유효한 이행**: 계약 K의 첨부 목록의 이행 파일 중 `condition-id`가 K의 `condition-id`와 같은 것(U21).
 - 5.3 **범위가 같은가**(범위 하나, 이행 파일 하나): `code`에 그 범위 키가 없으면 다르다. 파일 범위는 X의 항목(mode 타입 OID)이 `code`의 항목과 같으면 같다. 행 범위는 `code`의 blob이 이 저장소에 없으면 다르다. 있으면 3.5의 diff에서 어떤 hunk의 접촉 구간(v14 3.10. 순수 삽입은 `[os, os+1]`)이 `code`의 s-e와 겹치면 다르다. mode가 다르거나 파일이 없으면 다르다.
-- 5.4 **결과**(정의는 여기 하나): 저장된 state `future`인 D·O K는, 유효한 이행 중 K의 provider 범위가 모두 같은 이행이 하나라도 있고, K가 offer면 K가 통째로 떠맡은 살아 있는 D가 모두, K가 demand면 K를 부분으로 떠맡은 살아 있는 O가 모두 current이면 **current**다. 유효한 이행은 있는데 그렇지 않으면 **current ?unverified**, 유효한 이행이 없으면 **future**다. 범위마다 다른 이행을 섞지 않는다. 떠맡기의 조건이 고리를 이루지 않는다(통째와 부분은 한 D에서 섞이지 않고, 통째는 O → D, 부분은 D → O 한 방향이다).
+- 5.4 **결과**(정의는 여기 하나): 저장된 state `future`인 D·O K는, 유효한 이행 중 K의 provider 범위가 모두 같은 이행이 하나라도 있고, K가 offer면 K가 통째로 떠맡은 살아 있는 D가 모두, K가 demand면 K를 부분으로 떠맡은 살아 있는 O가 모두 current이면 **current**다. 유효한 이행은 있는데 그렇지 않으면 **current ?unverified**, 유효한 이행이 없으면 **future**다. 범위마다 다른 이행을 섞지 않는다. 떠맡기의 조건이 고리를 이루지 않는다(통째와 부분은 한 D에서 섞이지 않고, 통째는 O → D, 부분은 D → O 한 방향이다). git merge로 섞기가 생겨(10.4) 고리가 되면, 판정하는 중에 다시 만난 계약은 current가 아니다(C69).
 - 5.5 **걸린 계약**: HEAD에서 판정 current인 K의 provider 범위 중, HEAD와 X에서 5.3의 비교로 다른 것이 있으면 K는 지금 변경에 걸린다. `status`가 `touch`로 보여 준다(U2).
 
 ## 6. 명령
@@ -355,7 +355,7 @@ A, B    := 범위 목록 (v14 3.2a)
 ### 6.7 `ait fulfill` (U8, U27, U31–U33)
 
 - 6.7.1 **문법**: `ait fulfill K[=SCOPES]... [-r FILE | --force] -m MSG`. K는 여럿일 수 있고 덮는 계약 집합은 각 K의 집합의 합이다. `K=SCOPES`는 그 K의 provider를 SCOPES로 바꾼다(같은 요청의 amend: `condition-id`·`change-id`가 RID가 되고 새 `condition-id`로 이행한다, 3.3). 덮이기만 하는 계약에는 `=SCOPES`를 줄 수 없다(E_USAGE). `-r`·`--force`가 없으면 결과 틀을 쓰고 E_NEEDS_RESULTS(v14 7.7.6처럼 stdout에 `task NAME` 행들, `request PATH`, `result PATH`).
-- 6.7.2 **덮는 계약 집합**(정의는 여기 하나): K가 offer면 K와 K가 통째로 떠맡은 살아 있는 D들. K가 demand면 K와 K를 부분으로 떠맡은 살아 있는 O 중 X에서 판정 current가 아닌 것들. K가 drop이면 K(target의 state 변경이 따른다. drop은 spec이 없어 과제가 없고 결과 없이 이행한다). 0단계에서 정한 집합을 끝까지 쓴다.
+- 6.7.2 **덮는 계약 집합**(정의는 여기 하나): K가 offer면 K와 K가 통째로 떠맡은 살아 있는 D들. K가 demand면 K와 K를 부분으로 떠맡은 살아 있는 O 중 X에서 판정 current가 아닌 것들. K가 drop이면 K(target의 state 변경이 따른다. drop은 spec이 없어 과제가 없고 결과 없이 이행한다). 0단계에서 정한 집합을 끝까지 쓴다: 체크인이 다시 판정할 때 집합이나 그 계약들의 `condition-id`가 0단계와 다르면 E_MOVED이고 hint는 없다(결과가 확인한 것과 다르다, C67). 같은 요청이 만드는 새 계약의 ID는 다시 판정해도 처음의 것이다.
 - 6.7.3 **결과 틀**: 덮는 계약마다의 `condition-id`(`condition-ids`)와 과제(7장). 과제에는 행 범위가 index에서 몇 행인지(기준 blob에서 사상한 s-e)를 보여 준다.
 - 6.7.4 **위치 판정**(한 함수): provider 범위마다 찾는다. 3.3의 구체 범위가 아니면 E_SCOPE. 경로가 없거나 행 범위의 사상이 `?deleted`면 `fatal: bad scope: '<scope>' of 'K' is not in the code`. 계약의 기준 blob이 이 저장소에 없으면 `fatal: repository lacks the base blob of 'K' ('<path>')`(E_SCOPE, git `apply --3way`와 같은 모양)와 `hint: ait future amend K - '<provider>' - -m <why>`(offer면 `K '<provider>' -`. provider를 지금 판에서 다시 지정하면 새 기준 blob이 생긴다). 결과 틀, 0단계(index), 2단계(HEAD), `--force`가 이 함수를 부른다.
 - 6.7.5 **순서**:
@@ -393,7 +393,7 @@ v14 8장의 확인 요청 파일·결과 파일 형식과 쓰기 규칙(v14 8.2�
 - 9.3 **받는 상태** V: 구독, 받는 worktree의 HEAD, 체크아웃 파일의 내용. 내보내기 전에 V가 바뀌었으면 그 차례를 멈춘다(v14 9.5-3).
 - 9.4 **사건과 키**: 후보 커밋 C가 첫 부모와 비교해 바꾼 계약 파일(`git diff-tree -r --root --name-only --diff-merges=first-parent C`). 키는 바뀐 계약마다 `version ID BLOB`(C의 `<ID>.yaml` blob), 이행 파일마다 `fulfil ID BLOB`(ID는 그 이행 파일의 `contract`). 같은 키는 한 번만 나간다(사본 포함). C의 기록줄의 session이 받는 session이면 건너뛴다.
 - 9.5 **받는 쪽**(관계는 받는 worktree의 HEAD와 상대하는 로컬 ait 브랜치의 tip에서, 사건은 C와 첫 부모 양쪽의 판에서): 내 약속이면 `reason future ROLE K`, K가 내 약속 M의 상대면 `reason future ROLE(M) M`, 내 요구면 `reason demand K`, `sub id K`면 `reason sub id K`, `sub scope Q`가 C나 첫 부모의 판에서 K의 consumer·provider와 기대는 겹침(v14 3.9a)이면 `reason sub scope DISPLAY(Q)`. drop X가 바뀌면 target도 바뀐 계약으로 센다. 버려진 변경은 알리지 않는다(U34).
-- 9.6 **전달**: v14 9.5의 순서(잠금, 후보, 차례마다 키를 seen에 덧붙임, tip 갱신)와 9.6(at-least-once).
+- 9.6 **전달**: v14 9.5의 순서와 9.6(at-least-once). 차례의 처음에 잠금 안에서 V와 tip 스냅샷 N을 읽고, 후보는 N에서 구한다. 키는 한 차례 안에서도 한 번만 나간다. 내보낸 사건의 키는 내보낼 때, 건너뛴 사건(받는 쪽이 아님, 자기 session의 요청)의 키와 N은 차례 끝에 V가 그대로일 때만 쓴다. stdout 쓰기가 실패하면 listen이 끝난다(EPIPE면 SIGPIPE, 그 밖에는 `fatal: write error`).
 - 9.7 **payload**: `ait-event 1`, `commit OID`, `recipient SID`, `ref REFNAME`(C를 담은 감시 ref, 이름순), `reason …` 행들(v14 9.7의 순서), `in-head yes|no`(키가 모두 받는 session이 상대하는 로컬 ait 브랜치의 tip에 있으면 yes), `contract ID ACTION` 행들(계약마다 해당하는 것을 `create`·`amend`(`condition-id`가 바뀜)·`edit`(`change-id`만)·state 이름·`fulfil` 순으로 한 행씩), 빈 행, `git show --no-color --no-ext-diff --no-textconv --no-show-signature --diff-merges=first-parent --format=fuller --stat --patch C`, `ait-event-end`. 코드 쪽의 `current ?unverified`는 알리지 않는다(C37).
 
 - 9.8 **깨우기**(U51): `ait init`이 둔 `reference-transaction` hook은 `committed` 단계에서 `refs/heads/ait/`나 원격 추적 ait ref가 바뀌면 `<git-common-dir>/ait/wake`에 한 행을 더한다(4096바이트를 넘으면 먼저 비운다). `ait listen`은 0.1초마다 그 파일의 크기를 보고 바뀌면 한 차례를 돈다(mtime은 초 단위라 같은 초의 두 번째 변경을 놓친다). hook이 없거나 다른 hook이면 1초마다, 있으면 30초마다도 돈다(hook이 모르는 변경을 채운다).
