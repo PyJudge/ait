@@ -62,7 +62,7 @@ check "is told to run ait init" "has err 'hint: ait init'"
 run ait checkout ait/master
 check_rc "checkout of a remote-only name is not passed to git (6.2)" 128
 check "the work tree is untouched" "test -f src/order.c"
-git remote add other "$T/origin.git"; git fetch -q other
+git remote add other "$T/r"; git fetch -q other
 run ait checkout ait/master
 check "no 'ait init' hint when init could not choose the remote (6.2, 4.3-1)" "! has err 'hint: ait init'"
 git remote remove other
