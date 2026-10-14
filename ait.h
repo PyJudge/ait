@@ -149,8 +149,16 @@ char *scopes_display(struct string_list *l, struct tree *x);
 char *provider_display(struct branch *b, struct contract *c, struct tree *x);
 void invariants(struct branch *b, struct branch *was, struct string_list *out);
 char *scope_pin(const char *arg, struct tree *t, char **err);
-char *scope_locate(const char *scope, struct tree *t, char **err);
-char *code_entry(const char *scope, struct tree *t, char **err);
+/* where a scope is (6.7.4): found, or why not */
+enum scope_status {
+	FOUND,
+	NOBASE,
+	MISSING,
+	DELETED,
+	ABSTRACT
+};
+enum scope_status scope_locate(const char *scope, struct tree *t, char **where);
+char *code_entry(const char *scope, struct tree *t);
 int touched(struct branch *b, struct contract *c, struct tree *h, struct tree *x);
 
 /* contract.c: the YAML subset (v14 2.5.1) and its writing (v14 8.2) */

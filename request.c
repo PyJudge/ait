@@ -638,21 +638,24 @@ static void read_results(struct request *q)
 static void locate_all(struct request *q, struct contract *c, struct tree *t)
 {
 	struct string_list_item *item;
-	char *err;
+	char *where;
 
-	for_each_string_list_item(item, &c->provider) {
-		/* 3.3: the same command, the contract narrowed */
-		if (starts_with(item->string, "new:") || ends_with(item->string, "/"))
+	for_each_string_list_item(item, &c->provider)
+		switch (scope_locate(item->string, t, &where)) {
+		case FOUND:
+			break;
+		case ABSTRACT:
+			/* 3.3: the same command, the contract narrowed */
 			reject(128, command_again(q, c->id, xstrfmt("%s=<scope>", c->id), NULL),
 			       "bad scope: '%s' needs concrete scopes to be fulfilled", c->id);
-		/* the provider given again at this code takes new base blobs */
-		if (!scope_locate(item->string, t, &err) && starts_with(err, "repository lacks"))
+		case NOBASE:
+			/* the provider given again at this code takes new base blobs */
 			reject(128, xstrfmt("ait future amend %s %s%s - -m <why>", c->id, strcmp(c->kind, "demand") ? "" : "- ",
 					    quoted(scopes_bare(&c->provider))),
 			       "repository lacks the base blob of '%s' ('%s')", c->id, scope_path(item->string));
-		if (!scope_locate(item->string, t, &err))
+		default:
 			reject(128, NULL, "bad scope: '%s' of '%s' is not in the code", item->string, c->id);
-	}
+		}
 }
 
 /* the names of IDs as messages give them: 'A', 'B' */
@@ -676,7 +679,6 @@ static void record(struct request *q, struct checkin *ck)
 		struct fulfilment f = { 0 };
 		struct string_list_item *s;
 		struct strbuf body = STRBUF_INIT;
-		char *err;
 		size_t n;
 
 		f.path = xstrfmt("%s%sfulfill/%s-%s.md", c->group, *c->group ? "/" : "", c->id, q->rid);
@@ -690,7 +692,7 @@ static void record(struct request *q, struct checkin *ck)
 		if (strcmp(c->kind, "drop"))
 			locate_all(q, c, q->code);
 		for_each_string_list_item(s, &c->provider)
-			string_list_insert(&f.code, s->string)->util = code_entry(s->string, q->code, &err);
+			string_list_insert(&f.code, s->string)->util = code_entry(s->string, q->code);
 		for (n = 0; n < c->nspecs && !q->force; n++) {
 			struct string_list_item *r = string_list_lookup(&q->results, task_of(task_id(q, c->id), n));
 

@@ -998,7 +998,6 @@ static int has_valid(struct branch *b, struct contract *c)
 	return v.nr > 0;
 }
 
-enum scope_status { FOUND, NOBASE, MISSING, DELETED };
 
 static void hunk_part(const char *text, int *start, int *length)
 {
@@ -1118,36 +1117,35 @@ char *scope_pin(const char *arg, struct tree *t, char **err)
 	return xstrdup(path);
 }
 
-/* spec 6.7.4: where the concrete scope SCOPE is in T ("PATH" or "PATH:s-e"), or NULL with ERR */
-char *scope_locate(const char *scope, struct tree *t, char **err)
+/*
+ * spec 6.7.4, v14 3.8: where SCOPE is in T, as one judgment its callers word:
+ * FOUND with WHERE ("PATH" or "PATH:s-e"), or the reason it is not
+ */
+enum scope_status scope_locate(const char *scope, struct tree *t, char **where)
 {
 	char *path = scope_path(scope);
+	struct entry *e = tree_get(t, path);
+	enum scope_status found;
 	int start, end, changed;
 
-	*err = NULL;
 	if (starts_with(scope, "new:") || ends_with(scope, "/"))
-		return bad(err, "'%s' is not a concrete scope", scope);
-	if (range_of(scope, &start, &end) != 1)
-		return tree_get(t, path) && strcmp(tree_get(t, path)->type, "tree") ? path :
-		       bad(err, "'%s' is not in the code", scope);
-	switch (map_range(scope, t, &start, &end, &changed)) {
-	case NOBASE:
-		return bad(err, "repository lacks the base blob of '%s'", path);
-	case MISSING:
-	case DELETED:
-		return bad(err, "'%s' is not in the code", scope);
-	default:
-		return xstrfmt("%s:%d-%d", path, start, end);
+		return ABSTRACT;
+	if (range_of(scope, &start, &end) != 1) {
+		*where = path;
+		return e && strcmp(e->type, "tree") ? FOUND : MISSING;
 	}
+	found = map_range(scope, t, &start, &end, &changed);
+	*where = xstrfmt("%s:%d-%d", path, start, end);
+	return found;
 }
 
-/* spec 2.5: the code entry of SCOPE at T: "mode type oid", and "s-e" for a range */
-char *code_entry(const char *scope, struct tree *t, char **err)
+/* spec 2.5: the code entry of SCOPE at T: "mode type oid", and "s-e" for a range; NULL when not found */
+char *code_entry(const char *scope, struct tree *t)
 {
-	char *where = scope_locate(scope, t, err), *colon;
+	char *where, *colon;
 	struct entry *e;
 
-	if (!where)
+	if (scope_locate(scope, t, &where) != FOUND)
 		return NULL;
 	colon = strchr(where, ':');
 	e = tree_get(t, scope_path(scope));
@@ -1182,16 +1180,17 @@ static int recorded_same(struct fulfilment *f, const char *scope, struct tree *x
 /* v14 3.8: the scope as shown, located in X */
 static char *scope_display(const char *scope, struct tree *x)
 {
-	char *err, *where;
+	static const char *const marks[] = { [NOBASE] = "?nobase", [MISSING] = "?missing", [DELETED] = "?deleted" };
+	char *where;
+	enum scope_status found = scope_locate(scope, x, &where);
 
 	if (starts_with(scope, "new:"))
 		return xstrfmt("%s%s", scope, tree_get(x, scope_path(scope)) ? " ?exists" : "");
-	if (ends_with(scope, "/"))
+	if (found == ABSTRACT)
 		return xstrdup(scope);
-	if ((where = scope_locate(scope, x, &err)))
+	if (found == FOUND)
 		return where;
-	return xstrfmt("%s %s", xstrndup(scope, strcspn(scope, " ")),
-		       starts_with(err, "repository lacks") ? "?nobase" : blob_at(x, scope_path(scope)) ? "?deleted" : "?missing");
+	return xstrfmt("%.*s %s", (int)strcspn(scope, " "), scope, marks[found]);
 }
 
 /* a scope list as a request takes it: each scope without its base blob, which the request fixes again (3.2) */
@@ -1342,11 +1341,11 @@ char *provider_display(struct branch *b, struct contract *c, struct tree *x)
 int touched(struct branch *b, struct contract *c, struct tree *h, struct tree *x)
 {
 	struct string_list_item *item;
-	char *err, *code;
+	char *code;
 
 	if (strcmp(c->kind, "drop") && judge(b, c, h) == V_CURRENT)
 		for_each_string_list_item(item, &c->provider)
-			if ((code = code_entry(item->string, h, &err)) && !scope_same(item->string, code, x))
+			if ((code = code_entry(item->string, h)) && !scope_same(item->string, code, x))
 				return 1;
 	return 0;
 }
