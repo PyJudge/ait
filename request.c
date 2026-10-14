@@ -805,9 +805,9 @@ static void request_judge(struct checkin *ck)
 	for_each_string_list_item(item, &q->covered)
 		if (q->fixed.nr && (!string_list_lookup(&q->fixed, item->string) ||
 				    strcmp(string_list_lookup(&q->fixed, item->string)->util, now(q, item->string)->condition_id)))
-			reject(1, NULL, "'%s' moved while running; nothing changed", ck->branch);
+			checkin_moved(ck);
 	if (q->fixed.nr && q->fixed.nr != q->covered.nr)
-		reject(1, NULL, "'%s' moved while running; nothing changed", ck->branch);
+		checkin_moved(ck);
 	if (q->code)
 		record(q, ck);
 	settle(q, ck);

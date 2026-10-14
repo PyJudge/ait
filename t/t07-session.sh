@@ -17,4 +17,9 @@ check_rc "close the default session" 0
 run ait status
 check_rc "status runs without a session" 0
 
+B2=$(AIT_SESSION=- ait session open --agent bob2 2>/dev/null)
+run env AIT_SESSION=$B2 ait future demand src/order.c src/stock.c cond.yaml -m d
+run env AIT_SESSION=$B2 ait status
+check "a hint that is a whole command names the session too (v14 5.9a)" "has err \"hint: AIT_SESSION=$B2 ait fulfill \""
+
 done_testing

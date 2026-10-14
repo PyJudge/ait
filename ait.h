@@ -36,6 +36,7 @@ int id_ok(const char *s, const char *letters);
 struct names {
 	struct string_list local;	/* ait/<name> of refs/heads/ait/<name> */
 	struct string_list remote;	/* ait/<name> -> the remote-tracking refs that have it */
+	struct string_list remotes;	/* the configured remotes (git remote) */
 };
 void names_load(struct names *n);
 const char *branch_find(const char **msg, struct strbuf *hint);
@@ -71,6 +72,7 @@ struct checkin {
 typedef void (*judge_fn)(struct checkin *c);
 char *checkin_judge(struct checkin *c, judge_fn decide);
 void checkin_run(struct checkin *c, judge_fn decide);
+NORETURN void checkin_moved(struct checkin *c);
 char *tree_with(const char *treeish, const struct strbuf *info);
 
 /* contract.c: trees as git lists them */

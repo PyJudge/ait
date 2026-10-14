@@ -20,12 +20,15 @@ static char *git_cmd;
 /* "AIT_SESSION=SID " when the session in use is not this worktree's default (set by session()) */
 static char *cmd_prefix;
 
+/* a hint line with the session named in each ait command it gives, whole or quoted */
 static char *prefixed(const char *hint)
 {
 	struct strbuf sb = STRBUF_INIT;
-	const char *p, *hit;
+	const char *p = hint, *hit;
 
-	for (p = hint; cmd_prefix && (hit = strstr(p, "'ait ")); p = hit + 1) {
+	if (cmd_prefix && starts_with(hint, "ait "))
+		strbuf_addstr(&sb, cmd_prefix);
+	for (; cmd_prefix && (hit = strstr(p, "'ait ")); p = hit + 1) {
 		strbuf_add(&sb, p, hit + 1 - p);
 		strbuf_addstr(&sb, cmd_prefix);
 	}
@@ -249,12 +252,12 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 	return buf;
 }
 
-/* S as one shell word, for the commands hints give (v14 5.9a) */
+/* S as one shell word for the commands hints give (v14 5.9a), quoted only where needed, as git shows a command */
 char *quoted(const char *s)
 {
 	struct strbuf sb = STRBUF_INIT;
 
-	sq_quote_buf(&sb, s);
+	sq_quote_buf_pretty(&sb, s);
 	return strbuf_detach(&sb, NULL);
 }
 
@@ -635,12 +638,13 @@ static int cmd_session(int argc, const char **argv)
  */
 void names_load(struct names *n)
 {
-	struct string_list remotes = STRING_LIST_INIT_DUP, refs = STRING_LIST_INIT_DUP;
+	struct string_list refs = STRING_LIST_INIT_DUP;
 	struct string_list_item *ref, *r;
 
 	string_list_init_dup(&n->local);
 	string_list_init_dup(&n->remote);
-	string_list_split(&remotes, git("remote"), "\n", -1);
+	string_list_init_dup(&n->remotes);
+	string_list_split(&n->remotes, git("remote"), "\n", -1);
 	string_list_split(&refs, git("for-each-ref --format=%(refname) refs/heads/ait/ refs/remotes/"), "\n", -1);
 	for_each_string_list_item(ref, &refs) {
 		const char *rest;
@@ -653,7 +657,7 @@ void names_load(struct names *n)
 		if (!skip_prefix(ref->string, "refs/remotes/", &rest))
 			continue;
 		/* the longest configured remote that names the start, then "/ait/" */
-		for_each_string_list_item(r, &remotes) {
+		for_each_string_list_item(r, &n->remotes) {
 			size_t len = strlen(r->string);
 
 			if (*r->string && !strncmp(rest, r->string, len) && starts_with(rest + len, "/ait/") &&
@@ -915,6 +919,12 @@ static void checkin_invariants(struct checkin *c, struct branch *now, const char
 	}
 }
 
+/* spec 4.4-4 (E_MOVED): what the checkin read changed meanwhile */
+NORETURN void checkin_moved(struct checkin *c)
+{
+	reject(1, NULL, "'%s' moved while running; nothing changed", c->branch);
+}
+
 /*
  * spec 4.4-1, 2: everything judged on the tip T, as it is now; the new tree,
  * the invariants checked. Step 0 of fulfill asks the same (6.7.5-0).
@@ -986,7 +996,7 @@ void checkin_run(struct checkin *c, judge_fn decide)
 		if (rc && c->retry_hint)
 			retry_command = c->retry_hint(c, old);
 		if (rc)
-			reject(1, NULL, "'%s' moved while running; nothing changed", c->branch);
+			checkin_moved(c);
 	}
 }
 
@@ -1044,13 +1054,10 @@ static int cmd_init(int argc, const char **argv)
 		reject(129, NULL, "init takes no arguments");
 	strbuf_read_file(&exclude, path, 0);
 	if (!strstr(xstrfmt("\n%s", exclude.buf), "\n/.ait/\n")) {
-		struct strbuf sb = STRBUF_INIT;
-
 		leading_dirs(path);
-		strbuf_add(&sb, (&exclude)->buf, (&exclude)->len);
-		strbuf_complete_line(&sb);
-		strbuf_addstr(&sb, "/.ait/\n");
-		write_state(path, sb.buf);
+		strbuf_complete_line(&exclude);
+		strbuf_addstr(&exclude, "/.ait/\n");
+		write_state(path, exclude.buf);
 	}
 	install_hook();
 	names_load(&n);
@@ -1069,12 +1076,10 @@ static int cmd_init(int argc, const char **argv)
 		made++;
 	}
 	if (!n.local.nr && !made && !n.remote.nr) {
-		struct string_list remotes = STRING_LIST_INIT_DUP;
 		struct string_list_item *r;
 		struct checkin c = { .msg = "[CONTRACT] init", .no_trailers = 1 };
 
-		string_list_split(&remotes, git("remote"), "\n", -1);
-		for_each_string_list_item(r, &remotes) {
+		for_each_string_list_item(r, &n.remotes) {
 			int rc;
 			char *out;
 
