@@ -891,8 +891,6 @@ static void run_request(struct request *q, int fulfilling)
 	ck.violation_hint = violation_hint;
 	ck.retry_hint = retry;
 	ck.data = q;
-	if (!q->msg.len)
-		reject(129, NULL, "a message is required: -m <msg> or -F <file>");
 	newid(ck.rid, 'R');
 	if (fulfilling) {
 		/* step 0: everything judged on T as a checkin judges it (4.10 too), nothing changed */
@@ -950,10 +948,17 @@ static void options(struct request *q, int argc, const char **argv, struct strve
 	int i, m = 0, f = 0;
 
 	for (i = 0; i < argc; i++) {
+		static const char *const valued[] = { "-m", "-F", "-r", "--result", "-g", NULL };
+		int k;
+
+		for (k = 0; valued[k]; k++)
+			if (!strcmp(argv[i], valued[k]) && i + 1 == argc)
+				reject(129, NULL, "option '%s' requires a value", argv[i]);
 		/* v14 5.3, with git commit's words */
-		if ((!strcmp(argv[i], "-m") && f) || (!strcmp(argv[i], "-F") && (m || f)))
-			reject(129, NULL, f && !m && argv[i][1] == 'F' ? "-F is given twice" :
-			       "options '-m' and '-F' cannot be used together");
+		if (!strcmp(argv[i], "-F") && f)
+			reject(129, NULL, "-F is given twice");
+		if ((!strcmp(argv[i], "-m") && f) || (!strcmp(argv[i], "-F") && m))
+			reject(129, NULL, "options '-m' and '-F' cannot be used together");
 		if (!strcmp(argv[i], "-m") && i + 1 < argc) {
 			m = 1;
 			if (q->msg.len)
@@ -987,6 +992,9 @@ static void options(struct request *q, int argc, const char **argv, struct strve
 		reject(129, NULL, "-r and --force do not go together");
 	strbuf_stripspace(&q->msg, NULL);
 	strbuf_rtrim(&q->msg);
+	/* 4.5: every command that takes options writes, and says why */
+	if (!q->msg.len)
+		reject(129, NULL, "a message is required: -m <msg> or -F <file>");
 }
 
 int cmd_request(int argc, const char **argv)
@@ -1016,8 +1024,8 @@ int cmd_fulfill(int argc, const char **argv)
 
 	request_init(&q, argv);
 	options(&q, argc - 1, argv + 1, &rest);
-	if (!rest.nr)
-		reject(129, NULL, "fulfill names the contracts to fulfil");
+	if (!rest.nr || q.group)
+		reject(129, NULL, "fulfill takes K[=SCOPES]..., -r, --force, -m and -F");
 	for (i = 0; i < rest.nr; i++) {
 		const char *eq = strchr(rest.v[i], '=');
 		char *id = eq ? xstrndup(rest.v[i], eq - rest.v[i]) : xstrdup(rest.v[i]);
@@ -1248,8 +1256,6 @@ static int contract_commit(int argc, const char **argv)
 	options(&st.q, argc - 1, argv + 1, &rest);
 	if (rest.nr || st.q.result || st.q.group)
 		reject(129, NULL, "contract commit takes -m, -F and --force");
-	if (!st.q.msg.len)
-		reject(129, NULL, "a message is required: -m <msg> or -F <file>");
 	ck.branch = start(START_SESSION | START_WRITES);
 	st.q.x = index_tree();
 	list = access(stage_index(), F_OK) ? xstrdup("") : git_run(NULL, stage_index(), NULL, "ls-files -s");
