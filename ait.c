@@ -503,7 +503,7 @@ static void session_open(struct string_list *ids, const char *name)
 		reject(129, NULL, "bad agent name '%s'", name);
 	newid(sid, 'S');
 	write_state(state_path(xstrfmt("sessions/%s", sid)), xstrfmt("agent %s\nworktree %s\n", name, top));
-	session_tips(sid);
+	session_tips(sid, NULL);
 	for_each_string_list_item(item, ids) {
 		struct session_file *f = item->util;
 
@@ -694,41 +694,50 @@ static const char *init_hint(struct names *n)
 	return NULL;
 }
 
-/* spec 4.2, 4.3 0-2: the contract branch this worktree works with, or a refusal */
+/*
+ * spec 4.2, 4.3 0-2: the contract branch this worktree works with; NULL with
+ * the refusal in MSG and HINT (listen goes on after one, 6.8)
+ */
+const char *branch_find(const char **msg, struct strbuf *hint)
+{
+	struct names n;
+	struct string_list_item *item;
+	char *chosen;
+	int others = 0;
+
+	names_load(&n);
+	strbuf_reset(hint);
+	if (!n.local.nr) {
+		*msg = n.remote.nr ? "no local ait branch" : "no ait branch";
+		strbuf_addstr(hint, n.remote.nr && !init_hint(&n) ? "" : "ait init");
+		return NULL;
+	}
+	chosen = checkout_read();
+	if (chosen && string_list_has_string(&n.local, chosen))
+		return chosen;
+	/* 2.1.2: one name, counting the remote-tracking names too, so a DWIM-made branch is not taken silently */
+	for_each_string_list_item(item, &n.remote)
+		others |= !string_list_has_string(&n.local, item->string);
+	if (!chosen && n.local.nr == 1 && !others)
+		return n.local.items[0].string;
+	for_each_string_list_item(item, &n.local)
+		strbuf_addf(hint, "ait checkout %s\n", item->string);
+	if (init_hint(&n))
+		strbuf_addstr(hint, "ait init\n");
+	*msg = chosen ? xstrfmt("contract branch '%s' does not exist", chosen) :
+			"more than one ait branch; none is checked out";
+	return NULL;
+}
+
 const char *branch_name(void)
 {
 	static const char *name;
-	struct names n;
 	struct strbuf hint = STRBUF_INIT;
-	struct string_list_item *item;
-	char *chosen;
+	const char *msg;
 
-	if (name)
-		return name;
-	names_load(&n);
-	if (!n.local.nr && !n.remote.nr)
-		reject(128, "ait init", "no ait branch");
-	if (!n.local.nr)
-		reject(128, init_hint(&n), "no local ait branch");
-	chosen = checkout_read();
-	if (chosen && string_list_has_string(&n.local, chosen))
-		return name = chosen;
-	for_each_string_list_item(item, &n.local)
-		strbuf_addf(&hint, "ait checkout %s\n", item->string);
-	if (init_hint(&n))
-		strbuf_addstr(&hint, "ait init\n");
-	if (chosen)
-		reject(128, hint.buf, "contract branch '%s' does not exist", chosen);
-	/* 2.1.2: one name, counting the remote-tracking names too, so a DWIM-made branch is not taken silently */
-	if (n.local.nr == 1) {
-		int others = 0;
-
-		for_each_string_list_item(item, &n.remote)
-			others |= !string_list_has_string(&n.local, item->string);
-		if (!others)
-			return name = n.local.items[0].string;
-	}
-	reject(128, hint.buf, "more than one ait branch; none is checked out");
+	if (!name && !(name = branch_find(&msg, &hint)))
+		reject(128, hint.len ? hint.buf : NULL, "%s", msg);
+	return name;
 }
 
 /*
@@ -906,9 +915,11 @@ static const char hook_text[] =
 	"#!/bin/sh\n"
 	"# ait: wakes 'ait listen' when a contract branch changes (U51)\n"
 	"[ \"$1\" = committed ] || exit 0\n"
-	"if grep -Eq ' refs/(heads|remotes/.+)/ait/'; then\n"
-	"\ttouch \"$(git rev-parse --git-common-dir)/ait/wake\" 2>/dev/null\n"
-	"fi\n"
+	"grep -Eq ' refs/(heads|remotes/.+)/ait/' || exit 0\n"
+	"# a line more: a size changes where a second-grained mtime may not; kept small\n"
+	"w=\"$(git rev-parse --git-common-dir)/ait/wake\"\n"
+	"[ \"$(wc -c <\"$w\" 2>/dev/null || echo 0)\" -gt 4096 ] && : >\"$w\"\n"
+	"echo >>\"$w\" 2>/dev/null\n"
 	"exit 0\n";
 
 static void install_hook(void)

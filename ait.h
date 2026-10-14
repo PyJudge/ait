@@ -41,6 +41,7 @@ struct names {
 };
 void names_load(struct names *n);
 const char *init_source(struct names *n, const char *name);
+const char *branch_find(const char **msg, struct strbuf *hint);
 const char *branch_name(void);
 void refuse_used(const char *branch, const char *commit);
 void refuse_broken(int writes, int fulfils);
@@ -168,6 +169,6 @@ int cmd_sub(int argc, const char **argv);
 int cmd_unsub(int argc, const char **argv);
 int cmd_listen(int argc, const char **argv);
 int cmd_session(int argc, const char **argv);
-void session_tips(const char *s);
+void session_tips(const char *s, const char *as_of);
 
 #endif
