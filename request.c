@@ -193,7 +193,10 @@ static void specs_from_files(struct contract *c, const char *files)
 		char *err;
 		const char *p = item->string;
 
-		if (!condition_path_ok(p) || strbuf_read_file(&sb, xstrfmt("%s/%s", top, p), 0) < 0)
+		/* the template hint only for a path the template can be written at */
+		if (!condition_path_ok(p))
+			reject(128, NULL, "bad path '%s'", p);
+		if (strbuf_read_file(&sb, xstrfmt("%s/%s", top, p), 0) < 0)
 			reject(128, xstrfmt("ait contract new spec %s exec|prompt", quoted(p)), "could not read '%s'", p);
 		if (yaml_parse(sb.buf, &kv, p, &err))
 			reject(128, NULL, "bad format: %s", err);

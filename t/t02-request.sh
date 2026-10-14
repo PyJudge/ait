@@ -96,4 +96,7 @@ git branch -D -q ait/other
 run ait fulfill "$D" -g grp --force -m x
 check_rc "fulfill takes no -g" 129
 
+run ait future demand src/order.c src/stock.c , -m x
+check "a bad condition path gets no template hint it could not follow (4.9)" "has err \"bad path ''\" && ! has err 'hint:'"
+
 done_testing
