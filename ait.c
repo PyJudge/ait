@@ -823,9 +823,9 @@ static void refuse_used(const char *branch, const char *commit)
  * (git refuses a broken state at each command's start with one function);
  * the contract branch it works with
  */
-const char *start(int how)
+/* spec 4.3-3: a tip with a malformed file is refused (or, for status, warned of), wherever it is met */
+static void refuse_malformed(struct branch *b, int warn)
 {
-	struct branch *b = branch_load(branch_name(), NULL, NULL);
 	struct string_list_item *e;
 
 	for_each_string_list_item(e, &b->errors) {
@@ -833,12 +833,19 @@ const char *start(int how)
 		int path = strstr(e->string, "': ") - e->string + 1;
 		char *line = xstrfmt("bad format: %.*s at '%s': %s", path, e->string, b->name, e->string + path + 2);
 
-		if (how & START_WARNS)
+		if (warn)
 			warning("%s", line);
 		else
 			reject(128, xstrfmt("fix %.*s in '%s' (enter it with 'ait switch %s')", path, e->string,
 					    b->name, b->name), "%s", line);
 	}
+}
+
+const char *start(int how)
+{
+	struct branch *b = branch_load(branch_name(), NULL, NULL);
+
+	refuse_malformed(b, how & START_WARNS);
 	if ((how & START_WRITES) && *b->tip)
 		refuse_used(b->name, b->tip);
 	if ((how & START_FULFILS) &&
@@ -922,20 +929,27 @@ NORETURN void checkin_moved(struct checkin *c)
 	reject(1, NULL, "'%s' moved while running; nothing changed", c->branch);
 }
 
+/* spec 4.4-1: T, the branch's tip now ("" when it has no commit) */
+void checkin_tip(struct checkin *c)
+{
+	if (!object(xstrfmt("refs/heads/%s^{commit}", c->branch), 0, c->tip, NULL))
+		*c->tip = 0;
+}
+
 /*
- * spec 4.4-1, 2: everything judged on the tip T, as it is now; the new tree,
- * the invariants checked. Step 0 of fulfill asks the same (6.7.5-0).
+ * spec 4.4-1, 2: everything judged on the tip T the checkin holds; the new
+ * tree, the invariants checked. Step 0 of fulfill asks the same (6.7.5-0).
  */
 char *checkin_judge(struct checkin *c, judge_fn decide)
 {
 	struct branch *now;
 
-	if (!object(xstrfmt("refs/heads/%s^{commit}", c->branch), 0, c->tip, NULL))
-		*c->tip = 0;
 	string_list_clear(&c->put, 0);
 	c->tree = NULL;
 	c->second_parent = c->ff = NULL;
 	c->at = now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
+	/* a tip that a git commit or merge broke after start() (4.3-3) */
+	refuse_malformed(now, 0);
 	if (decide)
 		decide(c);
 	if (c->ff)
@@ -955,6 +969,7 @@ void checkin_run(struct checkin *c, judge_fn decide)
 {
 	if (!*c->rid)
 		newid(c->rid, 'R');
+	checkin_tip(c);
 	for (;;) {
 		char old[48], *tree = checkin_judge(c, decide);
 		const char *commit;
@@ -983,8 +998,10 @@ void checkin_run(struct checkin *c, judge_fn decide)
 			       *c->tip ? "" : " (root-commit)", line1(xstrdup(c->msg)));
 		if (!rc)
 			return;
+		/* 4.4-4: T' is read once, compared, and judged on: T := T' */
 		snprintf(old, sizeof(old), "%s", c->tip);
-		if (!object(xstrfmt("refs/heads/%s^{commit}", c->branch), 0, c->tip, NULL) || !strcmp(old, c->tip))
+		checkin_tip(c);
+		if (!*c->tip || !strcmp(old, c->tip))
 			reject(128, NULL, "%s", git_failed());
 		/* a merge reads every file, so any move judges it again (6.5.6) */
 		if (c->second_parent || c->ff)

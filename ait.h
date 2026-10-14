@@ -81,6 +81,7 @@ struct checkin {
 	void *data;			/* the command's own state, for its judge and hints */
 };
 typedef void (*judge_fn)(struct checkin *c);
+void checkin_tip(struct checkin *c);
 char *checkin_judge(struct checkin *c, judge_fn decide);
 void checkin_run(struct checkin *c, judge_fn decide);
 NORETURN void checkin_moved(struct checkin *c);

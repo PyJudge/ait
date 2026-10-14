@@ -902,6 +902,7 @@ static void run_request(struct request *q, int fulfilling)
 	newid(ck.rid, 'R');
 	if (fulfilling) {
 		/* step 0: everything judged on T as a checkin judges it (4.10 too), nothing changed */
+		checkin_tip(&ck);
 		checkin_judge(&ck, request_judge);
 		for_each_string_list_item(item, &q->covered)
 			if (strcmp(now(q, item->string)->kind, "drop"))

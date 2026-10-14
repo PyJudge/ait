@@ -37,6 +37,15 @@ run ait status
 check "a NUL byte in a contract is a format error, not a cut file (2.3)" "has err \"bad format: '$f' at 'ait/master': a NUL character\""
 git update-ref refs/heads/ait/master "$good"
 
+# T -> T1 an unrelated contract, then T1 -> T2 (after the diff-tree check) the same contract: judged on T1, so E_MOVED
+cp "$T/prompt.yaml" cond2.yaml
+echo 'ait future offer src/order.c cond.yaml -m unrelated >/dev/null' > "$T/before-update-ref"
+echo "ait future amend $D - src/order.c - -m other >/dev/null" > "$T/before-diff-tree"
+run env PATH="$T/bin:$PATH" ait future amend "$D" - - cond2.yaml -m ours
+check_rc "the tip compared is the tip judged on: a second move is not missed (4.4-4)" 1
+check "the message" "has err \"'ait/master' moved while running\""
+rm -f "$T"/before-*
+
 git worktree add -q "$T/w" ait/master
 run ait future demand src/order.c src/stock.c cond.yaml -m blocked
 check_rc "a branch another worktree has checked out is refused by git (4.4-3a)" 128
@@ -59,5 +68,19 @@ check "the hint enters the branch to fix it" "has err \"ait switch ait/master\""
 run ait status
 check_rc "status shows it as a warning and goes on" 0
 check "the warning" "has err 'warning: bad format'"
+
+# a tip broken by a git commit after start() is refused as 4.3-3, not taken for ait's own error
+git update-ref refs/heads/ait/master "$good"
+P=$(git ls-tree -r --name-only ait/master | grep "$D.yaml")
+cat > "$T/before-update-ref" <<X
+idx=\$T/idx; GIT_INDEX_FILE=\$idx git read-tree ait/master
+b=\$(printf 'kind: demand\nbroken' | git hash-object -w --stdin)
+GIT_INDEX_FILE=\$idx git update-index --cacheinfo 100644,\$b,$P
+t=\$(GIT_INDEX_FILE=\$idx git write-tree); c=\$(git commit-tree -p ait/master -m broken \$t)
+git update-ref refs/heads/ait/master \$c
+X
+run env PATH="$T/bin:$PATH" ait future demand src/order.c src/stock.c cond.yaml -m d2
+check_rc "a tip that breaks meanwhile is refused by 4.3-3 (no BUG)" 128
+check "the message" "has err \"fatal: bad format: '$P' at 'ait/master'\""
 
 done_testing
