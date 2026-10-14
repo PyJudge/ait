@@ -13,7 +13,7 @@ extern const char *top, *head, *gitdir, *commondir;
 extern char agent[72], sid[16];
 extern char *git_error;
 /* set after fulfill committed code: every refusal then says what was not recorded (spec 6.7.5-3) */
-extern char *not_recorded;
+extern char *not_recorded, *retry_hint;
 extern size_t git_out_len;
 char *git_args(struct strvec *args, const char *in, const char *index, int *rc);
 char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...);
@@ -61,6 +61,8 @@ struct checkin {
 	char made[48];			/* the commit made */
 	/* the hint for a structural violation the request would add (4.10), or NULL */
 	char *(*violation_hint)(struct checkin *c, const char *key, void *data);
+	/* the command again, when the branch moved from OLD and that is still right (6.7.5-3), or NULL */
+	char *(*retry_hint)(struct checkin *c, const char *old);
 	void *data;
 };
 typedef void (*judge_fn)(struct checkin *c, void *data);

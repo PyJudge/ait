@@ -12,7 +12,7 @@
 
 const char *top, *head, *gitdir, *commondir;
 char *git_error;
-char *not_recorded;
+char *not_recorded, *retry_hint;
 size_t git_out_len;
 char agent[72], sid[16];
 static char *git_cmd;
@@ -77,16 +77,13 @@ void reject(int code, const char *hint, const char *fmt, ...)
 {
 	va_list ap;
 
-	va_start(ap, fmt);
+	/* 6.7.5-3: after the code commit a refusal says what was not recorded, and only a retry is hinted */
 	if (not_recorded) {
-		struct strbuf msg = STRBUF_INIT;
-
-		strbuf_vaddf(&msg, fmt, ap);
-		fprintf(stderr, "error: %s: %s\n", not_recorded, msg.buf);
 		code = 1;
-	} else {
-		report_line(code == 128 ? "fatal: " : "error: ", fmt, ap);
+		hint = retry_hint;
 	}
+	va_start(ap, fmt);
+	report_line(not_recorded ? xstrfmt("error: %s: ", not_recorded) : code == 128 ? "fatal: " : "error: ", fmt, ap);
 	va_end(ap);
 	if (code == 129)
 		fputs("usage: ait <command> [<args>]\n", stderr);
@@ -905,6 +902,8 @@ void checkin_run(struct checkin *c, judge_fn judge, void *data)
 		for_each_string_list_item(item, &c->put)
 			strvec_push(&args, item->string);
 		git_args(&args, NULL, NULL, &rc);
+		if (rc && c->retry_hint)
+			retry_hint = c->retry_hint(c, old);
 		if (rc)
 			reject(1, NULL, "'%s' moved while running; nothing changed", c->branch);
 	}

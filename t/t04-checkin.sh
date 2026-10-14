@@ -20,6 +20,15 @@ check_rc "a lost CAS on the same file stops (4.4-4)" 1
 check "the message" "has err \"'ait/master' moved while running; nothing changed\""
 check "the other change stands" "yaml $D | grep -q 'src/stock.c:3-4'"
 
+# a drop's fulfilment, and its target changes meanwhile: nothing recorded; the drop itself did not change, so fulfill again
+ait fulfill "$D" --force -m now >/dev/null 2>&1
+X=$(ait future drop "$D" -m retire | sed -n 's/^new //p')
+echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$T/bin:||")\" ait future amend $D src/order.c:1-2 - - --force -m meanwhile >/dev/null" > "$T/before-update-ref"
+run env PATH="$T/bin:$PATH" ait fulfill "$X" -m withdraw
+check_rc "a lost CAS after the code step records nothing (6.7.5-3)" 1
+check "the message says what is not fulfilled" "has err \"error: '$X' not fulfilled: 'ait/master' moved while running; nothing changed\""
+check "the hint fulfills again, as the drop is as it was" "has err \"hint: ait fulfill $X -m 'withdraw'\""
+
 good=$(git rev-parse ait/master)
 git switch -q ait/master
 f=$(git ls-tree -r --name-only HEAD | grep "$D.yaml"); printf 'x\000y\n' >> "$f"; git commit -qam nul

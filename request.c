@@ -660,6 +660,37 @@ static void request_judge(struct checkin *ck, void *data)
 		string_list_insert(&ck->put, ((struct contract *)item->util)->path)->util = contract_text(item->util);
 }
 
+/*
+ * spec 6.7.5-3: ait fulfill again, when the covered contracts are as they
+ * were at OLD; a request's clauses would not be made again by it
+ */
+static char *retry(struct checkin *ck, const char *old)
+{
+	struct request *q = ck->data;
+	struct strvec args = STRVEC_INIT;
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+	int rc;
+
+	if (q->argc)
+		return NULL;
+	strvec_pushl(&args, "diff-tree", "--quiet", old, ck->tip, "--", NULL);
+	for_each_string_list_item(item, &q->covered)
+		strvec_push(&args, contract_get(q->b, item->string)->path);
+	git_args(&args, NULL, NULL, &rc);
+	if (rc)
+		return NULL;
+	strbuf_addstr(&sb, "ait fulfill");
+	for_each_string_list_item(item, &q->fulfil) {
+		struct string_list_item *eq = string_list_lookup(&q->scopes, item->string);
+
+		strbuf_addf(&sb, " %s", eq ? quoted(xstrfmt("%s=%s", item->string, (char *)eq->util)) : item->string);
+	}
+	strbuf_addf(&sb, "%s -m %s", q->force ? " --force" : q->result ? xstrfmt(" -r %s", quoted(q->result)) : "",
+		    quoted(q->msg.buf));
+	return strbuf_detach(&sb, NULL);
+}
+
 /* spec 6.7.5: judge first, commit the staged code, then check in */
 static void run_request(struct request *q, int fulfilling)
 {
@@ -673,6 +704,7 @@ static void run_request(struct request *q, int fulfilling)
 	ck.branch = branch_name();
 	string_list_init_dup(&ck.put);
 	ck.violation_hint = violation_hint;
+	ck.retry_hint = retry;
 	ck.data = q;
 	if (!q->msg.len)
 		reject(129, NULL, "a message is required: -m <msg> or -F <file>");
