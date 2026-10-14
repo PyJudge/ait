@@ -1058,7 +1058,7 @@ static void write_new_file(const char *rel, const char *text)
 	struct stat st;
 
 	if (!lstat(full, &st))
-		reject(1, xstrfmt("edit '%s' or choose another path", rel), "not allowed: '%s' already exists", rel);
+		reject(1, NULL, "not allowed: '%s' already exists", rel);
 	leading_dirs(full);
 	write_state(full, text);
 	printf("path %s\n", rel);
