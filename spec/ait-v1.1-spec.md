@@ -95,17 +95,17 @@ consumer: "src/ui/"
 provider: "src/api/page.c:10-40 9a1c0000000000000000000000000000000000ab"
 state: future
 specs:
-  - body: |
-      GET /users는 페이지당 50건 이하를 돌려준다
-    engine: exec
-    command: ["make", "test-api"]
-    success: [0]
+- body: |
+    GET /users는 페이지당 50건 이하를 돌려준다
+  engine: exec
+  command: ["make", "test-api"]
+  success: [0]
 fulfilled:
-  - "user/fulfill/D1a2b3c4d5e6f-R9b2100000000.md"
+- "user/fulfill/D1a2b3c4d5e6f-R9b2100000000.md"
 ```
 
-  - kind별 키: demand는 `condition-id change-id kind creator consumer provider state specs fulfilled`, offer는 `condition-id change-id kind creator provider state specs undertakes undertakes-partially fulfilled`, drop은 `condition-id change-id kind creator target state fulfilled`. 모든 키는 늘 있다. 목록이 비면 `[]`(flow)로 쓰고 생략하지 않는다(키를 생략하면 첫 이행과 바로 위 행의 변경이 merge에서 충돌한다, drafts 9.31).
-  - **쓰는 모양**: 한 키가 한 행이다(`specs`와 `fulfilled`의 원소만 여러 행). `condition-id`·`change-id`·`kind`·`creator`·`state`·`target`은 plain scalar. 범위 목록(`consumer`·`provider`)은 `"…"` 문자열 하나이고 범위는 v14 3.2a의 순서로 `,`로 잇는다. `undertakes`·`undertakes-partially`는 ID 순의 flow list. `fulfilled`는 블록 list이고 끝에 더한다. `specs` 원소의 키 순서는 `body engine command success environment`이고, `body`는 v14 8.2의 쓰기 규칙(`|` 블록, 필요하면 `|2`·`|-`·`|+`, 쓸 수 없으면 `"…"`), `command`는 원소가 `"…"`인 flow list, `success`는 정수 flow list다. ait는 읽은 계약을 쓸 때 이 모양으로 다시 쓴다(주석은 남지 않는다).
+  - kind별 키: demand는 `condition-id change-id kind creator consumer provider state specs fulfilled`, offer는 `condition-id change-id kind creator provider state specs undertakes undertakes-partially fulfilled`, drop은 `condition-id change-id kind creator target state fulfilled`. 모든 키는 늘 있다. 빈 `undertakes`·`undertakes-partially`는 `[]`(flow)이고, 빈 `fulfilled`는 키 행 `fulfilled:` 하나다(값 없음). 그래서 첫 이행은 키 행을 두고 그 아래에 행을 더하기만 하므로 바로 위 행(`specs`)의 변경과 merge에서 충돌하지 않는다(키를 생략하거나 `fulfilled: []`로 쓰면 그 행이 바뀌어 충돌한다, drafts 9.31).
+  - **쓰는 모양**: 한 키가 한 행이다(`specs`와 `fulfilled`의 원소만 여러 행). `condition-id`·`change-id`·`kind`·`creator`·`state`·`target`은 plain scalar. 범위 목록(`consumer`·`provider`)은 `"…"` 문자열 하나이고 범위는 v14 3.2a의 순서로 `,`로 잇는다. `undertakes`·`undertakes-partially`는 ID 순의 flow list. `fulfilled`는 블록 list(원소는 `"…"`, 들여쓰지 않은 `- `)이고 끝에 더한다. `specs`도 들여쓰지 않은 블록 list다. `specs` 원소의 키 순서는 `body engine command success environment`이고, `body`는 v14 8.2의 쓰기 규칙(`|` 블록, 필요하면 `|2`·`|-`·`|+`, 쓸 수 없으면 `"…"`), `command`는 원소가 `"…"`인 flow list, `success`는 정수 flow list다. ait는 읽은 계약을 쓸 때 이 모양으로 다시 쓴다(주석은 남지 않는다).
   - **범위**: 3장. 행 범위만 기준 blob을 가진다(`PATH:S-E BLOB`, U22, C21).
   - **spec 원소**: `body` 필수, `engine`(없거나 빈 값이면 prompt, 아니면 `exec`), exec면 `command` 필수, `success`(기본 `[0]`), `environment`(선택. 코드 브랜치의 `specs/environments/<이름>.yaml`, v14 2.5.3의 형식). prompt면 `body`만(v14 2.5.6에서 `inputs`를 뺀 것).
 - 2.3.3 **condition-id와 change-id**(U21, U23, U50):
@@ -259,7 +259,8 @@ ait 브랜치의 tree 하나에 대해 판정한다: (a) 형식(2.3, 2.5, 배치
 
 ### 6.1 `ait init`
 
-1. git 작업 폴더 안이 아니면 E_GIT(2.6.5).
+1. git 작업 폴더 안이 아니면 E_GIT(2.6.5). ait는 git 2.38 이상을 요구한다(`merge-tree --write-tree`, 6.5.6). 낮으면 `fatal: git X.Y is too old for ait`와 `hint: install git 2.38 or later`.
+1a. `git rev-parse --git-path hooks/reference-transaction`이 없으면 알림 hook(9.8)을 쓴다. 이미 다른 내용이 있으면 고치지 않고 `warning: '<path>' exists; 'ait listen' wakes by polling only`.
 2. `git rev-parse --git-path info/exclude` 파일에 `/.ait/` 행이 없으면 더한다.
 3. 원격 추적 `refs/remotes/<remote>/ait/<name>`(2.1.2) 중 로컬에 없는 이름마다, 원격 하나에만 있거나 `checkout.defaultRemote`가 그 원격이면 `git branch -q ait/<name> <remote>/ait/<name>`(upstream이 설정된다). 여러 원격에 있고 고를 수 없으면 `warning: 'ait/<name>' matched multiple (N) remote tracking branches`(`builtin/checkout.c:1321`의 문구)를 쓰고 그 이름은 만들지 않는다.
 4. 그러고도 이름의 집합이 비어 있으면 설정된 원격마다 `git ls-remote <remote> 'refs/heads/ait/*'`. 닿지 못하면 `warning: cannot reach '<remote>'; skipped`(U36). 닿은 원격에 ait 브랜치가 있으면 `fatal: '<remote>' has ait branches that are not fetched`(E_BRANCH)와 `hint: fetch 'refs/heads/ait/*' from '<remote>', then 'ait init'`(U29). 없으면 `ait/<D>`(`git var GIT_DEFAULT_BRANCH`)를 빈 tree의 커밋으로 만든다. 메시지 `[CONTRACT] init`, 기록줄 없음, `update-ref`의 old 값은 0 OID.
@@ -334,7 +335,7 @@ A, B    := 범위 목록 (v14 3.2a)
 ### 6.5 `ait contract` (U43)
 
 - 6.5.1 `ait contract new spec PATH exec|prompt`: 조건 파일의 틀을 PATH에 쓴다(PATH는 필수, 3.1, `.ait/` 아래 허용. 상위 디렉터리를 만든다). 틀은 v14 7.4.1a의 내용에서 `inputs` 행과 주석의 `inputs`를 뺀 것이다. 이미 있으면 E_STATE. 출력 `path PATH`.
-- 6.5.2 `ait contract new demand|offer|drop [GROUP]`: 새 ID로 `.ait/<GROUP>/<ID>.yaml`에 틀을 쓴다. 틀은 2.3.2의 그 kind의 키를 모두 두고, `condition-id`·`change-id`·`creator`는 빈 값(`""`), `state: future`, 범위·target·specs의 자리는 `"<scope>"`·`"<ID>"`·`- body: |\n      <condition>`, 목록은 `[]`다. ID 유일성은 4.2로 정해지는 ait 브랜치가 있으면 그것, 없으면 로컬 ait 브랜치 모두에 대해 본다. 출력 `path PATH`.
+- 6.5.2 `ait contract new demand|offer|drop [GROUP]`: 새 ID로 `.ait/<GROUP>/<ID>.yaml`에 틀을 쓴다. 틀은 2.3.2의 그 kind의 키를 모두 두고, `condition-id`·`change-id`·`creator`는 빈 값(`""`), `state: future`, 범위·target·specs의 자리는 `"<scope>"`·`"<ID>"`·`- body: |\n    <condition>`, 목록은 2.3.2의 빈 꼴이다. ID 유일성은 4.2로 정해지는 ait 브랜치가 있으면 그것, 없으면 로컬 ait 브랜치 모두에 대해 본다. 출력 `path PATH`.
 - 6.5.2a `ait contract checkout K...`(U49): 상대하는 ait 브랜치의 `<group>/K.yaml`을 작업 폴더의 `.ait/<group>/K.yaml`로 꺼낸다(git의 `git checkout <branch> -- <path>`와 같은 쓰임). 4.3의 0–3을 지난다. 이미 있으면 덮어쓰지 않고 E_STATE(`error: not allowed: '<path>' already exists`). 꺼낸 초안의 `change-id`가 그때의 값이므로, 그사이 남이 고치면 `contract commit`이 낡은 초안으로 막는다(6.5.4). 출력 `path PATH`.
 - 6.5.3 `ait contract add PATH...`: PATH는 `.ait/` 아래의 `<group>/<ID>.yaml` 꼴이어야 한다(아니면 E_USAGE). 초안 형식(2.3.1에서 `condition-id`·`change-id`·`creator`의 빈 값을 허용)을 검사하고, 그 내용을 계약 stage(2.6.4)에 `<group>/<ID>.yaml` 경로로 담는다(add할 때의 내용, git index처럼). 출력: PATH마다 `add <group>/<ID>.yaml`.
 - 6.5.4 `ait contract commit -m MSG [--force]`: stage한 계약들을 체크인 하나로 올린다. 이행하지 않는다. 계약마다:
@@ -345,8 +346,9 @@ A, B    := 범위 목록 (v14 3.2a)
 - 6.5.6 `ait contract pull [<remote>]`: 4.3을 지난 뒤
   1. remote는 인자, 없으면 `%(upstream:remotename)`, 비면 `origin`. `git fetch <remote>`(원격의 설정된 refspec을 쓴다).
   2. upstream U = `git rev-parse -q --verify --symbolic-full-name ait/<name>@{upstream}`이 `refs/remotes/*/ait/*`를 줄 때. 없으면 `fatal: 'ait/<name>' has no upstream`(E_BRANCH).
-  3. `git merge-base --is-ancestor U ait/<name>`이면 `Already up to date`. `git merge-base --is-ancestor ait/<name> U`이면 U로 4.4의 3을 한다(fast-forward. 출력 `Fast-forward <old>..<new>`).
-  4. 갈라졌으면 `git merge-tree --write-tree --name-only ait/<name> U`. 충돌이 있으면 아무것도 바꾸지 않고 `error: contract branches conflict in '<paths>'`(E_CONFLICT)와 `hint: merge '<U>' into 'ait/<name>' and resolve the conflicts there (enter it with 'ait switch ait/<name>')`. 충돌이 없으면 결과 tree에 4.10을 대어 본다. (a)를 어기거나 (b)·(c)를 늘리면 `error: merging '<U>' breaks contract rules: '<ID>' <rule>`(E_CONFLICT, 같은 hint). 지나면 두 부모(`-p ait/<name> -p U`)의 커밋을 만들어 4.4의 3–5로 체크인한다(메시지 `[CONTRACT] merge '<U>'`, 기록줄. CAS에 지면 4.4의 4).
+  3. 출력과 메시지의 `<U>`는 git이 merge 메시지에 쓰는 대로 줄인 이름이다(`git rev-parse --abbrev-ref`, 예: `origin/ait/master`).
+  3a. `git merge-base --is-ancestor U ait/<name>`이면 `Already up to date`. `git merge-base --is-ancestor ait/<name> U`이면 U로 4.4의 3을 한다(fast-forward. 출력 `Fast-forward <old>..<new>`).
+  4. 갈라졌으면 `git merge-tree --write-tree --name-only ait/<name> U`. 충돌이 있으면 아무것도 바꾸지 않고 `error: contract branches conflict in '<paths>'`(E_CONFLICT)와 `hint: merge '<U>' into 'ait/<name>' and resolve the conflicts there (enter it with 'ait switch ait/<name>')`. 충돌이 없으면 결과 tree에 4.10을 대어 본다. (a)를 어기거나 (b)·(c)를 늘리면 `error: merging '<U>' breaks contract rules: '<ID>' <rule>`(E_CONFLICT, 같은 hint). 지나면 두 부모(`-p ait/<name> -p U`)의 커밋을 만들어 4.4의 3–5로 체크인한다(메시지 `[CONTRACT] merge '<U>'`, 기록줄. CAS에 지면 새 tip에서 merge부터 다시 한다. merge는 모든 파일을 읽으므로 4.4의 4에서 멈추지 않는다).
 
 ### 6.6 (비움)
 
@@ -378,7 +380,7 @@ v14 7.2(session open·list·close, sub·unsub, listen의 잠금·신호·`--fetc
 
 v14 8장의 확인 요청 파일·결과 파일 형식과 쓰기 규칙(v14 8.2의 YAML 쓰기, 8.4의 검사 순서)을 쓴다. 바뀌는 점:
 - 7.1 **과제**: 덮는 계약의 spec마다 하나. 이름은 `<계약>:<n>`(n은 `specs`의 순번, 1부터). 같은 요청에서 새로 만드는 계약은 `+1`, `+2`, …(new 행 순서).
-- 7.2 **확인 요청 파일**: `input` 대신 `condition-ids`(덮는 기존 계약마다 `ID: "RID"`, ID 순)를 쓰고, `tree`는 index의 tree다. 과제의 키는 v14 8.2에서 `role`을 `kind`로 바꾼 것이다. exec면 `environment`에 코드 브랜치의 환경 정의를 HEAD에서 읽어 싣는다.
+- 7.2 **확인 요청 파일**: `input` 대신 `condition-ids`(덮는 기존 계약마다 `ID: "RID"`, ID 순)를 쓰고, `tree`는 index의 tree다. 과제의 키는 v14 8.2에서 `role`을 `kind`로 바꾼 것이다. exec면 `environment`에 코드 브랜치의 환경 정의를 HEAD에서 읽어 그 행들을 들여써 싣는다. HEAD에 그 파일이 없으면 `fatal: could not read 'specs/environments/<이름>.yaml' at HEAD`(E_READ, C61).
 - 7.3 **결과 파일**: `input` 대신 `condition-ids`. 0단계가 덮는 기존 계약마다 T의 `condition-id`와 비교하고, 다르거나 빠지거나 남으면 다른 검사 없이 E_NEEDS_RESULTS(그사이 계약이 바뀌었다). 새 계약(`+n`)은 `condition-ids`에 없다. ait는 결과를 코드와 묶지 않는다(U27). 나머지(과제가 빠짐·더함·겹침, outcome, pass의 basis, fail·unknown이면 E_CHECK_FAILED)는 v14 8.4다.
 - 7.4 결과 틀은 이미 있고 그 `condition-ids`와 과제 목록이 지금과 같으면 다시 쓰지 않는다.
 
@@ -389,10 +391,12 @@ v14 8장의 확인 요청 파일·결과 파일 형식과 쓰기 규칙(v14 8.2�
 - 9.1 **tip**: session 파일의 `tip OID REFNAME` 행들은 `refs/heads/ait/*`와 원격 추적 ait ref(2.1.2) 전체의 스냅샷이다. `session open`과 차례마다 갱신한다.
 - 9.2 **후보**: `git rev-list --reverse --topo-order --ignore-missing --stdin`에 감시하는 ref의 OID들과 tip의 OID마다 `^OID`. 감시하는 ref는 session의 worktree가 상대하는 로컬 ait 브랜치와, upstream이 원격 추적 ait ref면 그 upstream이다. 되감기나 force push로 사라진 커밋은 알리지 않는다.
 - 9.3 **받는 상태** V: 구독, 받는 worktree의 HEAD, 체크아웃 파일의 내용. 내보내기 전에 V가 바뀌었으면 그 차례를 멈춘다(v14 9.5-3).
-- 9.4 **사건과 키**: 후보 커밋 C가 첫 부모와 비교해 바꾼 계약 파일(`git diff-tree -r --root --name-only --diff-merges=first-parent C`). 키는 바뀐 계약마다 `version ID BLOB`(C의 `<ID>.yaml` blob), 이행 파일마다 `fulfil ID BLOB`. 같은 키는 한 번만 나간다(사본 포함). C의 기록줄의 session이 받는 session이면 건너뛴다.
+- 9.4 **사건과 키**: 후보 커밋 C가 첫 부모와 비교해 바꾼 계약 파일(`git diff-tree -r --root --name-only --diff-merges=first-parent C`). 키는 바뀐 계약마다 `version ID BLOB`(C의 `<ID>.yaml` blob), 이행 파일마다 `fulfil ID BLOB`(ID는 그 이행 파일의 `contract`). 같은 키는 한 번만 나간다(사본 포함). C의 기록줄의 session이 받는 session이면 건너뛴다.
 - 9.5 **받는 쪽**(관계는 받는 worktree의 HEAD와 상대하는 로컬 ait 브랜치의 tip에서, 사건은 C와 첫 부모 양쪽의 판에서): 내 약속이면 `reason future ROLE K`, K가 내 약속 M의 상대면 `reason future ROLE(M) M`, 내 요구면 `reason demand K`, `sub id K`면 `reason sub id K`, `sub scope Q`가 C나 첫 부모의 판에서 K의 consumer·provider와 기대는 겹침(v14 3.9a)이면 `reason sub scope DISPLAY(Q)`. drop X가 바뀌면 target도 바뀐 계약으로 센다. 버려진 변경은 알리지 않는다(U34).
 - 9.6 **전달**: v14 9.5의 순서(잠금, 후보, 차례마다 키를 seen에 덧붙임, tip 갱신)와 9.6(at-least-once).
 - 9.7 **payload**: `ait-event 1`, `commit OID`, `recipient SID`, `ref REFNAME`(C를 담은 감시 ref, 이름순), `reason …` 행들(v14 9.7의 순서), `in-head yes|no`(키가 모두 받는 session이 상대하는 로컬 ait 브랜치의 tip에 있으면 yes), `contract ID ACTION` 행들(계약마다 해당하는 것을 `create`·`amend`(`condition-id`가 바뀜)·`edit`(`change-id`만)·state 이름·`fulfil` 순으로 한 행씩), 빈 행, `git show --no-color --no-ext-diff --no-textconv --no-show-signature --diff-merges=first-parent --format=fuller --stat --patch C`, `ait-event-end`. 코드 쪽의 `current ?unverified`는 알리지 않는다(C37).
+
+- 9.8 **깨우기**(U51): `ait init`이 둔 `reference-transaction` hook은 `committed` 단계에서 `refs/heads/ait/`나 원격 추적 ait ref가 바뀌면 `<git-common-dir>/ait/wake`에 한 행을 더한다(4096바이트를 넘으면 먼저 비운다). `ait listen`은 0.1초마다 그 파일의 크기를 보고 바뀌면 한 차례를 돈다(mtime은 초 단위라 같은 초의 두 번째 변경을 놓친다). hook이 없거나 다른 hook이면 1초마다, 있으면 30초마다도 돈다(hook이 모르는 변경을 채운다).
 
 ## 10. 한계
 
