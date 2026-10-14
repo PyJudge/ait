@@ -275,11 +275,9 @@ static void apply_clauses(struct request *q)
 		int future = !strcmp(w, "future"), partial = 0;
 		struct contract *c, *d, *o, *old;
 
-		if (*w == '-') {
-			/* the options were taken out before */
-			i++;
-			continue;
-		}
+		/* options() leaves only -p and --partial here, and they belong right after undertake */
+		if (*w == '-')
+			reject(129, NULL, "'%s' goes right after 'undertake'", w);
 		if (future)
 			w = word(argc, argv, &i);
 		if (!strcmp(w, "demand") || !strcmp(w, "offer")) {

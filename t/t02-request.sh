@@ -77,5 +77,7 @@ printf 'body: |\n  x\ninputs: [a]\n' > cond5.yaml
 run ait future demand src/order.c src/stock.c cond5.yaml -m x
 check_rc "a condition file with an unknown key is refused (2.3.1)" 128
 check "naming the key and its line" "has err \"bad format: 'cond5.yaml': unknown key 'inputs' in line 3\""
+run ait future demand src/order.c src/stock.c cond.yaml -p future offer src/stock.c cond.yaml -m x
+check_rc "-p anywhere but after undertake is a usage error, not a skipped word (6.4)" 129
 
 done_testing
