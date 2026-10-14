@@ -38,6 +38,7 @@ check "keeps condition-id" "test \"\$(yaml $D | sed -n 's/^condition-id: //p')\"
 run ait future amend "$D" - src/stock.c - --force -m "move"
 check_rc "--force cannot change the provider" 1
 check "the message" "has err \"cannot change the provider of '$D' with --force\""
+check "the hint is the change without --force" "has err \"hint: ait future amend $D - src/stock.c - -m move\""
 
 run ait future demand src/order.c src/stock.c:30-40 cond.yaml -m "second"
 D2=$(newest D)

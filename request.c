@@ -70,6 +70,32 @@ static struct contract *now(struct request *q, const char *id)
 }
 
 /*
+ * the command as it was given, for a hint (4.9): the word FROM becomes TO
+ * (or goes, when TO is NULL), EXTRA is added, and a message is asked for
+ * when none was given
+ */
+static char *command_again(struct request *q, const char *from, const char *to, const char *extra)
+{
+	struct strbuf sb = STRBUF_INIT;
+	size_t i;
+	int msg = 0;
+
+	strbuf_addstr(&sb, "ait");
+	for (i = 0; i < q->words.nr; i++) {
+		msg |= !strcmp(q->words.v[i], "-m") || !strcmp(q->words.v[i], "-F");
+		if (from && !to && !strcmp(q->words.v[i], from))
+			continue;
+		/* each word quoted only where the shell needs it, as git shows a command (quote.c) */
+		strbuf_addch(&sb, ' ');
+		sq_quote_buf_pretty(&sb, from && !strcmp(q->words.v[i], from) ? to : q->words.v[i]);
+	}
+	strbuf_addstr(&sb, extra ? extra : "");
+	if (!msg)
+		strbuf_addstr(&sb, " -m <why>");
+	return strbuf_detach(&sb, NULL);
+}
+
+/*
  * spec 2.4, 4.8 (E_STATE): why a contract may not change. The judgments
  * return the reason and its words are here once, as git's push words its
  * REJECT_* reasons in one table (builtin/push.c).
@@ -84,7 +110,7 @@ enum refusal {
 	FORCE_PROVIDER
 };
 
-static NORETURN void refuse(enum refusal why, struct contract *c, struct contract *old)
+static NORETURN void refuse(struct request *q, enum refusal why, struct contract *c, struct contract *old)
 {
 	switch (why) {
 	case ENDED:
@@ -98,8 +124,9 @@ static NORETURN void refuse(enum refusal why, struct contract *c, struct contrac
 	case FULFILMENT:
 		reject(1, NULL, "fulfilments are recorded only by 'ait fulfill'");
 	case FORCE_PROVIDER:
-		reject(1, "--force keeps the old fulfilments, which checked the old provider",
-		       "cannot change the provider of '%s' with --force", c->id);
+		/* the old fulfilments checked the old provider: the change is made without --force */
+		reject(1, command_again(q, "--force", NULL, NULL), "cannot change the provider of '%s' with --force",
+		       c->id);
 	default:
 		BUG("no words for refusal %d", why);
 	}
@@ -119,12 +146,12 @@ static struct contract *changing(struct request *q, const char *id)
 	char *err;
 
 	if (item && ended(item->util))
-		refuse(ENDED, item->util, NULL);
+		refuse(q, ENDED, item->util, NULL);
 	if (item)
 		return item->util;
 	c = contract_get(q->b, id);
 	if (ended(c))
-		refuse(ENDED, c, NULL);
+		refuse(q, ENDED, c, NULL);
 	c = contract_parse(contract_text(c), c->path, 0, &err);
 	string_list_insert(&q->changed, id)->util = c;
 	return c;
@@ -434,7 +461,7 @@ static void apply_clauses(struct request *q)
 			d = contract_arg(q, a[0], "D");
 			o = contract_arg(q, a[1], "O");
 			if (!strcmp(cl->verb, "undertake") && ended(d))
-				refuse(ENDED, d, NULL);
+				refuse(q, ENDED, d, NULL);
 			o = changing(q, o->id);
 			remove_id(&o->undertakes, d->id);
 			remove_id(&o->partially, d->id);
@@ -447,28 +474,6 @@ static void apply_clauses(struct request *q)
 	}
 }
 
-/*
- * the command as it was given, for a hint (4.9): the word FROM becomes TO,
- * EXTRA is added, and a message is asked for when none was given
- */
-static char *command_again(struct request *q, const char *from, const char *to, const char *extra)
-{
-	struct strbuf sb = STRBUF_INIT;
-	size_t i;
-	int msg = 0;
-
-	strbuf_addstr(&sb, "ait");
-	for (i = 0; i < q->words.nr; i++) {
-		msg |= !strcmp(q->words.v[i], "-m") || !strcmp(q->words.v[i], "-F");
-		/* each word quoted only where the shell needs it, as git shows a command (quote.c) */
-		strbuf_addch(&sb, ' ');
-		sq_quote_buf_pretty(&sb, from && !strcmp(q->words.v[i], from) ? to : q->words.v[i]);
-	}
-	strbuf_addstr(&sb, extra ? extra : "");
-	if (!msg)
-		strbuf_addstr(&sb, " -m <why>");
-	return strbuf_detach(&sb, NULL);
-}
 
 /* spec 4.10: the hint that extends this request so a violation it would add goes */
 static char *violation_hint(struct checkin *ck, const char *key)
@@ -808,7 +813,7 @@ static void settle(struct request *q, struct checkin *ck)
 		enum refusal why = change_refusal(q, old, item->util);
 
 		if (why)
-			refuse(why, item->util, old);
+			refuse(q, why, item->util, old);
 		string_list_insert(&ck->put, ((struct contract *)item->util)->path)->util = contract_text(item->util);
 	}
 }
@@ -840,10 +845,10 @@ static void request_judge(struct checkin *ck)
 		struct contract *c = now(q, item->string);
 
 		if (ended(c))
-			refuse(ENDED, c, NULL);
+			refuse(q, ENDED, c, NULL);
 		/* 2.4: a drop is fulfilled while its target is current */
 		if (*c->id == 'X' && !target_current(q, c))
-			refuse(TARGET, c, NULL);
+			refuse(q, TARGET, c, NULL);
 		cover(q, c, &q->covered);
 	}
 	/* the IDs first: a fulfilment records its contract's new condition-id */
@@ -1226,12 +1231,12 @@ static void commit_judge(struct checkin *ck)
 			/* a draft's fulfilled is what it was checked out with: T's list, or the start of it */
 			for (k = 0; k < d->fulfilled.nr; k++)
 				if (k >= old->fulfilled.nr || strcmp(d->fulfilled.items[k].string, old->fulfilled.items[k].string))
-					refuse(FULFILMENT, d, old);
+					refuse(q, FULFILMENT, d, old);
 			d->fulfilled = old->fulfilled;
 			d->condition_id = old->condition_id;
 			d->change_id = old->change_id;
 			if (strcmp(contract_text(d), contract_text(old)) && ended(old))
-				refuse(ENDED, old, NULL);
+				refuse(q, ENDED, old, NULL);
 		}
 		string_list_insert(&q->changed, d->id)->util = d;
 		if (q->force)
@@ -1251,7 +1256,7 @@ static int contract_commit(int argc, const char **argv)
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	char *list;
 
-	request_init(&st.q, argv);
+	request_init(&st.q, argv - 1);
 	string_list_init_dup(&st.drafts);
 	options(&st.q, argc - 1, argv + 1, &rest);
 	if (rest.nr || st.q.result || st.q.group)
