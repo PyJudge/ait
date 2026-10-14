@@ -23,9 +23,10 @@ check "in-head: its key is in the local branch's tip (9.7)" "grep -qx 'in-head y
 ait future offer src/order.c cond.yaml -m "unrelated" >/dev/null
 sleep 1.5
 check "a change bob is not at risk of is not sent (rule 6)" "test \"\$(grep -c ait-event-end $T/events)\" = 1"
-AIT_SESSION=$BOB ait future demand src/order.c src/stock.c:7-9 cond.yaml -m "bob's own" >/dev/null
+BD=$(AIT_SESSION=$BOB ait future demand src/order.c src/stock.c:7-9 cond.yaml -m "bob's own" | sed -n 's/^new //p')
 sleep 1.5
 check "bob's own request is not sent to bob (9.4)" "test \"\$(grep -c ait-event-end $T/events)\" = 1"
+check "but its key is kept, so a copy of it is not sent either (v14 9.5-3)" "grep -q \"^version $BD \" \"\$(git rev-parse --git-common-dir)/ait/sessions/$BOB.seen\""
 ait future amend "$D" src/order.c:1-2 src/order.c:3-4 - -m "moved away" >/dev/null
 for i in $(seq 1 50); do test "$(grep -c ait-event-end "$T/events")" = 2 && break; sleep 0.1; done
 check "a contract moved off a subscribed scope is still sent: the first parent's version overlaps (9.5)" "test \"\$(grep -c ait-event-end $T/events)\" = 2"

@@ -479,8 +479,7 @@ static void deliver(const char *name)
 		struct strbuf keys = STRBUF_INIT, payload = STRBUF_INIT;
 		struct string_list now = STRING_LIST_INIT_DUP, new_keys = STRING_LIST_INIT_DUP;
 
-		if (!*e->string ||
-		    !strcmp(line1(git("log -1 --format=%(trailers:key=Ait-Session,valueonly) %s", e->string)), sid))
+		if (!*e->string)
 			continue;
 		event(name, e->string, &watched, &subs, &seen, &keys, &payload);
 		/* a key goes out once, in this round too */
@@ -488,7 +487,9 @@ static void deliver(const char *name)
 		for_each_string_list_item(item, &new_keys)
 			if (*item->string)
 				string_list_insert(&seen, item->string);
-		if (!payload.len) {
+		/* 9.4: the session's own request is skipped, its keys kept like any skipped event's (v14 9.5-3) */
+		if (!payload.len ||
+		    !strcmp(line1(git("log -1 --format=%(trailers:key=Ait-Session,valueonly) %s", e->string)), sid)) {
 			strbuf_add(&skipped, keys.buf, keys.len);
 			continue;
 		}
