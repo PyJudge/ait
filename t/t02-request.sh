@@ -19,6 +19,7 @@ run ait future offer src/stock.c cond.yaml -g inventory as o undertake "$D" o -m
 check_rc "offer, alias and undertake in one request" 0
 O=$(newest O)
 check "the group folder (2.1.3)" "git ls-tree -r --name-only ait/master | grep -q \"^inventory/$O.yaml\$\""
+check "the new line carries the alias (6.4.4)" "has out \"^new $O o\$\""
 check "undertakes lists the demand" "yaml $O | grep -q \"undertakes: \\[$D\\]\""
 
 cid=$(yaml "$D" | sed -n 's/^condition-id: //p')
@@ -55,6 +56,10 @@ check_rc "cancel" 0
 check "the state" "yaml $D2 | grep -qx 'state: cancelled'"
 run ait future amend "$D2" - src/order.c - -m x
 check_rc "an ended contract does not change" 1
+
+run ait future drop "$D2" -m x
+check_rc "a drop of a contract that is not current is refused (2.4)" 1
+check "the message (4.8)" "has err \"not allowed: 'X[0-9a-f]*' targets '$D2', which is not current\""
 
 run ait future demand src/order.c new:src/later.c cond.yaml -m x
 check_rc "new:PATH for a provider not written yet" 0

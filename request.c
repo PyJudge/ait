@@ -200,6 +200,22 @@ static struct contract *make(struct request *q, const char *kind)
 	return c;
 }
 
+/* spec 2.4: an ended contract (cancelled, withdrawn, a fulfilled drop) changes no more */
+static void refuse_ended(struct contract *c)
+{
+	if (!live(c) || (*c->id == 'X' && c->fulfilled.nr))
+		reject(1, NULL, "not allowed: '%s' has ended", c->id);
+}
+
+/* spec 2.4: a drop targets a D or O judged current */
+static void refuse_target(struct request *q, struct contract *x)
+{
+	struct contract *t = now(q, x->target);
+
+	if (!t || judge(q->b, t, q->x) != V_CURRENT)
+		reject(1, NULL, "not allowed: '%s' targets '%s', which is not current", x->id, x->target);
+}
+
 /* a word that starts a clause (v14 7.3.1) */
 static int clause_word(const char *w)
 {
@@ -274,10 +290,9 @@ static void apply_clauses(struct request *q)
 		} else if (!strcmp(w, "drop") && future) {
 			struct contract *t = contract_arg(q, word(argc, argv, &i), "DO");
 
-			if (judge(q->b, t, q->x) != V_CURRENT)
-				reject(1, NULL, "not allowed: '%s' is not current", t->id);
 			c = make(q, "drop");
 			c->target = xstrdup(t->id);
+			refuse_target(q, c);
 			new_alias(q, as_name(argc, argv, &i), c->id);
 			stamp(q, c, NULL, 0);
 		} else if (!strcmp(w, "amend")) {
@@ -285,8 +300,7 @@ static void apply_clauses(struct request *q)
 			int nargs = 0;
 
 			c = contract_arg(q, word(argc, argv, &i), "DOX");
-			if (!live(c) || (*c->id == 'X' && c->fulfilled.nr))
-				reject(1, NULL, "not allowed: '%s' has ended", c->id);
+			refuse_ended(c);
 			/* v14 7.3.1: D takes A B FILES, O takes B FILES, X takes K; none is the empty amend */
 			while (i < argc && nargs < 3 && !clause_word(argv[i]))
 				args[nargs++] = argv[i++];
@@ -296,11 +310,8 @@ static void apply_clauses(struct request *q)
 			old = contract_get(q->b, c->id);
 			c = changing(q, c->id);
 			if (*c->id == 'X' && nargs) {
-				struct contract *t = contract_arg(q, args[0], "DO");
-
-				if (judge(q->b, t, q->x) != V_CURRENT)
-					reject(1, NULL, "not allowed: '%s' is not current", t->id);
-				c->target = xstrdup(t->id);
+				c->target = xstrdup(contract_arg(q, args[0], "DO")->id);
+				refuse_target(q, c);
 			} else if (nargs) {
 				if (*c->id == 'D')
 					scopes_arg(&c->consumer, args[0], pin_at, 1, 0);
@@ -321,8 +332,7 @@ static void apply_clauses(struct request *q)
 			c = contract_arg(q, word(argc, argv, &i), "DOX");
 			if (!strcmp(c->state, "cancelled"))
 				continue;
-			if (!live(c) || (*c->id == 'X' && c->fulfilled.nr))
-				reject(1, NULL, "not allowed: '%s' has ended", c->id);
+			refuse_ended(c);
 			changing(q, c->id)->state = xstrdup("cancelled");
 		} else if (!strcmp(w, "undertake") || !strcmp(w, "release")) {
 			int take = !strcmp(w, "undertake");
@@ -416,16 +426,6 @@ static const char *task_id(struct request *q, const char *id)
 	return id;
 }
 
-static char *display(struct string_list *l, struct tree *t)
-{
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, l)
-		strbuf_addf(&sb, "%s%s", sb.len ? "," : "", scope_display(item->string, t));
-	return strbuf_detach(&sb, NULL);
-}
-
 /* spec 7.2 (C39): the environment definition, read from the code at HEAD, its lines under "environment:" */
 static void environment_out(struct strbuf *sb, const char *name)
 {
@@ -468,8 +468,8 @@ static void write_check_files(struct request *q)
 			tasks++;
 			strbuf_addf(&req, "- task: \"%s\"\n  contract: \"%s\"\n  kind: \"%s\"\n", task, task_id(q, c->id), c->kind);
 			if (!strcmp(c->kind, "demand"))
-				strbuf_addf(&req, "  consumer: \"%s\"\n", display(&c->consumer, q->x));
-			strbuf_addf(&req, "  provider: \"%s\"\n  engine: \"%s\"\n  body: ", display(&c->provider, q->x),
+				strbuf_addf(&req, "  consumer: \"%s\"\n", scopes_display(&c->consumer, q->x));
+			strbuf_addf(&req, "  provider: \"%s\"\n  engine: \"%s\"\n  body: ", scopes_display(&c->provider, q->x),
 				    s->engine ? "exec" : "prompt");
 			yaml_out_body(&req, s->body, "    ");
 			if (s->engine)
@@ -643,10 +643,9 @@ static void request_judge(struct checkin *ck, void *data)
 
 		if (!c)
 			reject(128, NULL, "no such contract: '%s'", item->string);
-		if (!live(c) || (*c->id == 'X' && c->fulfilled.nr))
-			reject(1, NULL, "not allowed: '%s' has ended", c->id);
-		if (*c->id == 'X' && judge(q->b, now(q, c->target), q->x) != V_CURRENT)
-			reject(1, NULL, "not allowed: '%s' targets '%s', which is not current", c->id, c->target);
+		refuse_ended(c);
+		if (*c->id == 'X')
+			refuse_target(q, c);
 		cover(q, c, &q->covered);
 	}
 	if (q->covered.nr && q->code)
@@ -711,8 +710,15 @@ static void run_request(struct request *q, int fulfilling)
 	ck.msg = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", q->msg.buf);
 	checkin_run(&ck, request_judge, q);
 	not_recorded = NULL;
-	for_each_string_list_item(item, &q->order)
-		printf("new %s\n", item->string);
+	for_each_string_list_item(item, &q->order) {
+		struct string_list_item *a;
+		const char *name = "";
+
+		for_each_string_list_item(a, &q->alias)
+			if (!strcmp(a->util, item->string))
+				name = a->string;
+		printf("new %s%s%s\n", item->string, *name ? " " : "", name);
+	}
 	for_each_string_list_item(item, &q->covered)
 		printf("fulfilled %s\n", item->string);
 }
@@ -985,9 +991,8 @@ static void commit_judge(struct checkin *ck, void *data)
 			d->state = xstrdup("future");
 			if (d->fulfilled.nr)
 				reject(1, NULL, "fulfilments are recorded only by 'ait fulfill'");
-			if (!strcmp(d->kind, "drop") && judge(q->b, contract_get(q->b, d->target) ? contract_get(q->b, d->target) :
-							     d, q->x) != V_CURRENT)
-				reject(1, NULL, "not allowed: '%s' targets '%s', which is not current", d->id, d->target);
+			if (!strcmp(d->kind, "drop"))
+				refuse_target(q, d);
 			stamp(q, d, NULL, 0);
 			string_list_append(&q->order, d->id);
 		} else {
@@ -1001,6 +1006,8 @@ static void commit_judge(struct checkin *ck, void *data)
 				if (k >= old->fulfilled.nr || strcmp(d->fulfilled.items[k].string, old->fulfilled.items[k].string))
 					reject(1, NULL, "fulfilments are recorded only by 'ait fulfill'");
 			d->fulfilled = old->fulfilled;
+			if (!strcmp(d->kind, "drop") && strcmp(d->target, old->target))
+				refuse_target(q, d);
 			if (strcmp(d->state, old->state) && strcmp(d->state, "cancelled"))
 				reject(1, NULL, "not allowed: '%s' goes from '%s' to '%s'", d->id, old->state, d->state);
 			d->condition_id = old->condition_id;

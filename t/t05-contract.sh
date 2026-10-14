@@ -39,6 +39,17 @@ check_rc "a stale draft is refused (6.5.4)" 1
 check "the message" "has err \"'$D' changed at 'ait/master' since '.ait/user/$D.yaml' was written\""
 check "the other change stands" "yaml $D | grep -q 'src/stock.c:1-5'"
 
+ait fulfill "$D" --force -m now >/dev/null 2>&1
+run ait future drop "$D" -m retire; X=$(newest X)
+run ait future demand src/order.c src/stock.c cond.yaml -m other; D9=$(newest D)
+ait contract checkout "$X" >/dev/null
+sed -i.bak "s/^target: .*/target: $D9/" ".ait/$X.yaml"
+ait contract add ".ait/$X.yaml" >/dev/null
+run ait contract commit -m "retarget"
+check_rc "a drop retargeted by commit needs a current target too (2.4)" 1
+check "the message" "has err \"not allowed: '$X' targets '$D9', which is not current\""
+rm -f "$(git rev-parse --git-dir)/ait/index" ".ait/$X.yaml"
+
 run ait contract push
 check_rc "push sends the branch (6.5.5)" 0
 check "the remote has it" "git --git-dir=$T/origin.git rev-parse -q --verify refs/heads/ait/master >/dev/null"

@@ -18,16 +18,6 @@ static char *pathspec_of(const char *arg)
 	return scope_path(arg);
 }
 
-static char *shown(struct string_list *l, struct tree *x)
-{
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, l)
-		strbuf_addf(&sb, "%s%s", sb.len ? "," : "", scope_display(item->string, x));
-	return strbuf_detach(&sb, NULL);
-}
-
 static void block(struct branch *b, struct contract *c, struct tree *x, struct tree *h, const char *me)
 {
 	enum verdict v = judge(b, c, x);
@@ -37,11 +27,11 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 	printf("id %s\nkind %s\ngroup %s\nstate %s\ncreator %s\n", c->id, c->kind, *c->group ? c->group : "-",
 	       verdict_word(v), c->creator);
 	if (!strcmp(c->kind, "demand"))
-		printf("consumer %s\n", shown(&c->consumer, x));
+		printf("consumer %s\n", scopes_display(&c->consumer, x));
 	if (!strcmp(c->kind, "drop"))
 		printf("target %s\n", c->target);
 	else
-		printf("provider %s\n", shown(&c->provider, x));
+		printf("provider %s\n", scopes_display(&c->provider, x));
 	for (i = 0; i < c->nspecs; i++)
 		printf("spec %s %.*s\n", c->specs[i].engine ? "exec" : "prompt", (int)strcspn(c->specs[i].body, "\n"),
 		       c->specs[i].body);
@@ -76,7 +66,7 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 	if (h && touched(b, c, h, x))
 		puts("touch");
 	putchar('\n');
-	if (me && !strcmp(c->creator, me) && (v == V_FUTURE || v == V_UNVERIFIED) && strcmp(c->kind, "drop"))
+	if (me && !strcmp(c->creator, me) && promise(c, v) && strcmp(c->kind, "drop"))
 		suggest("ait fulfill %s -m <why>", c->id);
 }
 
@@ -124,20 +114,13 @@ int cmd_status(int argc, const char **argv)
 		int pick = 0, j;
 
 		if (argc > 1) {
-			struct string_list_item *s;
-
 			for (j = 1; j < argc; j++) {
-				char *err, *q = range_of(argv[j], &rc, &rc) == 1 ? scope_pin(argv[j], x, &err) : xstrdup(argv[j]);
+				char *err, *q = range_of(argv[j], &rc, &rc) == 1 ? scope_pin(argv[j], x, &err) : NULL;
 
-				if (!q)
-					q = xstrdup(argv[j]);
-				for_each_string_list_item(s, &c->consumer)
-					pick |= scope_overlap(q, s->string, x);
-				for_each_string_list_item(s, &c->provider)
-					pick |= scope_overlap(q, s->string, x);
+				pick |= contract_overlaps(c, q ? q : argv[j], x);
 			}
 		} else {
-			pick = (me && !strcmp(c->creator, me) && (v == V_FUTURE || v == V_UNVERIFIED)) ||
+			pick = (me && !strcmp(c->creator, me) && promise(c, v)) ||
 			       (me && !strcmp(c->creator, me) && !strcmp(c->kind, "demand") && v == V_CURRENT) ||
 			       v == V_UNVERIFIED || (h && touched(b, c, h, x));
 		}
@@ -188,9 +171,7 @@ static void tips_now(struct string_list *out)
 {
 	struct string_list refs = STRING_LIST_INIT_DUP;
 	struct string_list_item *r;
-	struct names n;
 
-	names_load(&n);
 	string_list_split(&refs, git("for-each-ref --format=%(objectname) %(refname) refs/heads/ait/ refs/remotes/"), "\n", -1);
 	for_each_string_list_item(r, &refs) {
 		const char *name = strchr(r->string, ' ');
@@ -307,16 +288,12 @@ static void reasons(struct branch *mine, struct contract *c, struct string_list 
 	struct tree *h = head ? tree_load(head) : tree_load(EMPTY_TREE);
 	enum verdict v = judge(mine, k, h);
 
-	if (!strcmp(k->creator, agent) && live(k) && v != V_CURRENT && v != V_FULFILLED)
+	if (!strcmp(k->creator, agent) && promise(k, v))
 		strbuf_addf(out, "reason future %s %s\n", k->kind, k->id);
 	for_each_string_list_item(item, &mine->contracts) {
 		struct contract *m = item->util;
-		enum verdict mv;
 
-		if (strcmp(m->creator, agent) || !live(m))
-			continue;
-		mv = judge(mine, m, h);
-		if (mv == V_CURRENT || mv == V_FULFILLED)
+		if (strcmp(m->creator, agent) || !promise(m, judge(mine, m, h)))
 			continue;
 		if ((!strcmp(m->kind, "offer") && (unsorted_string_list_has_string(&m->undertakes, k->id) ||
 						   unsorted_string_list_has_string(&m->partially, k->id))) ||
@@ -333,17 +310,8 @@ static void reasons(struct branch *mine, struct contract *c, struct string_list 
 
 		if (skip_prefix(s->string, "sub id ", &rest) && !strcmp(rest, k->id))
 			strbuf_addf(out, "reason sub id %s\n", k->id);
-		if (skip_prefix(s->string, "sub scope ", &rest)) {
-			struct string_list_item *sc;
-			int hit = 0;
-
-			for_each_string_list_item(sc, &k->consumer)
-				hit |= scope_overlap(rest, sc->string, h);
-			for_each_string_list_item(sc, &k->provider)
-				hit |= scope_overlap(rest, sc->string, h);
-			if (hit)
-				strbuf_addf(out, "reason sub scope %s\n", xstrndup(rest, strcspn(rest, " ")));
-		}
+		if (skip_prefix(s->string, "sub scope ", &rest) && contract_overlaps(k, rest, h))
+			strbuf_addf(out, "reason sub scope %s\n", xstrndup(rest, strcspn(rest, " ")));
 	}
 }
 

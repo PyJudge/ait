@@ -1181,6 +1181,17 @@ char *scope_display(const char *scope, struct tree *x)
 		       starts_with(err, "repository lacks") ? "?nobase" : blob_at(x, scope_path(scope)) ? "?deleted" : "?missing");
 }
 
+/* a scope list as shown in X, joined with "," */
+char *scopes_display(struct string_list *l, struct tree *x)
+{
+	struct strbuf sb = STRBUF_INIT;
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, l)
+		strbuf_addf(&sb, "%s%s", sb.len ? "," : "", scope_display(item->string, x));
+	return strbuf_detach(&sb, NULL);
+}
+
 /* v14 3.9: two scopes overlap in T */
 int scope_overlap(const char *q, const char *r, struct tree *t)
 {
@@ -1200,6 +1211,20 @@ int scope_overlap(const char *q, const char *r, struct tree *t)
 	if (scope_blob(r) && map_range(r, t, &c, &d, &cr) != FOUND)
 		return 1;
 	return a <= d && c <= b;
+}
+
+/* v14 3.9a: the scope Q overlaps C's consumer or provider in T */
+int contract_overlaps(struct contract *c, const char *q, struct tree *t)
+{
+	struct string_list_item *s;
+
+	for_each_string_list_item(s, &c->consumer)
+		if (scope_overlap(q, s->string, t))
+			return 1;
+	for_each_string_list_item(s, &c->provider)
+		if (scope_overlap(q, s->string, t))
+			return 1;
+	return 0;
 }
 
 /* spec 5.4: the judgment of C on branch B in tree X; one definition */
@@ -1246,6 +1271,12 @@ enum verdict judge(struct branch *b, struct contract *c, struct tree *x)
 			return V_CURRENT;
 	}
 	return V_UNVERIFIED;
+}
+
+/* spec 1.5: a promise is a live contract judged future or current ?unverified */
+int promise(struct contract *c, enum verdict v)
+{
+	return live(c) && (v == V_FUTURE || v == V_UNVERIFIED);
 }
 
 const char *verdict_word(enum verdict v)
