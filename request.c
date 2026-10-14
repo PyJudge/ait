@@ -426,6 +426,21 @@ static char *display(struct string_list *l, struct tree *t)
 	return strbuf_detach(&sb, NULL);
 }
 
+/* spec 7.2 (C39): the environment definition, read from the code at HEAD, its lines under "environment:" */
+static void environment_out(struct strbuf *sb, const char *name)
+{
+	char *path = xstrfmt("specs/environments/%s.yaml", name), *text;
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	size_t i;
+
+	if (!head || !(text = object(xstrfmt("%s:%s", head, path), 1, NULL, NULL)))
+		reject(128, NULL, "could not read '%s' at HEAD", path);
+	strbuf_addstr(sb, "  environment:\n");
+	string_list_split(&lines, text, "\n", -1);
+	for (i = 0; i < lines.nr && (i + 1 < lines.nr || *lines.items[i].string); i++)
+		strbuf_addf(sb, "%s%s\n", *lines.items[i].string ? "    " : "", lines.items[i].string);
+}
+
 /* spec 7.2: the check request and the result template, unless the template is already this one */
 static void write_check_files(struct request *q)
 {
@@ -448,7 +463,6 @@ static void write_check_files(struct request *q)
 		for (n = 0; n < c->nspecs; n++) {
 			struct spec *s = &c->specs[n];
 			char *task = task_of(task_id(q, c->id), n);
-			size_t j;
 
 			printf("task %s\n", task);
 			tasks++;
@@ -458,18 +472,10 @@ static void write_check_files(struct request *q)
 			strbuf_addf(&req, "  provider: \"%s\"\n  engine: \"%s\"\n  body: ", display(&c->provider, q->x),
 				    s->engine ? "exec" : "prompt");
 			yaml_out_body(&req, s->body, "    ");
-			if (s->engine) {
-				strbuf_addstr(&req, "  command: [");
-				for (j = 0; j < s->command.nr; j++) {
-					if (j)
-						strbuf_addstr(&req, ", ");
-					yaml_out_scalar(&req, s->command.v[j]);
-				}
-				strbuf_addstr(&req, "]\n  success: [");
-				for (j = 0; j < s->success.nr; j++)
-					strbuf_addf(&req, "%s%s", j ? ", " : "", s->success.items[j].string);
-				strbuf_addstr(&req, s->success.nr ? "]\n" : "0]\n");
-			}
+			if (s->engine)
+				spec_lists(&req, s, 1);
+			if (s->environment)
+				environment_out(&req, s->environment);
 			strbuf_addf(&res, "- task: \"%s\"\n  outcome:\n  basis: |\n  reason:\n", task);
 		}
 	}

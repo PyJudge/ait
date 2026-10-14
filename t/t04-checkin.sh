@@ -20,6 +20,14 @@ check_rc "a lost CAS on the same file stops (4.4-4)" 1
 check "the message" "has err \"'ait/master' moved while running; nothing changed\""
 check "the other change stands" "yaml $D | grep -q 'src/stock.c:3-4'"
 
+good=$(git rev-parse ait/master)
+git switch -q ait/master
+f=$(git ls-tree -r --name-only HEAD | grep "$D.yaml"); printf 'x\000y\n' >> "$f"; git commit -qam nul
+git switch -q master
+run ait status
+check "a NUL byte in a contract is a format error, not a cut file (2.3)" "has err \"bad format: '$f' at 'ait/master': a NUL character\""
+git update-ref refs/heads/ait/master "$good"
+
 git worktree add -q "$T/w" ait/master
 run ait future demand src/order.c src/stock.c cond.yaml -m blocked
 check_rc "a branch another worktree has checked out is refused by git (4.4-3a)" 128

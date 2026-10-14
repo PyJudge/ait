@@ -11,6 +11,19 @@ static char *xstrdup_null(const char *s)
 	return s ? xstrdup(s) : NULL;
 }
 
+/* git's "return error(...)" for the parsers: ERR says why, NULL is returned */
+static void *bad(char **err, const char *fmt, ...)
+{
+	struct strbuf sb = STRBUF_INIT;
+	va_list ap;
+
+	va_start(ap, fmt);
+	strbuf_vaddf(&sb, fmt, ap);
+	va_end(ap);
+	*err = strbuf_detach(&sb, NULL);
+	return NULL;
+}
+
 static int cmp_entry(const void *a, const void *b)
 {
 	return strcmp(((const struct entry *)a)->path, ((const struct entry *)b)->path);
@@ -373,7 +386,7 @@ void yaml_out_scalar(struct strbuf *sb, const char *s)
 	if (!ok)
 		BUG("libyaml cannot write a scalar: %s", y.problem);
 	strbuf_rtrim(&one);
-	strbuf_add(sb, (&one)->buf, (&one)->len);
+	strbuf_addstr(sb, one.buf);
 }
 
 /*
@@ -556,43 +569,29 @@ struct spec *spec_from(struct string_list *kv, const char *prefix, char **err)
 		first = xstrndup(k + plen, strcspn(k + plen, "."));
 		for (i = 0; keys[i]; i++)
 			known |= !strcmp(first, keys[i]);
-		if (!known) {
-			*err = xstrfmt("unknown key '%s' in line %d", k, ((struct yval *)item->util)->line);
-			return NULL;
-		}
+		if (!known)
+			return bad(err, "unknown key '%s' in line %d", k, ((struct yval *)item->util)->line);
 	}
 	s->body = xstrdup_null(yget(kv, pk(prefix, "body")));
-	if (!s->body || ykind(kv, pk(prefix, "body"))) {
-		*err = xstrfmt("'%s' is missing or not a string", pk(prefix, "body"));
-		return NULL;
-	}
-	if (engine && *engine && strcmp(engine, "exec")) {
-		*err = xstrfmt("unknown engine '%s'", engine);
-		return NULL;
-	}
+	if (!s->body || ykind(kv, pk(prefix, "body")))
+		return bad(err, "'%s' is missing or not a string", pk(prefix, "body"));
+	if (engine && *engine && strcmp(engine, "exec"))
+		return bad(err, "unknown engine '%s'", engine);
 	s->engine = engine && *engine ? xstrdup(engine) : NULL;
 	if ((yget(kv, pk(prefix, "command")) && yaml_list(kv, pk(prefix, "command"), &cmd)) ||
-	    (yget(kv, pk(prefix, "success")) && yaml_list(kv, pk(prefix, "success"), &s->success))) {
-		*err = xstrfmt("'command' and 'success' are lists");
-		return NULL;
-	}
+	    (yget(kv, pk(prefix, "success")) && yaml_list(kv, pk(prefix, "success"), &s->success)))
+		return bad(err, "'command' and 'success' are lists");
 	for_each_string_list_item(item, &cmd)
 		strvec_push(&s->command, item->string);
 	for_each_string_list_item(item, &s->success)
 		if (!*item->string || item->string[strspn(item->string, "0123456789")] ||
-		    (*item->string == '0' && item->string[1])) {
-			*err = xstrfmt("'success' holds '%s', not a decimal integer", item->string);
-			return NULL;
-		}
+		    (*item->string == '0' && item->string[1]))
+			return bad(err, "'success' holds '%s', not a decimal integer", item->string);
 	s->environment = xstrdup_null(yget(kv, pk(prefix, "environment")));
-	if (s->engine && !s->command.nr) {
-		*err = xstrfmt("an exec spec needs 'command'");
-		return NULL;
-	}
-	if (!s->engine && (s->command.nr || s->success.nr || s->environment)) {
-		*err = xstrfmt("a prompt spec takes only 'body'");
-		return NULL;
-	}
+	if (s->engine && !s->command.nr)
+		return bad(err, "an exec spec needs 'command'");
+	if (!s->engine && (s->command.nr || s->success.nr || s->environment))
+		return bad(err, "a prompt spec takes only 'body'");
 	return s;
 }
 
@@ -617,6 +616,27 @@ static int one_of(const char *w, const char *const *set)
 	return 0;
 }
 
+/* a new contract of KIND in GROUP with ID, its fields empty (spec 6.4, 6.5.2) */
+struct contract *contract_new(const char *kind, const char *group, const char *id)
+{
+	struct contract *c = xcalloc(1, sizeof(*c));
+
+	snprintf(c->id, sizeof(c->id), "%s", id);
+	c->group = xstrdup(group);
+	c->path = xstrfmt("%s%s%s.yaml", group, *group ? "/" : "", id);
+	c->kind = xstrdup(kind);
+	c->condition_id = xstrdup("");
+	c->change_id = xstrdup("");
+	c->creator = xstrdup("");
+	c->state = xstrdup("future");
+	string_list_init_dup(&c->consumer);
+	string_list_init_dup(&c->provider);
+	string_list_init_dup(&c->undertakes);
+	string_list_init_dup(&c->partially);
+	string_list_init_dup(&c->fulfilled);
+	return c;
+}
+
 /*
  * spec 2.3: the contract at PATH (<group>/<ID>.yaml) from TEXT; DRAFT allows
  * the empty IDs and creator of a template (6.5.2). NULL with ERR when malformed.
@@ -627,42 +647,32 @@ struct contract *contract_parse(const char *text, const char *path, int draft, c
 	static const char *const states_x[] = { "future", "cancelled", NULL };
 	struct string_list kv = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct contract *c = xcalloc(1, sizeof(*c));
+	struct contract *c;
 	const char *const *keys, *base = strrchr(path, '/') ? strrchr(path, '/') + 1 : path, *v;
+	char *id = xstrndup(base, strcspn(base, "."));
 	int i, demand, offer, drop;
 
 	if (yaml_parse(text, &kv, path, err))
 		return NULL;
 	*err = NULL;
-	if (!ends_with(base, ".yaml") || !id_ok(xstrndup(base, strlen(base) - 5), "DOX")) {
-		*err = xstrfmt("'%s': not a contract path", path);
-		return NULL;
-	}
-	snprintf(c->id, sizeof(c->id), "%.13s", base);
-	c->path = xstrdup(path);
-	c->group = group_of(path);
+	if (strcmp(base, xstrfmt("%s.yaml", id)) || !id_ok(id, "DOX"))
+		return bad(err, "'%s': not a contract path", path);
 	v = yget(&kv, "kind");
-	if (!v || !(keys = keys_of(v)) || "DOX"[!strcmp(v, "demand") ? 0 : !strcmp(v, "offer") ? 1 : 2] != *c->id) {
-		*err = xstrfmt("'%s': 'kind' is missing or does not match the ID in line %d", path, yline(&kv, "kind"));
-		return NULL;
-	}
-	c->kind = xstrdup(v);
+	if (!v || !(keys = keys_of(v)) || "DOX"[!strcmp(v, "demand") ? 0 : !strcmp(v, "offer") ? 1 : 2] != *id)
+		return bad(err, "'%s': 'kind' is missing or does not match the ID in line %d", path, yline(&kv, "kind"));
+	c = contract_new(v, group_of(path), id);
 	demand = !strcmp(v, "demand");
 	offer = !strcmp(v, "offer");
 	drop = !strcmp(v, "drop");
 	for_each_string_list_item(item, &kv) {
 		char *top_key = xstrndup(item->string, strcspn(item->string, "."));
 
-		if (strcmp(item->string, ROOT) && !one_of(top_key, keys)) {
-			*err = xstrfmt("'%s': unknown key '%s' in line %d", path, top_key, ((struct yval *)item->util)->line);
-			return NULL;
-		}
+		if (strcmp(item->string, ROOT) && !one_of(top_key, keys))
+			return bad(err, "'%s': unknown key '%s' in line %d", path, top_key, ((struct yval *)item->util)->line);
 	}
 	for (i = 0; keys[i]; i++)
-		if (!unsorted_string_list_has_string(&kv, keys[i])) {
-			*err = xstrfmt("'%s': '%s' is missing", path, keys[i]);
-			return NULL;
-		}
+		if (!unsorted_string_list_has_string(&kv, keys[i]))
+			return bad(err, "'%s': '%s' is missing", path, keys[i]);
 	c->condition_id = xstrdup(yget(&kv, "condition-id"));
 	c->change_id = xstrdup(yget(&kv, "change-id"));
 	c->creator = xstrdup(yget(&kv, "creator"));
@@ -670,79 +680,49 @@ struct contract *contract_parse(const char *text, const char *path, int draft, c
 	if ((draft && !*c->condition_id ? 0 : !id_ok(c->condition_id, "R")) ||
 	    (draft && !*c->change_id ? 0 : !id_ok(c->change_id, "R")) ||
 	    (draft && !*c->creator ? 0 : !agent_ok(c->creator)) ||
-	    !one_of(c->state, drop ? states_x : states_do)) {
-		*err = xstrfmt("'%s': bad 'condition-id', 'change-id', 'creator' or 'state'", path);
-		return NULL;
-	}
-	string_list_init_dup(&c->consumer);
-	string_list_init_dup(&c->provider);
-	string_list_init_dup(&c->undertakes);
-	string_list_init_dup(&c->partially);
-	string_list_init_dup(&c->fulfilled);
+	    !one_of(c->state, drop ? states_x : states_do))
+		return bad(err, "'%s': bad 'condition-id', 'change-id', 'creator' or 'state'", path);
 	if (demand)
 		scopes_split(yget(&kv, "consumer"), &c->consumer);
 	if (!drop)
 		scopes_split(yget(&kv, "provider"), &c->provider);
 	/* a draft's line ranges are written without their base blob; contract commit fixes them at HEAD (v14 3.3) */
-	for_each_string_list_item(item, &c->consumer)
-		if (!scope_ok(item->string, 1, 0) && !(draft && !scope_blob(item->string) && range_of(item->string, &i, &i) == 1)) {
-			*err = xstrfmt("'%s': bad scope '%s' in 'consumer'", path, item->string);
-			return NULL;
-		}
-	for_each_string_list_item(item, &c->provider)
-		if (!scope_ok(item->string, 1, 1) && !(draft && !scope_blob(item->string) && range_of(item->string, &i, &i) == 1)) {
-			*err = xstrfmt("'%s': bad scope '%s' in 'provider'", path, item->string);
-			return NULL;
-		}
-	if (!drop && (!c->provider.nr || (demand && !c->consumer.nr))) {
-		*err = xstrfmt("'%s': a scope list is empty", path);
-		return NULL;
-	}
-	if (drop && !id_ok(c->target = xstrdup(yget(&kv, "target")), "DO")) {
-		*err = xstrfmt("'%s': bad 'target'", path);
-		return NULL;
-	}
-	if (offer && (yaml_list(&kv, "undertakes", &c->undertakes) || yaml_list(&kv, "undertakes-partially", &c->partially))) {
-		*err = xstrfmt("'%s': 'undertakes' and 'undertakes-partially' are lists", path);
-		return NULL;
-	}
+	for (i = 0; i < 2; i++)
+		for_each_string_list_item(item, i ? &c->provider : &c->consumer)
+			if (!scope_ok(item->string, 1, i) &&
+			    !(draft && !scope_blob(item->string) && range_of(item->string, &(int){ 0 }, &(int){ 0 }) == 1))
+				return bad(err, "'%s': bad scope '%s' in '%s'", path, item->string, i ? "provider" : "consumer");
+	if (!drop && (!c->provider.nr || (demand && !c->consumer.nr)))
+		return bad(err, "'%s': a scope list is empty", path);
+	if (drop && !id_ok(c->target = xstrdup(yget(&kv, "target")), "DO"))
+		return bad(err, "'%s': bad 'target'", path);
+	if (offer && (yaml_list(&kv, "undertakes", &c->undertakes) || yaml_list(&kv, "undertakes-partially", &c->partially)))
+		return bad(err, "'%s': 'undertakes' and 'undertakes-partially' are lists", path);
 	for_each_string_list_item(item, &c->undertakes)
-		if (!id_ok(item->string, "D") || unsorted_string_list_has_string(&c->partially, item->string)) {
-			*err = xstrfmt("'%s': bad ID '%s' in 'undertakes'", path, item->string);
-			return NULL;
-		}
+		if (!id_ok(item->string, "D") || unsorted_string_list_has_string(&c->partially, item->string))
+			return bad(err, "'%s': bad ID '%s' in 'undertakes'", path, item->string);
 	for_each_string_list_item(item, &c->partially)
-		if (!id_ok(item->string, "D")) {
-			*err = xstrfmt("'%s': bad ID '%s' in 'undertakes-partially'", path, item->string);
-			return NULL;
-		}
-	if (yaml_list(&kv, "fulfilled", &c->fulfilled)) {
-		*err = xstrfmt("'%s': 'fulfilled' is a list", path);
-		return NULL;
-	}
+		if (!id_ok(item->string, "D"))
+			return bad(err, "'%s': bad ID '%s' in 'undertakes-partially'", path, item->string);
+	if (yaml_list(&kv, "fulfilled", &c->fulfilled))
+		return bad(err, "'%s': 'fulfilled' is a list", path);
 	for_each_string_list_item(item, &c->fulfilled) {
 		const char *rest;
 		char *want = xstrfmt("%s%sfulfill/%s-", c->group, *c->group ? "/" : "", c->id);
 
 		if (!skip_prefix(item->string, want, &rest) || !ends_with(rest, ".md") ||
-		    !id_ok(xstrndup(rest, strlen(rest) - 3), "R")) {
-			*err = xstrfmt("'%s': bad path '%s' in 'fulfilled'", path, item->string);
-			return NULL;
-		}
+		    !id_ok(xstrndup(rest, strlen(rest) - 3), "R"))
+			return bad(err, "'%s': bad path '%s' in 'fulfilled'", path, item->string);
 	}
 	if (drop)
 		return c;
-	if (ykind(&kv, "specs") != 'l' || !yget(&kv, "specs.0")) {
-		*err = xstrfmt("'%s': 'specs' is no list of specs in line %d", path, yline(&kv, "specs"));
-		return NULL;
-	}
+	if (ykind(&kv, "specs") != 'l' || !yget(&kv, "specs.0"))
+		return bad(err, "'%s': 'specs' is no list of specs in line %d", path, yline(&kv, "specs"));
 	for (i = 0; yget(&kv, xstrfmt("specs.%d", i)); i++) {
 		struct spec *s = spec_from(&kv, xstrfmt("specs.%d", i), err);
 
-		if (!s) {
-			*err = xstrfmt("'%s': %s", path, *err);
-			return NULL;
-		}
+		if (!s)
+			return bad(err, "'%s': %s", path, *err);
 		REALLOC_ARRAY(c->specs, c->nspecs + 1);
 		c->specs[c->nspecs++] = *s;
 	}
@@ -772,12 +752,32 @@ static void scope_line(struct strbuf *sb, const char *key, struct string_list *l
 	strbuf_addch(sb, '\n');
 }
 
+/* an exec spec's "command" and "success" lists under "  "; WHOLE writes the default success too (7.2) */
+void spec_lists(struct strbuf *sb, struct spec *s, int whole)
+{
+	size_t j;
+
+	strbuf_addstr(sb, "  command: [");
+	for (j = 0; j < s->command.nr; j++) {
+		if (j)
+			strbuf_addstr(sb, ", ");
+		yaml_out_scalar(sb, s->command.v[j]);
+	}
+	strbuf_addstr(sb, "]\n");
+	if (!s->success.nr && !whole)
+		return;
+	strbuf_addstr(sb, "  success: [");
+	for (j = 0; j < s->success.nr; j++)
+		strbuf_addf(sb, "%s%s", j ? ", " : "", s->success.items[j].string);
+	strbuf_addstr(sb, s->success.nr ? "]\n" : "0]\n");
+}
+
 /* spec 2.3.2: the contract written in its one form, every key on its own line */
 char *contract_text(struct contract *c)
 {
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
-	size_t i, j;
+	size_t i;
 
 	strbuf_addf(&sb, "condition-id: %s\nchange-id: %s\nkind: %s\ncreator: %s\n",
 		    *c->condition_id ? c->condition_id : "\"\"", *c->change_id ? c->change_id : "\"\"", c->kind,
@@ -798,19 +798,8 @@ char *contract_text(struct contract *c)
 			yaml_out_body(&sb, s->body, "    ");
 			if (!s->engine)
 				continue;
-			strbuf_addstr(&sb, "  engine: exec\n  command: [");
-			for (j = 0; j < s->command.nr; j++) {
-				if (j)
-					strbuf_addstr(&sb, ", ");
-				yaml_out_scalar(&sb, s->command.v[j]);
-			}
-			strbuf_addstr(&sb, "]\n");
-			if (s->success.nr) {
-				strbuf_addstr(&sb, "  success: [");
-				for (j = 0; j < s->success.nr; j++)
-					strbuf_addf(&sb, "%s%s", j ? ", " : "", s->success.items[j].string);
-				strbuf_addstr(&sb, "]\n");
-			}
+			strbuf_addstr(&sb, "  engine: exec\n");
+			spec_lists(&sb, s, 0);
 			if (s->environment) {
 				strbuf_addstr(&sb, "  environment: ");
 				yaml_out_scalar(&sb, s->environment);
@@ -832,28 +821,6 @@ char *contract_text(struct contract *c)
 	return strbuf_detach(&sb, NULL);
 }
 
-/* a new contract of KIND in GROUP with ID, its fields empty (spec 6.4, 6.5.2) */
-struct contract *contract_new(const char *kind, const char *group, const char *id)
-{
-	struct contract *c = xcalloc(1, sizeof(*c));
-
-	snprintf(c->id, sizeof(c->id), "%s", id);
-	c->group = xstrdup(group);
-	c->path = xstrfmt("%s%s%s.yaml", group, *group ? "/" : "", id);
-	c->kind = xstrdup(kind);
-	c->condition_id = xstrdup("");
-	c->change_id = xstrdup("");
-	c->creator = xstrdup("");
-	c->state = xstrdup("future");
-	c->target = NULL;
-	string_list_init_dup(&c->consumer);
-	string_list_init_dup(&c->provider);
-	string_list_init_dup(&c->undertakes);
-	string_list_init_dup(&c->partially);
-	string_list_init_dup(&c->fulfilled);
-	return c;
-}
-
 /* spec 2.5: the fulfilment at PATH from TEXT, or NULL with ERR */
 struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
 {
@@ -866,26 +833,20 @@ struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
 	int i;
 
 	*err = NULL;
-	if (!starts_with(text, "---\n") || !(end = strstr(text + 3, "\n---\n"))) {
-		*err = xstrfmt("'%s': no front matter", path);
-		return NULL;
-	}
+	if (!starts_with(text, "---\n") || !(end = strstr(text + 3, "\n---\n")))
+		return bad(err, "'%s': no front matter", path);
 	front = xstrndup(text + 4, end + 1 - (text + 4));
 	if (yaml_parse(front, &kv, path, err))
 		return NULL;
 	for_each_string_list_item(item, &kv) {
 		char *k = xstrndup(item->string, strcspn(item->string, "."));
 
-		if (strcmp(item->string, ROOT) && !one_of(k, keys)) {
-			*err = xstrfmt("'%s': unknown key '%s'", path, k);
-			return NULL;
-		}
+		if (strcmp(item->string, ROOT) && !one_of(k, keys))
+			return bad(err, "'%s': unknown key '%s'", path, k);
 	}
 	for (i = 0; keys[i]; i++)
-		if (!yget(&kv, keys[i])) {
-			*err = xstrfmt("'%s': '%s' is missing", path, keys[i]);
-			return NULL;
-		}
+		if (!yget(&kv, keys[i]))
+			return bad(err, "'%s': '%s' is missing", path, keys[i]);
 	f->path = xstrdup(path);
 	f->contract = xstrdup(yget(&kv, "contract"));
 	f->condition_id = xstrdup(yget(&kv, "condition-id"));
@@ -897,10 +858,8 @@ struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
 	string_list_init_dup(&f->code);
 	if (!id_ok(f->contract, "DOX") || !id_ok(f->condition_id, "R") || !agent_ok(f->by) || !id_ok(f->session, "S") ||
 	    strlen(f->commit) != 40 || !one_of(f->outcome, (const char *const[]){ "pass", "forced", "withdrawn", NULL }) ||
-	    (ykind(&kv, "code") != 'm' && ykind(&kv, "code") != '?' && strcmp(yget(&kv, "code"), "{}"))) {
-		*err = xstrfmt("'%s': a bad value in the front matter", path);
-		return NULL;
-	}
+	    (ykind(&kv, "code") != 'm' && ykind(&kv, "code") != '?' && strcmp(yget(&kv, "code"), "{}")))
+		return bad(err, "'%s': a bad value in the front matter", path);
 	for_each_string_list_item(item, &kv) {
 		const char *scope;
 
@@ -937,11 +896,13 @@ char *fulfil_text(struct fulfilment *f)
 	return strbuf_detach(&sb, NULL);
 }
 
+/* the blob OID as text; NULL when it holds a NUL, which no contract or fulfilment does */
 static const char *blob_text(const char *oid)
 {
-	char *text = object(oid, 1, NULL, NULL);
+	size_t n;
+	char *text = object(oid, 1, NULL, &n);
 
-	return text && strlen(text) == strlen(text) ? text : NULL;
+	return text && strlen(text) == n ? text : NULL;
 }
 
 /*
@@ -977,8 +938,9 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 
 		if (strcmp(e->type, "blob"))
 			continue;
-		text = blob_text(e->oid);
-		if (ends_with(e->path, ".md") && (starts_with(e->path, "fulfill/") || strstr(e->path, "/fulfill/"))) {
+		if (!(text = blob_text(e->oid)))
+			err = xstrfmt("'%s': a NUL character", e->path);
+		else if (ends_with(e->path, ".md") && (starts_with(e->path, "fulfill/") || strstr(e->path, "/fulfill/"))) {
 			struct fulfilment *f = fulfil_parse(text, e->path, &err);
 
 			if (f)
@@ -1046,8 +1008,7 @@ int has_valid(struct branch *b, struct contract *c)
 	return v.nr > 0;
 }
 
-static enum scope_status { FOUND, NOBASE, MISSING, DELETED } map_range(const char *scope, struct tree *t, int *start,
-								       int *end, int *changed);
+enum scope_status { FOUND, NOBASE, MISSING, DELETED };
 
 static void hunk_part(const char *text, int *start, int *length)
 {
@@ -1138,10 +1099,8 @@ char *scope_pin(const char *arg, struct tree *t, char **err)
 	int start, end;
 
 	*err = NULL;
-	if (!scope_ok(arg, 1, 1) && !(range_of(arg, &start, &end) == 1 && !scope_blob(arg))) {
-		*err = xstrfmt("'%s' is not a scope", arg);
-		return NULL;
-	}
+	if (!scope_ok(arg, 1, 1) && !(range_of(arg, &start, &end) == 1 && !scope_blob(arg)))
+		return bad(err, "'%s' is not a scope", arg);
 	if (starts_with(arg, "new:")) {
 		if (tree_get(t, path))
 			*err = xstrfmt("'%s' exists", path);
@@ -1155,18 +1114,14 @@ char *scope_pin(const char *arg, struct tree *t, char **err)
 			*err = xstrfmt("'%s' is not a directory", arg);
 		return *err ? NULL : xstrdup(arg);
 	}
-	if (!blob_at(t, path)) {
-		*err = xstrfmt("'%s' is not a file", path);
-		return NULL;
-	}
+	if (!blob_at(t, path))
+		return bad(err, "'%s' is not a file", path);
 	if (range_of(arg, &start, &end) == 1) {
 		size_t n;
 		char *text = object(blob_at(t, path), 1, NULL, &n);
 
-		if (strlen(text) != n || end > line_count(text, n)) {
-			*err = xstrfmt("'%s' is not a range of '%s'", arg, path);
-			return NULL;
-		}
+		if (strlen(text) != n || end > line_count(text, n))
+			return bad(err, "'%s' is not a range of '%s'", arg, path);
 		return xstrfmt("%s:%d-%d %s", path, start, end, blob_at(t, path));
 	}
 	return xstrdup(path);
@@ -1179,20 +1134,16 @@ char *scope_locate(const char *scope, struct tree *t, char **err)
 	int start, end, changed;
 
 	*err = NULL;
-	if (starts_with(scope, "new:") || ends_with(scope, "/")) {
-		*err = xstrfmt("'%s' is not a concrete scope", scope);
-		return NULL;
-	}
+	if (starts_with(scope, "new:") || ends_with(scope, "/"))
+		return bad(err, "'%s' is not a concrete scope", scope);
 	if (range_of(scope, &start, &end) != 1)
-		return blob_at(t, path) ? path : (*err = xstrfmt("'%s' is not in the code", scope), NULL);
+		return blob_at(t, path) ? path : bad(err, "'%s' is not in the code", scope);
 	switch (map_range(scope, t, &start, &end, &changed)) {
 	case NOBASE:
-		*err = xstrfmt("repository lacks the base blob of '%s'", path);
-		return NULL;
+		return bad(err, "repository lacks the base blob of '%s'", path);
 	case MISSING:
 	case DELETED:
-		*err = xstrfmt("'%s' is not in the code", scope);
-		return NULL;
+		return bad(err, "'%s' is not in the code", scope);
 	default:
 		return xstrfmt("%s:%d-%d", path, start, end);
 	}

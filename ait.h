@@ -153,6 +153,7 @@ int read_text(struct strbuf *sb, const char *path);
 struct spec *spec_from(struct string_list *kv, const char *prefix, char **err);
 void yaml_out_scalar(struct strbuf *sb, const char *s);
 void yaml_out_body(struct strbuf *sb, const char *s, const char *indent);
+void spec_lists(struct strbuf *sb, struct spec *s, int whole);
 
 /* request.c, notify.c: the commands */
 int cmd_request(int argc, const char **argv);
