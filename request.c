@@ -380,12 +380,11 @@ static char *violation_hint(struct checkin *c, const char *key, void *data)
 	if (skip_prefix(key, "pair:", &rest)) {
 		strbuf_addf(&sb, " future amend %.*s", (int)strcspn(rest, ":"), rest);
 	} else if (skip_prefix(key, "mix:", &rest)) {
-		struct branch *after = q->b;
+		/* the other side: the offers that held D at T, which this request did not touch */
+		for_each_string_list_item(item, &q->b->contracts) {
+			struct contract *o = item->util;
 
-		for_each_string_list_item(item, &after->contracts) {
-			struct contract *o = now(q, item->string);
-
-			if (live(o) && !strcmp(o->kind, "offer") &&
+			if (live(o) && !strcmp(o->kind, "offer") && !string_list_lookup(&q->changed, o->id) &&
 			    (unsorted_string_list_has_string(&o->undertakes, rest) ||
 			     unsorted_string_list_has_string(&o->partially, rest)))
 				strbuf_addf(&sb, " release %s %s", rest, o->id);

@@ -48,6 +48,7 @@ run ait future offer src/order.c cond.yaml as o2 undertake "$D2" o2 -m "whole on
 check_rc "a whole undertake of a partially undertaken demand is refused (4.10)" 1
 check "the message" "has err \"'$D2' is already undertaken partially by '$O'\""
 check "the hint releases the partial one in the same request" "has err \"release $D2 $O\""
+check "and only that one, not the offer the request makes (4.10)" "test \"\$(grep -o ' release ' $T/err | wc -l | tr -d ' ')\" = 1"
 run ait future offer src/order.c cond.yaml as o2 release "$D2" "$O" undertake "$D2" o2 -m "swap"
 check_rc "releasing in the same request allows it" 0
 
