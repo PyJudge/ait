@@ -53,4 +53,14 @@ run ait future demand src/order.c src/stock.c:20-21 cond.yaml -m d3; D3=$(newest
 run ait future offer src/stock.c cond.yaml as n undertake -p "$D3" n amend "$D3" - - - --force -m "new partial offer"
 check "a partial offer made in the same request is in the demand's covered set (6.7.2)" "has out \"^fulfilled $(newest O)\$\""
 
+run ait fulfill Dabcdefabcdef=src/stock.c --force -m x
+check_rc "a contract fulfill names that does not exist, even with =SCOPES (6.7.1)" 128
+check "the message" "has err \"no such contract: 'Dabcdefabcdef'\""
+run ait future demand src/order.c src/stock.c cond.yaml -m d4; D4=$(newest D)
+run ait future offer src/stock.c cond.yaml -m o4; O4=$(newest O)
+cid=$(yaml "$O4" | sed -n 's/^condition-id: //p')
+cp cond.yaml c2.yaml
+run ait future amend "$D4" - - c2.yaml undertake "$D4" "$O4" --force -m t
+check "a trivial amend leaves another clause's condition-id change alone (6.4.1, 2.3.3)" "test \"\$(yaml $O4 | sed -n 's/^condition-id: //p')\" != $cid"
+
 done_testing

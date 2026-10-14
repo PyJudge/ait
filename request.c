@@ -17,6 +17,7 @@ struct request {
 	struct string_list given;	/* the contracts ait fulfill names */
 	struct string_list fulfil;	/* IDs to fulfil: the given ones and those of the clauses */
 	struct string_list made;	/* the IDs the new contracts took the first time, kept across judgments */
+	struct string_list trivial;	/* the contracts changed trivially: future amend --force, contract commit --force */
 	struct string_list fixed;	/* step 0's covered set: ID -> its condition-id (6.7.2) */
 	struct strvec words;		/* the command as given, for the hints that repeat it */
 	struct string_list scopes;	/* ID -> "=SCOPES" of ait fulfill */
@@ -38,6 +39,7 @@ static void request_init(struct request *q, const char **argv)
 	strvec_pushv(&q->words, argv);
 	string_list_init_dup(&q->given);
 	string_list_init_dup(&q->made);
+	string_list_init_dup(&q->trivial);
 	string_list_init_dup(&q->fixed);
 	string_list_init_dup(&q->changed);
 	string_list_init_dup(&q->order);
@@ -57,11 +59,46 @@ static struct contract *now(struct request *q, const char *id)
 	return item ? item->util : contract_get(q->b, id);
 }
 
-/* spec 2.4: an ended contract (cancelled, withdrawn, a fulfilled drop) changes no more */
-static void refuse_ended(struct contract *c)
+/*
+ * spec 2.4, 4.8 (E_STATE): why a contract may not change. The judgments
+ * return the reason and its words are here once, as git's push words its
+ * REJECT_* reasons in one table (builtin/push.c).
+ */
+enum refusal {
+	CHANGE_OK,
+	ENDED,
+	TARGET,
+	IDENTITY,
+	STATE,
+	FULFILMENT,
+	FORCE_PROVIDER
+};
+
+static NORETURN void refuse(enum refusal why, struct contract *c, struct contract *old)
 {
-	if (!live(c) || (*c->id == 'X' && c->fulfilled.nr))
+	switch (why) {
+	case ENDED:
 		reject(1, NULL, "not allowed: '%s' has ended", c->id);
+	case TARGET:
+		reject(1, NULL, "not allowed: '%s' targets '%s', which is not current", c->id, c->target);
+	case IDENTITY:
+		reject(1, NULL, "not allowed: '%s' changes its group, kind or creator", c->id);
+	case STATE:
+		reject(1, NULL, "not allowed: '%s' goes from '%s' to '%s'", c->id, old->state, c->state);
+	case FULFILMENT:
+		reject(1, NULL, "fulfilments are recorded only by 'ait fulfill'");
+	case FORCE_PROVIDER:
+		reject(1, "--force keeps the old fulfilments, which checked the old provider",
+		       "cannot change the provider of '%s' with --force", c->id);
+	default:
+		BUG("no words for refusal %d", why);
+	}
+}
+
+/* spec 1.4, 2.4: cancelled, withdrawn, or a fulfilled drop: it changes no more */
+static int ended(struct contract *c)
+{
+	return !live(c) || (*c->id == 'X' && c->fulfilled.nr);
 }
 
 /* a contract this request changes: its copy, made once; it must not have ended as it stands (2.4) */
@@ -71,12 +108,13 @@ static struct contract *changing(struct request *q, const char *id)
 	struct contract *c;
 	char *err;
 
-	if (item) {
-		refuse_ended(item->util);
+	if (item && ended(item->util))
+		refuse(ENDED, item->util, NULL);
+	if (item)
 		return item->util;
-	}
 	c = contract_get(q->b, id);
-	refuse_ended(c);
+	if (ended(c))
+		refuse(ENDED, c, NULL);
 	c = contract_parse(contract_text(c), c->path, 0, &err);
 	string_list_insert(&q->changed, id)->util = c;
 	return c;
@@ -180,13 +218,8 @@ static char *rows(struct contract *c)
  */
 static void stamp(struct request *q, struct contract *c, struct contract *old, int trivial)
 {
-	if (!old || strcmp(conditions(c), conditions(old))) {
-		if (trivial && old && strcmp(scopes_join(&c->provider), scopes_join(&old->provider)))
-			reject(1, "--force keeps the old fulfilments, which checked the old provider",
-			       "cannot change the provider of '%s' with --force", c->id);
-		if (!trivial || !old)
-			c->condition_id = xstrdup(q->rid);
-	}
+	if ((!old || strcmp(conditions(c), conditions(old))) && (!trivial || !old))
+		c->condition_id = xstrdup(q->rid);
 	if (!old || strcmp(rows(c), rows(old)))
 		c->change_id = xstrdup(q->rid);
 }
@@ -230,13 +263,12 @@ static struct contract *make(struct request *q, const char *kind)
 	return c;
 }
 
-/* spec 2.4: a drop targets a D or O judged current */
-static void refuse_target(struct request *q, struct contract *x)
+/* spec 2.4: the drop X targets a D or O judged current */
+static int target_current(struct request *q, struct contract *x)
 {
 	struct contract *t = now(q, x->target);
 
-	if (!t || judge(q->b, t, q->x) != V_CURRENT)
-		reject(1, NULL, "not allowed: '%s' targets '%s', which is not current", x->id, x->target);
+	return t && judge(q->b, t, q->x) == V_CURRENT;
 }
 
 /* a word that starts a clause (v14 7.3.1) */
@@ -334,6 +366,8 @@ static void apply_clauses(struct request *q)
 				if (strcmp(args[nargs - 1], "-"))
 					specs_from_files(c, args[nargs - 1]);
 			}
+			if (future && q->future_force)
+				string_list_insert(&q->trivial, c->id);
 			/* an empty amend reopens: both IDs move (6.4.1) */
 			if (!nargs) {
 				c->condition_id = xstrdup(q->rid);
@@ -355,8 +389,8 @@ static void apply_clauses(struct request *q)
 			}
 			d = contract_arg(q, word(argc, argv, &i), "D");
 			o = contract_arg(q, word(argc, argv, &i), "O");
-			if (take)
-				refuse_ended(d);
+			if (take && ended(d))
+				refuse(ENDED, d, NULL);
 			o = changing(q, o->id);
 			remove_id(&o->undertakes, d->id);
 			remove_id(&o->partially, d->id);
@@ -676,41 +710,45 @@ static void record(struct request *q, struct checkin *ck)
 }
 
 /*
- * spec 2.4: C, changed from OLD at T (NULL: a new contract), takes a
- * transition the table allows; the clauses checked what they change, the
- * drafts of contract commit change anything, so every write path asks here
+ * spec 2.4, 6.4.1: the reason C, changed from OLD at T (NULL: a new
+ * contract), may not stand, or CHANGE_OK. The clauses checked what they
+ * change; the drafts of contract commit change anything, so every write
+ * path asks here.
  */
-static void transition(struct request *q, struct contract *old, struct contract *c)
+static enum refusal change_refusal(struct request *q, struct contract *old, struct contract *c)
 {
 	struct string_list_item *item;
 	int withdrawn = 0;
 	size_t k;
 
-	if (*c->id == 'X' && (!old || strcmp(c->target, old->target)))
-		refuse_target(q, c);
+	if (*c->id == 'X' && (!old || strcmp(c->target, old->target)) && !target_current(q, c))
+		return TARGET;
 	for (k = 0; old && k < old->fulfilled.nr; k++)
 		if (k >= c->fulfilled.nr || strcmp(c->fulfilled.items[k].string, old->fulfilled.items[k].string))
-			break;
-	if ((old && k < old->fulfilled.nr) || (c->fulfilled.nr > (old ? old->fulfilled.nr : 0) &&
-					       !(q->code && string_list_has_string(&q->covered, c->id))))
-		reject(1, NULL, "fulfilments are recorded only by 'ait fulfill'");
+			return FULFILMENT;
+	if (c->fulfilled.nr > (old ? old->fulfilled.nr : 0) && !(q->code && string_list_has_string(&q->covered, c->id)))
+		return FULFILMENT;
 	if (!old)
-		return;
+		return CHANGE_OK;
 	if (strcmp(c->path, old->path) || strcmp(c->kind, old->kind) || strcmp(c->creator, old->creator))
-		reject(1, NULL, "not allowed: '%s' changes its group, kind or creator", c->id);
+		return IDENTITY;
 	for_each_string_list_item(item, &q->covered)
 		withdrawn |= *item->string == 'X' && q->code && !strcmp(now(q, item->string)->target, c->id);
 	if (strcmp(c->state, old->state) && strcmp(c->state, "cancelled") && !(withdrawn && !strcmp(c->state, "withdrawn")))
-		reject(1, NULL, "not allowed: '%s' goes from '%s' to '%s'", c->id, old->state, c->state);
+		return STATE;
+	/* a trivial change keeps the fulfilments, which checked the old provider */
+	if (string_list_has_string(&q->trivial, c->id) && strcmp(scopes_join(&c->provider), scopes_join(&old->provider)))
+		return FORCE_PROVIDER;
+	return CHANGE_OK;
 }
 
 /* spec 2.3.3: the IDs of every contract the request changed, from T */
-static void stamp_all(struct request *q, int trivial)
+static void stamp_all(struct request *q)
 {
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &q->changed)
-		stamp(q, item->util, contract_get(q->b, item->string), trivial);
+		stamp(q, item->util, contract_get(q->b, item->string), string_list_has_string(&q->trivial, item->string));
 }
 
 /* every contract the request changed takes its transition (2.4) and goes in as its file */
@@ -719,7 +757,11 @@ static void settle(struct request *q, struct checkin *ck)
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &q->changed) {
-		transition(q, contract_get(q->b, item->string), item->util);
+		struct contract *old = contract_get(q->b, item->string);
+		enum refusal why = change_refusal(q, old, item->util);
+
+		if (why)
+			refuse(why, item->util, old);
 		string_list_insert(&ck->put, ((struct contract *)item->util)->path)->util = contract_text(item->util);
 	}
 }
@@ -736,8 +778,13 @@ static void request_judge(struct checkin *ck)
 	string_list_clear(&q->alias, 0);
 	string_list_clear(&q->covered, 0);
 	string_list_clear(&q->fulfil, 0);
-	for_each_string_list_item(item, &q->given)
+	string_list_clear(&q->trivial, 0);
+	/* the contracts fulfill names exist before anything is done to them */
+	for_each_string_list_item(item, &q->given) {
+		if (!now(q, item->string))
+			reject(128, NULL, "no such contract: '%s'", item->string);
 		string_list_insert(&q->fulfil, item->string);
+	}
 	snprintf(q->rid, sizeof(q->rid), "%s", ck->rid);
 	apply_clauses(q);
 	for_each_string_list_item(item, &q->scopes)
@@ -745,15 +792,15 @@ static void request_judge(struct checkin *ck)
 	for_each_string_list_item(item, &q->fulfil) {
 		struct contract *c = now(q, item->string);
 
-		if (!c)
-			reject(128, NULL, "no such contract: '%s'", item->string);
-		refuse_ended(c);
-		if (*c->id == 'X')
-			refuse_target(q, c);
+		if (ended(c))
+			refuse(ENDED, c, NULL);
+		/* 2.4: a drop is fulfilled while its target is current */
+		if (*c->id == 'X' && !target_current(q, c))
+			refuse(TARGET, c, NULL);
 		cover(q, c, &q->covered);
 	}
 	/* the IDs first: a fulfilment records its contract's new condition-id */
-	stamp_all(q, q->future_force);
+	stamp_all(q);
 	/* 6.7.2: the covered set fixed at step 0, with the condition-ids its results are for, holds to the end */
 	for_each_string_list_item(item, &q->covered)
 		if (q->fixed.nr && (!string_list_lookup(&q->fixed, item->string) ||
@@ -1130,16 +1177,18 @@ static void commit_judge(struct checkin *ck)
 			/* a draft's fulfilled is what it was checked out with: T's list, or the start of it */
 			for (k = 0; k < d->fulfilled.nr; k++)
 				if (k >= old->fulfilled.nr || strcmp(d->fulfilled.items[k].string, old->fulfilled.items[k].string))
-					reject(1, NULL, "fulfilments are recorded only by 'ait fulfill'");
+					refuse(FULFILMENT, d, old);
 			d->fulfilled = old->fulfilled;
 			d->condition_id = old->condition_id;
 			d->change_id = old->change_id;
-			if (strcmp(contract_text(d), contract_text(old)))
-				refuse_ended(old);
+			if (strcmp(contract_text(d), contract_text(old)) && ended(old))
+				refuse(ENDED, old, NULL);
 		}
 		string_list_insert(&q->changed, d->id)->util = d;
+		if (q->force)
+			string_list_insert(&q->trivial, d->id);
 	}
-	stamp_all(q, q->force);
+	stamp_all(q);
 	settle(q, ck);
 }
 
