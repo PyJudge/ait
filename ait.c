@@ -966,6 +966,9 @@ void checkin_run(struct checkin *c, judge_fn decide)
 		struct string_list_item *item;
 		int rc;
 
+		/* a request that changes nothing is a noop (6.4.1): no commit */
+		if (!c->ff && !c->second_parent && *c->tip && !strcmp(tree, c->at->tree->oid))
+			return;
 		if (*c->tip)
 			strbuf_addf(&parents, "-p %s ", c->tip);
 		if (c->second_parent)

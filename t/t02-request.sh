@@ -55,6 +55,9 @@ check_rc "releasing in the same request allows it" 0
 
 run ait future cancel "$D2" -m "not needed"
 check_rc "cancel" 0
+tip=$(git rev-parse ait/master)
+run ait future cancel "$D2" -m "again"
+check "cancelling a cancelled contract is a noop: no commit (6.4.1)" "test \"\$(git rev-parse ait/master)\" = $tip"
 check "the state" "yaml $D2 | grep -qx 'state: cancelled'"
 run ait future amend "$D2" - src/order.c - -m x
 check_rc "an ended contract does not change" 1
