@@ -219,7 +219,7 @@ static struct contract *make(struct request *q, const char *kind)
 		snprintf(id, sizeof(id), "%s", q->made.items[q->order.nr].string);
 	else
 		do
-			newid(id, kind[0] == 'd' && kind[1] == 'e' ? 'D' : kind[0] == 'o' ? 'O' : 'X');
+			newid(id, kind_letter(kind));
 		while (now(q, id));
 	if (q->order.nr == q->made.nr)
 		string_list_append(&q->made, id);
@@ -730,7 +730,7 @@ static void request_judge(struct checkin *ck)
 	struct request *q = ck->data;
 	struct string_list_item *item;
 
-	q->b = branch_load(ck->branch, *ck->tip ? ck->tip : NULL, *ck->tip ? ck->tip : EMPTY_TREE);
+	q->b = ck->at;
 	string_list_clear(&q->changed, 0);
 	string_list_clear(&q->order, 0);
 	string_list_clear(&q->alias, 0);
@@ -953,13 +953,12 @@ static char *draft_path(struct contract *c)
 /* REL written new in the work tree, its directories made; a file there is not overwritten */
 static void write_new_file(const char *rel, const char *text)
 {
-	char *full = xstrfmt("%s/%s", top, rel), *slash;
+	char *full = xstrfmt("%s/%s", top, rel);
 	struct stat st;
 
 	if (!lstat(full, &st))
 		reject(1, xstrfmt("edit '%s' or choose another path", rel), "not allowed: '%s' already exists", rel);
-	for (slash = strchr(full + strlen(top) + 1, '/'); slash; slash = strchr(slash + 1, '/'))
-		mkdir(xstrndup(full, slash - full), 0777);
+	leading_dirs(full);
 	write_state(full, text);
 	printf("path %s\n", rel);
 }
@@ -1000,7 +999,7 @@ static int contract_new_draft(const char *kind, const char *group)
 	names_load(&n);
 	/* unique on the contract branch, or on every local one when none is chosen (6.5.2) */
 	do {
-		newid(id, !strcmp(kind, "demand") ? 'D' : !strcmp(kind, "offer") ? 'O' : 'X');
+		newid(id, kind_letter(kind));
 		taken = chosen && contract_get(branch_load(chosen, NULL, NULL), id);
 		for_each_string_list_item(item, &n.local)
 			taken |= !chosen && contract_get(branch_load(item->string, NULL, NULL), id);
@@ -1109,7 +1108,7 @@ static void commit_judge(struct checkin *ck)
 	struct request *q = &st->q;
 	struct string_list_item *item;
 
-	q->b = branch_load(ck->branch, *ck->tip ? ck->tip : NULL, *ck->tip ? ck->tip : EMPTY_TREE);
+	q->b = ck->at;
 	snprintf(q->rid, sizeof(q->rid), "%s", ck->rid);
 	string_list_clear(&q->changed, 0);
 	string_list_clear(&q->order, 0);
@@ -1237,13 +1236,11 @@ static void pull_judge(struct checkin *ck)
 	int rc;
 
 	object(xstrfmt("%s^{commit}", ((struct pull *)ck->data)->upstream), 0, u, NULL);
-	git_run(NULL, NULL, &rc, "merge-base --is-ancestor %s %s", u, ck->tip);
-	if (!rc) {
+	if (is_ancestor(u, ck->tip)) {
 		puts("Already up to date");
 		exit(0);
 	}
-	git_run(NULL, NULL, &rc, "merge-base --is-ancestor %s %s", ck->tip, u);
-	if (!rc) {
+	if (is_ancestor(ck->tip, u)) {
 		ck->ff = xstrdup(u);
 		return;
 	}
@@ -1264,15 +1261,12 @@ static int contract_pull(int argc, const char **argv)
 	struct strvec args = STRVEC_INIT;
 	struct checkin ck = { 0 };
 	struct pull p;
-	int rc;
 
 	ck.branch = start(START_SESSION | START_WRITES);
 	strvec_pushl(&args, "fetch", "-q", remote_of(ck.branch, "upstream", argc, argv), NULL);
 	if (git_pass(&args))
 		return 1;
-	p.upstream = line1(git_run(NULL, NULL, &rc, "rev-parse -q --verify --symbolic-full-name %s",
-				   xstrfmt("%s@{upstream}", ck.branch)));
-	if (rc || !starts_with(p.upstream, "refs/remotes/"))
+	if (!(p.upstream = upstream_of(ck.branch)))
 		reject(128, NULL, "'%s' has no upstream", ck.branch);
 	p.name = line1(git("rev-parse --abbrev-ref %s", p.upstream));
 	string_list_init_dup(&ck.put);

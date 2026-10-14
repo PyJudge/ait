@@ -608,6 +608,12 @@ static const char *const *keys_of(const char *kind)
 	       !strcmp(kind, "drop") ? drop_keys : NULL;
 }
 
+/* spec 1.11: the letter of an ID of KIND */
+int kind_letter(const char *kind)
+{
+	return !strcmp(kind, "demand") ? 'D' : !strcmp(kind, "offer") ? 'O' : 'X';
+}
+
 /* spec 2.1.3: the ID of the contract path "<group>/<ID>.yaml", or NULL */
 char *contract_path_id(const char *path)
 {
@@ -659,7 +665,7 @@ struct contract *contract_parse(const char *text, const char *path, int draft, c
 	if (!id)
 		return bad(err, "'%s': not a contract path", path);
 	v = yget(&kv, "kind");
-	if (!v || !(keys = keys_of(v)) || "DOX"[!strcmp(v, "demand") ? 0 : !strcmp(v, "offer") ? 1 : 2] != *id)
+	if (!v || !(keys = keys_of(v)) || kind_letter(v) != *id)
 		return bad(err, "'%s': 'kind' is missing or does not match the ID in line %d", path, yline(&kv, "kind"));
 	c = contract_new(v, group_of(path), id);
 	demand = !strcmp(v, "demand");

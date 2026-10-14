@@ -426,8 +426,7 @@ static void event(const char *name, const char *e, struct string_list *watched, 
 	if (!why.len)
 		return;
 	for_each_string_list_item(f, watched) {
-		git_run(NULL, NULL, &rc, "merge-base --is-ancestor %s %s", e, f->string);
-		if (!rc)
+		if (is_ancestor(e, f->string))
 			strbuf_addf(&refs, "ref %s\n", f->string);
 	}
 	strbuf_addf(payload, "ait-event 1\ncommit %s\nrecipient %s\n%s%sin-head %s\n%s\n", e, sid, refs.buf,
@@ -469,8 +468,7 @@ static void deliver(const char *name)
 	string_list_sort(&seen);
 	/* 9.2: the local branch and its upstream when that is a remote-tracking ait ref; at N */
 	string_list_insert(&watched, xstrfmt("refs/heads/%s", name));
-	up = line1(git_run(NULL, NULL, &rc, "rev-parse -q --verify --symbolic-full-name %s", xstrfmt("%s@{upstream}", name)));
-	if (!rc && starts_with(up, "refs/remotes/"))
+	if ((up = upstream_of(name)))
 		string_list_insert(&watched, up);
 	for_each_string_list_item(item, &tips)
 		if (string_list_has_string(&watched, item->string + 45))

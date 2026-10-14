@@ -42,6 +42,10 @@ const char *branch_find(const char **msg, struct strbuf *hint);
 const char *branch_name(void);
 enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8 };
 const char *start(int how);
+char *git_path(const char *name);
+void leading_dirs(const char *path);
+int is_ancestor(const char *a, const char *b);
+char *upstream_of(const char *branch);
 char *checkout_file(void);
 
 /* ait.c: one checkin (spec 4.4) */
@@ -61,6 +65,7 @@ struct checkin {
 	char *(*violation_hint)(struct checkin *c, const char *key);
 	/* the command again, when the branch moved from OLD and that is still right (6.7.5-3), or NULL */
 	char *(*retry_hint)(struct checkin *c, const char *old);
+	struct branch *at;		/* the contracts at T, for the judge */
 	void *data;			/* the command's own state, for its judge and hints */
 };
 typedef void (*judge_fn)(struct checkin *c);
@@ -115,6 +120,7 @@ struct branch {
 };
 struct branch *branch_load(const char *name, const char *tip, const char *treeish);
 struct contract *contract_get(struct branch *b, const char *id);
+int kind_letter(const char *kind);
 char *contract_path_id(const char *path);
 struct contract *contract_parse(const char *text, const char *path, int draft, char **err);
 char *contract_text(struct contract *c);

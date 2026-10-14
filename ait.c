@@ -17,7 +17,7 @@ size_t git_out_len;
 char agent[72], sid[16];
 static char *git_cmd;
 
-/* v14 5.9a: hints name the session when it is not this worktree's default */
+/* "AIT_SESSION=SID " when the session in use is not this worktree's default (set by session()) */
 static char *cmd_prefix;
 
 static char *prefixed(const char *hint)
@@ -493,16 +493,10 @@ const char *session(int need)
 	if (!wt)
 		return NULL;
 	snprintf(sid, sizeof(sid), "%s", env);
-	return sid;
-}
-
-static void session_prefix(void)
-{
-	const char *env = getenv("AIT_SESSION"), *dflt = default_of(top);
-	char *wt = env ? session_read(env, NULL) : NULL;
-
-	if (wt && !strcmp(wt, top) && (!dflt || strcmp(env, dflt)))
+	/* v14 5.9a: hints name the session when it is not this worktree's default */
+	if (!from_default && (!dflt || strcmp(env, dflt)))
 		cmd_prefix = xstrfmt("AIT_SESSION=%s ", env);
+	return sid;
 }
 
 struct session_file {
@@ -702,10 +696,44 @@ static const char *init_source(struct names *n, const char *name)
 	return NULL;
 }
 
+/* the absolute path git gives NAME in this worktree's git directory (it honours core.hooksPath and the like) */
+char *git_path(const char *name)
+{
+	return line1(git("rev-parse --path-format=absolute --git-path %s", name));
+}
+
+/* A is B or an ancestor of it (git merge-base --is-ancestor) */
+int is_ancestor(const char *a, const char *b)
+{
+	int rc;
+
+	git_run(NULL, NULL, &rc, "merge-base --is-ancestor %s %s", a, b);
+	return !rc;
+}
+
+/* spec 6.5.6-2, 9.2: the upstream of BRANCH when it is a remote-tracking ref, or NULL */
+char *upstream_of(const char *branch)
+{
+	int rc;
+	char *up = line1(git_run(NULL, NULL, &rc, "rev-parse -q --verify --symbolic-full-name %s",
+				 xstrfmt("%s@{upstream}", branch)));
+
+	return !rc && starts_with(up, "refs/remotes/") ? up : NULL;
+}
+
+/* the directories that hold PATH, made as needed (git's safe_create_leading_directories) */
+void leading_dirs(const char *path)
+{
+	const char *slash;
+
+	for (slash = strchr(path + 1, '/'); slash; slash = strchr(slash + 1, '/'))
+		mkdir(xstrndup(path, slash - path), 0777);
+}
+
 /* spec 2.6.1: the worktree's checkout file */
 char *checkout_file(void)
 {
-	return line1(git("rev-parse --path-format=absolute --git-path ait-branch"));
+	return git_path("ait-branch");
 }
 
 static char *checkout_read(void)
@@ -900,11 +928,11 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
 	string_list_clear(&c->put, 0);
 	c->tree = NULL;
 	c->second_parent = c->ff = NULL;
+	c->at = now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
 	if (decide)
 		decide(c);
 	if (c->ff)
 		return NULL;
-	now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
 	if (!c->tree)
 		c->tree = checkin_tree(c);
 	checkin_invariants(c, now, c->tree);
@@ -976,7 +1004,7 @@ static const char hook_text[] =
 
 static char *hook_file(void)
 {
-	return line1(git("rev-parse --path-format=absolute --git-path hooks/reference-transaction"));
+	return git_path("hooks/reference-transaction");
 }
 
 /* the hook is ait's (9.8); another one leaves listen to polling every second */
@@ -996,7 +1024,7 @@ static void install_hook(void)
 			warning("'%s' exists; 'ait listen' wakes by polling only", path);
 		return;
 	}
-	mkdir(xstrndup(path, strrchr(path, '/') - path), 0777);
+	leading_dirs(path);
 	write_state(path, hook_text);
 	if (chmod(path, 0755))
 		write_error(path);
@@ -1009,7 +1037,7 @@ static int cmd_init(int argc, const char **argv)
 	struct names n;
 	struct string_list_item *item;
 	struct strbuf exclude = STRBUF_INIT;
-	char *path = line1(git("rev-parse --path-format=absolute --git-path info/exclude"));
+	char *path = git_path("info/exclude");
 	int made = 0;
 
 	if (argc != 1)
@@ -1018,7 +1046,7 @@ static int cmd_init(int argc, const char **argv)
 	if (!strstr(xstrfmt("\n%s", exclude.buf), "\n/.ait/\n")) {
 		struct strbuf sb = STRBUF_INIT;
 
-		mkdir(xstrndup(path, strrchr(path, '/') - path), 0777);
+		leading_dirs(path);
 		strbuf_add(&sb, (&exclude)->buf, (&exclude)->len);
 		strbuf_complete_line(&sb);
 		strbuf_addstr(&sb, "/.ait/\n");
@@ -1183,7 +1211,6 @@ int main(int argc, const char **argv)
 			continue;
 		setup();
 		precompose_argv_prefix(argc, argv, NULL);
-		session_prefix();
 		status = commands[i].fn(argc - 1, argv + 1);
 		if (fflush(stdout) || ferror(stdout))
 			reject(128, NULL, "write error: standard output: %s", strerror(errno));
