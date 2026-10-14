@@ -73,5 +73,9 @@ echo why > "$T/msg"
 run ait future demand src/order.c src/stock.c cond.yaml -m x -F "$T/msg"
 check_rc "-m and -F together are a usage error (4.5, v14 5.3)" 129
 check "git's words" "has err \"options '-m' and '-F' cannot be used together\""
+printf 'body: |\n  x\ninputs: [a]\n' > cond5.yaml
+run ait future demand src/order.c src/stock.c cond5.yaml -m x
+check_rc "a condition file with an unknown key is refused (2.3.1)" 128
+check "naming the key and its line" "has err \"bad format: 'cond5.yaml': unknown key 'inputs' in line 3\""
 
 done_testing

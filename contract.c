@@ -533,6 +533,37 @@ static char *pk(const char *prefix, const char *name)
 	return *prefix ? xstrfmt("%s.%s", prefix, name) : xstrdup(name);
 }
 
+static int one_of(const char *w, const char *const *set)
+{
+	for (; *set; set++)
+		if (!strcmp(w, *set))
+			return 1;
+	return 0;
+}
+
+/*
+ * spec 2.3.1: every key of KV under PREFIX ("" the root) is one of KEYS, and
+ * all of KEYS are there when REQUIRED; NULL, or why not
+ */
+static char *keys_refusal(struct string_list *kv, const char *prefix, const char *const *keys, int required)
+{
+	struct string_list_item *item;
+	size_t plen = *prefix ? strlen(prefix) + 1 : 0;
+
+	for_each_string_list_item(item, kv) {
+		const char *k = item->string;
+
+		if (!strcmp(k, ROOT) || (plen && (strncmp(k, prefix, plen - 1) || k[plen - 1] != '.')))
+			continue;
+		if (!one_of(xstrndup(k + plen, strcspn(k + plen, ".")), keys))
+			return xstrfmt("unknown key '%s' in line %d", k, ((struct yval *)item->util)->line);
+	}
+	for (; required && *keys; keys++)
+		if (!unsorted_string_list_has_string(kv, pk(prefix, *keys)))
+			return xstrfmt("'%s' is missing", *keys);
+	return NULL;
+}
+
 /* v14 2.5.2 without inputs: a spec under PREFIX of KV; NULL with ERR */
 struct spec *spec_from(struct string_list *kv, const char *prefix, char **err)
 {
@@ -541,24 +572,11 @@ struct spec *spec_from(struct string_list *kv, const char *prefix, char **err)
 	struct string_list cmd = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	const char *engine = yget(kv, pk(prefix, "engine"));
-	size_t plen = *prefix ? strlen(prefix) + 1 : 0;
 
 	strvec_init(&s->command);
 	string_list_init_dup(&s->success);
-	*err = NULL;
-	for_each_string_list_item(item, kv) {
-		const char *k = item->string;
-		char *first;
-		int i, known = 0;
-
-		if (!strcmp(k, ROOT) || (plen && (strncmp(k, prefix, plen - 1) || k[plen - 1] != '.')))
-			continue;
-		first = xstrndup(k + plen, strcspn(k + plen, "."));
-		for (i = 0; keys[i]; i++)
-			known |= !strcmp(first, keys[i]);
-		if (!known)
-			return bad(err, "unknown key '%s' in line %d", k, ((struct yval *)item->util)->line);
-	}
+	if ((*err = keys_refusal(kv, prefix, keys, 0)))
+		return NULL;
 	s->body = xstrdup_null(yget(kv, pk(prefix, "body")));
 	if (!s->body || ykind(kv, pk(prefix, "body")))
 		return bad(err, "'%s' is missing or not a string", pk(prefix, "body"));
@@ -593,14 +611,6 @@ static const char *const *keys_of(const char *kind)
 {
 	return !strcmp(kind, "demand") ? demand_keys : !strcmp(kind, "offer") ? offer_keys :
 	       !strcmp(kind, "drop") ? drop_keys : NULL;
-}
-
-static int one_of(const char *w, const char *const *set)
-{
-	for (; *set; set++)
-		if (!strcmp(w, *set))
-			return 1;
-	return 0;
 }
 
 /* spec 2.1.3: the ID of the contract path "<group>/<ID>.yaml", or NULL */
@@ -660,15 +670,8 @@ struct contract *contract_parse(const char *text, const char *path, int draft, c
 	demand = !strcmp(v, "demand");
 	offer = !strcmp(v, "offer");
 	drop = !strcmp(v, "drop");
-	for_each_string_list_item(item, &kv) {
-		char *top_key = xstrndup(item->string, strcspn(item->string, "."));
-
-		if (strcmp(item->string, ROOT) && !one_of(top_key, keys))
-			return bad(err, "'%s': unknown key '%s' in line %d", path, top_key, ((struct yval *)item->util)->line);
-	}
-	for (i = 0; keys[i]; i++)
-		if (!unsorted_string_list_has_string(&kv, keys[i]))
-			return bad(err, "'%s': '%s' is missing", path, keys[i]);
+	if ((v = keys_refusal(&kv, "", keys, 1)))
+		return bad(err, "'%s': %s", path, v);
 	c->condition_id = xstrdup(yget(&kv, "condition-id"));
 	c->change_id = xstrdup(yget(&kv, "change-id"));
 	c->creator = xstrdup(yget(&kv, "creator"));
@@ -826,7 +829,6 @@ struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
 	struct fulfilment *f = xcalloc(1, sizeof(*f));
 	const char *end;
 	char *front;
-	int i;
 
 	*err = NULL;
 	if (!starts_with(text, "---\n") || !(end = strstr(text + 3, "\n---\n")))
@@ -834,15 +836,8 @@ struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
 	front = xstrndup(text + 4, end + 1 - (text + 4));
 	if (yaml_parse(front, &kv, path, err))
 		return NULL;
-	for_each_string_list_item(item, &kv) {
-		char *k = xstrndup(item->string, strcspn(item->string, "."));
-
-		if (strcmp(item->string, ROOT) && !one_of(k, keys))
-			return bad(err, "'%s': unknown key '%s'", path, k);
-	}
-	for (i = 0; keys[i]; i++)
-		if (!yget(&kv, keys[i]))
-			return bad(err, "'%s': '%s' is missing", path, keys[i]);
+	if ((front = keys_refusal(&kv, "", keys, 1)))
+		return bad(err, "'%s': %s", path, front);
 	f->path = xstrdup(path);
 	f->contract = xstrdup(yget(&kv, "contract"));
 	f->condition_id = xstrdup(yget(&kv, "condition-id"));
