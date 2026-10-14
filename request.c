@@ -31,6 +31,7 @@ struct request {
 	struct string_list fixed;	/* step 0's covered set: ID -> its condition-id (6.7.2) */
 	struct strvec words;		/* the command as given, for the hints that repeat it */
 	struct string_list scopes;	/* ID -> "=SCOPES" of ait fulfill */
+	struct string_list files;	/* FILES -> the contract its specs were read into, once */
 	struct strbuf msg;
 	const char *result, *group;
 	int force, future_force;
@@ -56,9 +57,18 @@ static void request_init(struct request *q, const char **argv)
 	string_list_init_dup(&q->alias);
 	string_list_init_dup(&q->fulfil);
 	string_list_init_dup(&q->scopes);
+	string_list_init_dup(&q->files);
 	string_list_init_dup(&q->results);
 	string_list_init_dup(&q->covered);
 	strbuf_init(&q->msg, 0);
+}
+
+/* spec 7.2, 7.3: the condition-id of ID at T, which results are made for ("" for a new contract) */
+static const char *condition_at_t(struct request *q, const char *id)
+{
+	struct contract *c = contract_get(q->b, id);
+
+	return c ? c->condition_id : "";
 }
 
 /* the contract ID as it stands after this request's changes so far */
@@ -176,14 +186,21 @@ static int condition_path_ok(const char *p)
 	return path_ok(p);
 }
 
-/* v14 2.5.2 without inputs: the condition files of FILES, read from the work tree (6.4.2) */
-static void specs_from_files(struct contract *c, const char *files)
+/*
+ * v14 2.5.2 without inputs: the condition files of FILES, read from the work
+ * tree once (6.4.2): a judgment made again uses what step 0 read (6.7.5)
+ */
+static void specs_from_files(struct request *q, struct contract *c, const char *files)
 {
 	struct string_list paths = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
+	struct string_list_item *item, *read = string_list_lookup(&q->files, files);
 
+	if (read) {
+		c->specs = ((struct contract *)read->util)->specs;
+		c->nspecs = ((struct contract *)read->util)->nspecs;
+		return;
+	}
 	string_list_split(&paths, files, ",", -1);
-	free(c->specs);
 	c->specs = NULL;
 	c->nspecs = 0;
 	for_each_string_list_item(item, &paths) {
@@ -205,6 +222,7 @@ static void specs_from_files(struct contract *c, const char *files)
 		REALLOC_ARRAY(c->specs, c->nspecs + 1);
 		c->specs[c->nspecs++] = *s;
 	}
+	string_list_insert(&q->files, files)->util = xmemdupz(c, sizeof(*c));
 }
 
 /* scope arguments fixed at T (spec 3.2); "-" keeps what is there */
@@ -422,7 +440,7 @@ static void apply_clauses(struct request *q)
 			if (demand)
 				scopes_arg(&c->consumer, a[0], pin_at, 1, 0);
 			scopes_arg(&c->provider, a[demand], pin_at, 1, 1);
-			specs_from_files(c, a[demand + 1]);
+			specs_from_files(q, c, a[demand + 1]);
 			if (cl->as)
 				string_list_insert(&q->alias, cl->as)->util = xstrdup(c->id);
 		} else if (!strcmp(cl->verb, "drop")) {
@@ -448,7 +466,7 @@ static void apply_clauses(struct request *q)
 					scopes_arg(&c->consumer, a[1], pin_at, 1, 0);
 				scopes_arg(&c->provider, a[more - 1], pin_at, 1, 1);
 				if (strcmp(a[more], "-"))
-					specs_from_files(c, a[more]);
+					specs_from_files(q, c, a[more]);
 			}
 			if (cl->future && q->future_force)
 				string_list_insert(&q->trivial, c->id);
@@ -585,7 +603,7 @@ static void write_check_files(struct request *q)
 	mkdir(dir, 0777);
 	for_each_string_list_item(item, &q->covered)
 		if (!strcmp(task_id(q, item->string), item->string))
-			strbuf_addf(&ids, "  %s: \"%s\"\n", item->string, now(q, item->string)->condition_id);
+			strbuf_addf(&ids, "  %s: \"%s\"\n", item->string, condition_at_t(q, item->string));
 	strbuf_addf(&req, "condition-ids:%s\n%stree: \"%s\"\ntasks:\n", ids.len ? "" : " {}", ids.buf, q->x->oid);
 	strbuf_addf(&res, "condition-ids:%s\n%sresults:\n", ids.len ? "" : " {}", ids.buf);
 	for_each_string_list_item(item, &q->covered) {
@@ -649,7 +667,7 @@ static void read_results(struct request *q)
 		struct contract *c = now(q, item->string);
 		const char *got = yget(&kv, xstrfmt("condition-ids.%s", item->string));
 
-		if (!strcmp(task_id(q, c->id), c->id) && (!got || strcmp(got, c->condition_id)))
+		if (!strcmp(task_id(q, c->id), c->id) && (!got || strcmp(got, condition_at_t(q, c->id))))
 			write_check_files(q);
 		for (n = 0; n < c->nspecs; n++)
 			string_list_insert(&want, task_of(task_id(q, c->id), n));
@@ -859,7 +877,7 @@ static void request_judge(struct checkin *ck)
 	/* 6.7.2: the covered set fixed at step 0, with the condition-ids its results are for, holds to the end */
 	for_each_string_list_item(item, &q->covered)
 		if (q->fixed.nr && (!string_list_lookup(&q->fixed, item->string) ||
-				    strcmp(string_list_lookup(&q->fixed, item->string)->util, now(q, item->string)->condition_id)))
+				    strcmp(string_list_lookup(&q->fixed, item->string)->util, condition_at_t(q, item->string))))
 			checkin_moved(ck);
 	if (q->fixed.nr && q->fixed.nr != q->covered.nr)
 		checkin_moved(ck);
@@ -912,7 +930,7 @@ static void run_request(struct request *q, int fulfilling)
 		if (q->result)
 			read_results(q);
 		for_each_string_list_item(item, &q->covered)
-			string_list_insert(&q->fixed, item->string)->util = xstrdup(now(q, item->string)->condition_id);
+			string_list_insert(&q->fixed, item->string)->util = xstrdup(condition_at_t(q, item->string));
 		/* step 1: the staged code, committed by git */
 		git_run(NULL, NULL, &rc, "diff --cached --quiet");
 		if (rc) {

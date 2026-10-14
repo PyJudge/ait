@@ -63,4 +63,22 @@ cp cond.yaml c2.yaml
 run ait future amend "$D4" - - c2.yaml undertake "$D4" "$O4" --force -m t
 check "a trivial amend leaves another clause's condition-id change alone (6.4.1, 2.3.3)" "test \"\$(yaml $O4 | sed -n 's/^condition-id: //p')\" != $cid"
 
+# results for a contract this request amends are made for its condition-id at T (7.2, 7.3)
+run ait future demand src/order.c src/ cond.yaml -m abstract2; DB=$(newest D)
+run ait fulfill "$DB=src/stock.c" -m x
+res=$(pass_all)
+run ait fulfill "$DB=src/stock.c" -r "$res" -m x
+check_rc "fulfill K=SCOPES -r accepts the results it asked for" 0
+
+# the condition files are read once: a hook that rewrites them during the code commit changes nothing recorded
+run ait demand src/order.c src/stock.c:30-31 cond.yaml -m need
+res=$(pass_all)
+echo more >> src/order.c; git add src/order.c
+printf 'body: |\n  NEVER CHECKED\n' > "$T/never.yaml"
+echo "cp $T/never.yaml cond.yaml" > "$T/before-commit"
+run env PATH="$T/bin:$PATH" ait demand src/order.c src/stock.c:30-31 cond.yaml -r "$res" -m need
+check_rc "a demand made and fulfilled with results" 0
+check "the contract recorded holds the specs step 0 checked (6.7.5)" "yaml \$(newest D) | grep -q 'stock never goes below zero'"
+cp "$T/exec.yaml" cond.yaml
+
 done_testing
