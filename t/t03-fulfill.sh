@@ -12,6 +12,7 @@ run ait fulfill "$O" -m "impl"
 check_rc "fulfill without results writes the template (6.7.1)" 1
 check "it lists both tasks of the covered set (6.7.2)" "has out \"task $O:1\" && has out \"task $D:1\""
 check "the message" "has err 'check results required'"
+check "the count of tasks" "has err 'check results required: 2 task(s)'"
 check "nothing was committed" "test \"\$(git rev-list --count HEAD)\" = 1"
 
 echo guard >> src/stock.c
@@ -20,6 +21,7 @@ res=$(pass_all)
 run ait fulfill "$O" -r "$res" -m "impl"
 check_rc "fulfill with results" 0
 check "the code commit is git's (6.7.5-1)" "test \"\$(git log -1 --format=%s)\" = impl"
+check "git commit's summary line comes first (6.7.8)" "head -1 $T/out | grep -q '^\[master [0-9a-f]*\] impl'"
 check "the checkin" "has out '\[FULFILL\] impl'"
 check "both are fulfilled" "has out \"fulfilled $O\" && has out \"fulfilled $D\""
 check "the fulfilment records the commit (2.5)" "git show ait/master:fulfill/\$(git ls-tree --name-only ait/master fulfill/ | sed -n \"s|fulfill/\\($D-.*\\)|\\1|p\") | grep -q \"commit: \$(git rev-parse HEAD)\""
@@ -70,5 +72,10 @@ check_rc "an abstract provider needs =SCOPES (3.3)" 128
 run ait fulfill "$DA=src/stock.c" --force -m x
 check_rc "fulfill K=SCOPES narrows it" 0
 check "the provider is narrowed" "yaml $DA | grep -q 'provider: \"src/stock.c\"'"
+
+printf 'body: |\n  x\nengine: exec\ncommand: [sh, -c, "exit 1"]\nsuccess: [0, 1]\n' > cond3.yaml
+run ait future demand src/order.c src/stock.c cond3.yaml -m d4
+run ait fulfill "$(newest D)" -m x
+check "success codes are written inside the list (7.2)" "grep -qx '  success: \[0, 1\]' .git/ait/check-request.yaml"
 
 done_testing

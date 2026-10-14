@@ -52,6 +52,8 @@ struct checkin {
 	struct string_list put;		/* path -> its new text */
 	const char *msg;		/* the message; its first line is the summary */
 	const char *second_parent;	/* a merge (6.5.6) */
+	char *tree;			/* a merge's tree, instead of put (6.5.6) */
+	const char *refusal;		/* what a broken rule's message starts with (6.5.6) */
 	int no_trailers;		/* ait init's commit */
 	char rid[16];			/* this request's ID */
 	char made[48];			/* the commit made */
@@ -60,6 +62,7 @@ struct checkin {
 	void *data;
 };
 typedef void (*judge_fn)(struct checkin *c, void *data);
+int checkin_ref(struct checkin *c, const char *commit);
 void checkin_run(struct checkin *c, judge_fn judge, void *data);
 
 /* contract.c: trees as git lists them */

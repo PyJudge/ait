@@ -60,5 +60,27 @@ run ait contract pull
 check_rc "the same contract changed on both sides conflicts (6.5.6)" 1
 check "the message" "has err 'contract branches conflict in'"
 check "the hint enters the branch" "has err \"ait switch ait/master\""
+git update-ref refs/heads/ait/master origin/ait/master
+
+cd "$T/c"; run ait future demand src/order.c src/stock.c:20-22 cond.yaml -m "bob again"; ait contract push >/dev/null 2>&1
+cd "$T/r"; run ait future demand src/order.c src/stock.c:23-24 cond.yaml -m "alice again"
+run ait contract pull
+check_rc "different contracts merge (6.5.6-4)" 0
+check "the merge commit has both parents" "test \"\$(git rev-list --parents -1 ait/master | wc -w | tr -d ' ')\" = 3"
+check "its message" "has out \"\\[CONTRACT\\] merge 'origin/ait/master'\""
+ait contract push >/dev/null 2>&1
+
+run ait future demand src/order.c src/stock.c:30-31 cond.yaml -m d2; D2=$(newest D)
+run ait future offer src/stock.c cond.yaml -m o; O=$(newest O)
+run ait future offer src/stock.c cond.yaml -m o3; O3=$(newest O)
+ait contract push >/dev/null 2>&1
+cd "$T/c"; ait contract pull >/dev/null 2>&1; run ait undertake -p "$D2" "$O" -m "bob shares"; ait contract push >/dev/null 2>&1
+cd "$T/r"; run ait undertake "$D2" "$O3" -m "alice wholly"
+tip=$(git rev-parse ait/master)
+run ait contract pull
+check_rc "a clean merge that mixes undertakes is refused (4.10)" 1
+check "the message" "has err \"merging 'origin/ait/master' breaks contract rules: \""
+check "the hint" "has err 'resolve the conflicts there'"
+check "nothing changed" "test \"\$(git rev-parse ait/master)\" = $tip"
 
 done_testing

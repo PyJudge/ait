@@ -803,17 +803,37 @@ static void checkin_invariants(struct checkin *c, const char *tree)
 	struct string_list before = STRING_LIST_INIT_DUP, then = STRING_LIST_INIT_DUP;
 	struct string_list_item *v;
 
-	if (after->errors.nr)
+	if (after->errors.nr && !c->tree)
 		BUG("ait wrote a malformed contract: %s", after->errors.items[0].string);
+	if (after->errors.nr)
+		reject(1, c->violation_hint(c, "", c->data), "%s%s", c->refusal, after->errors.items[0].string);
 	invariants(now, &before);
 	invariants(after, &then);
 	for_each_string_list_item(v, &then) {
 		char *key = xstrndup(v->string, strcspn(v->string, " "));
 
 		if (!string_list_has_string(&before, v->string))
-			reject(1, c->violation_hint ? c->violation_hint(c, key, c->data) : NULL, "%s",
-			       v->string + strlen(key) + 1);
+			reject(1, c->violation_hint ? c->violation_hint(c, key, c->data) : NULL, "%s%s",
+			       c->refusal ? c->refusal : "", v->string + strlen(key) + 1);
 	}
+}
+
+/*
+ * spec 4.4-3: move the branch from T to COMMIT. (a) the worktree that uses
+ * the branch is judged by git (builtin/fetch.c:1382); (b) the CAS. Returns
+ * update-ref's exit code.
+ */
+int checkin_ref(struct checkin *c, const char *commit)
+{
+	int rc;
+
+	git_run(NULL, NULL, &rc, "fetch -q --dry-run --no-write-fetch-head --no-recurse-submodules . %s",
+		xstrfmt("%s:refs/heads/%s", commit, c->branch));
+	if (rc == 128)
+		reject(128, NULL, "%s", git_error);
+	git_run(NULL, NULL, &rc, "update-ref -m %s %s %s %s", c->msg, xstrfmt("refs/heads/%s", c->branch), commit,
+		*c->tip ? c->tip : NULL_OID);
+	return rc;
 }
 
 /*
@@ -827,6 +847,7 @@ void checkin_run(struct checkin *c, judge_fn judge, void *data)
 	for (;;) {
 		char old[48], *tree, *commit;
 		struct strbuf parents = STRBUF_INIT;
+		struct strvec args = STRVEC_INIT;
 		struct string_list_item *item;
 		int rc;
 
@@ -835,22 +856,14 @@ void checkin_run(struct checkin *c, judge_fn judge, void *data)
 		string_list_clear(&c->put, 0);
 		if (judge)
 			judge(c, data);
-		tree = checkin_tree(c);
+		tree = c->tree ? c->tree : checkin_tree(c);
 		checkin_invariants(c, tree);
 		if (*c->tip)
 			strbuf_addf(&parents, "-p %s ", c->tip);
 		if (c->second_parent)
 			strbuf_addf(&parents, "-p %s ", c->second_parent);
 		commit = line1(git_run(checkin_message(c), NULL, NULL, xstrfmt("commit-tree %s%%s", parents.buf), tree));
-		/* (a) the worktree that uses the branch, judged by git (builtin/fetch.c:1382) */
-		git_run(NULL, NULL, &rc, "fetch -q --dry-run --no-write-fetch-head --no-recurse-submodules . %s",
-			xstrfmt("%s:refs/heads/%s", commit, c->branch));
-		if (rc == 128)
-			reject(128, NULL, "%s", git_error);
-		/* (b) the CAS */
-		git_run(NULL, NULL, &rc, "update-ref -m %s %s %s %s", c->msg, xstrfmt("refs/heads/%s", c->branch), commit,
-			*c->tip ? c->tip : NULL_OID);
-		if (!rc) {
+		if (!checkin_ref(c, commit)) {
 			snprintf(c->made, sizeof(c->made), "%s", commit);
 			printf("[%s %s%s] %s\n", c->branch, line1(git("rev-parse --short %s", commit)),
 			       *c->tip ? "" : " (root-commit)", line1(xstrdup(c->msg)));
@@ -859,14 +872,13 @@ void checkin_run(struct checkin *c, judge_fn judge, void *data)
 		snprintf(old, sizeof(old), "%s", c->tip);
 		if (!object(xstrfmt("refs/heads/%s^{commit}", c->branch), 0, c->tip, NULL) || !strcmp(old, c->tip))
 			reject(128, NULL, "%s", git_failed());
-		{
-			struct strvec args = STRVEC_INIT;
-
-			strvec_pushl(&args, "diff-tree", "--quiet", *old ? old : EMPTY_TREE, c->tip, "--", NULL);
-			for_each_string_list_item(item, &c->put)
-				strvec_push(&args, item->string);
-			git_args(&args, NULL, NULL, &rc);
-		}
+		/* a merge reads every file, so any move judges it again (6.5.6) */
+		if (c->tree)
+			continue;
+		strvec_pushl(&args, "diff-tree", "--quiet", *old ? old : EMPTY_TREE, c->tip, "--", NULL);
+		for_each_string_list_item(item, &c->put)
+			strvec_push(&args, item->string);
+		git_args(&args, NULL, NULL, &rc);
 		if (rc)
 			reject(1, NULL, "'%s' moved while running; nothing changed", c->branch);
 	}
