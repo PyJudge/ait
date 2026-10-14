@@ -1262,6 +1262,7 @@ int holds(struct contract *o, const char *id)
 /* spec 5.4: the judgment of C on branch B in tree X; one definition */
 enum verdict judge(struct branch *b, struct contract *c, struct tree *x)
 {
+	static struct string_list judging = STRING_LIST_INIT_DUP;
 	struct string_list valid = STRING_LIST_INIT_DUP;
 	struct string_list_item *f, *item;
 	int whole_ok = 1;
@@ -1275,7 +1276,15 @@ enum verdict judge(struct branch *b, struct contract *c, struct tree *x)
 		return c->fulfilled.nr ? V_FULFILLED : V_FUTURE;
 	if (!valid.nr)
 		return V_FUTURE;
-	/* the undertakings it leans on (1.7): an offer on what it holds wholly, a demand on its partial offers */
+	/*
+	 * the undertakings it leans on (1.7): an offer on what it holds wholly,
+	 * a demand on its partial offers. 5.4 knows no cycle, but a git merge
+	 * that mixed undertakings (10.4) can make one: a contract met again
+	 * while it is being judged is not current.
+	 */
+	if (string_list_has_string(&judging, c->id))
+		return V_UNVERIFIED;
+	string_list_insert(&judging, c->id);
 	if (!strcmp(c->kind, "offer")) {
 		for_each_string_list_item(item, &c->undertakes) {
 			struct contract *d = contract_get(b, item->string);
@@ -1291,6 +1300,7 @@ enum verdict judge(struct branch *b, struct contract *c, struct tree *x)
 				whole_ok = 0;
 		}
 	}
+	string_list_remove(&judging, c->id, 0);
 	for_each_string_list_item(f, &valid) {
 		int same = 1;
 

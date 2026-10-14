@@ -109,4 +109,17 @@ run env AIT_SESSION=- ait status
 check "a merge made by git outside ait: status warns of the violation (4.10)" "has err \"warning: '$D2' is already undertaken \""
 check "and shows the contract it names (6.3-4)" "grep -qx \"id $D2\" $T/out"
 
+# undertakings mixed both ways by git make a cycle 5.4 does not know; the judgment ends
+D1=$(ait future demand src/order.c src/stock.c:1-2 cond.yaml -m a | sed -n 's/^new //p')
+D2=$(ait future demand src/order.c src/stock.c:3-4 cond.yaml -m b | sed -n 's/^new //p')
+C1=$(ait future offer src/stock.c cond.yaml -m c | sed -n 's/^new //p')
+C2=$(ait future offer src/stock.c cond.yaml -m d | sed -n 's/^new //p')
+for k in $D1 $D2 $C1 $C2; do ait fulfill $k --force -m f >/dev/null 2>&1; done
+git switch -q ait/master
+sed -i.bak "s/^undertakes: \[\]/undertakes: [$D1]/; s/^undertakes-partially: \[\]/undertakes-partially: [$D2]/" $C1.yaml
+sed -i.bak "s/^undertakes: \[\]/undertakes: [$D2]/; s/^undertakes-partially: \[\]/undertakes-partially: [$D1]/" $C2.yaml
+rm -f ./*.bak; git commit -qam cycle; git switch -q master
+run env AIT_SESSION=- ait status
+check_rc "a cycle of undertakings is judged, not recursed forever (5.4, 10.4)" 0
+
 done_testing
