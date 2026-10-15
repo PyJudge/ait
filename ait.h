@@ -16,6 +16,7 @@ extern char *git_error;
 extern char *not_recorded, *retry_command;
 extern size_t git_out_len;
 char *git_args(struct strvec *args, const char *in, const char *index, int *rc);
+char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...);
 char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...);
 #define git(...) git_run(NULL, NULL, NULL, __VA_ARGS__)
 int git_pass(struct strvec *args);
@@ -28,6 +29,7 @@ NORETURN void reject(int code, const char *hint, const char *fmt, ...) __attribu
 void newid(char *out, int prefix);
 const char *session(int need);
 void write_state(const char *path, const char *text);
+NORETURN void write_error(const char *path);
 char *state_path(const char *name);
 int agent_ok(const char *name);
 int id_ok(const char *s, const char *letters);

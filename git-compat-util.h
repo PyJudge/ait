@@ -12,6 +12,7 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -287,5 +288,29 @@ int git_qsort_s(void *base, size_t nmemb, size_t size,
 
 /* git v2.53.0 git-compat-util.h:88-88 */
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]) + BARF_UNLESS_AN_ARRAY(x))
+
+/* declarations of the additional Git tempfile dependencies */
+void warning_errno(const char *warn, ...) __attribute__((format (printf, 1, 2)));
+int unlink_or_warn(const char *file);
+int rmdir_or_warn(const char *file);
+char *xgetcwd(void);
+
+/* git v2.53.0 git-compat-util.h:228-234 */
+#ifndef has_dos_drive_prefix
+static inline int git_has_dos_drive_prefix(const char *path UNUSED)
+{
+	return 0;
+}
+#define has_dos_drive_prefix git_has_dos_drive_prefix
+#endif
+
+/* git v2.53.0 git-compat-util.h:244-250 */
+static inline int git_is_dir_sep(int c)
+{
+	return c == '/';
+}
+#ifndef is_dir_sep
+#define is_dir_sep git_is_dir_sep
+#endif
 
 #endif

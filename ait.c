@@ -163,7 +163,7 @@ static void words_of(struct strvec *args, const char *fmt, va_list ap)
 }
 
 /* git_run() fed the bytes of IN, NULs too (the -z inputs of update-index) */
-static char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...)
+char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...)
 {
 	struct strvec args = STRVEC_INIT;
 	va_list ap;
@@ -334,7 +334,7 @@ static void state_dirs(void)
 	mkdir(state_path("worktrees"), 0777);
 }
 
-static NORETURN void write_error(const char *path)
+NORETURN void write_error(const char *path)
 {
 	reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command", path),
 	       "write error: '%s': %s", path, strerror(errno));

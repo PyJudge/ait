@@ -11,6 +11,7 @@ struct strbuf {
 extern char strbuf_slopbuf[];
 #define STRBUF_INIT  { .buf = strbuf_slopbuf }
 
+int strbuf_getcwd(struct strbuf *sb);
 void strbuf_init(struct strbuf *sb, size_t alloc);
 void strbuf_release(struct strbuf *sb);
 char *strbuf_detach(struct strbuf *sb, size_t *sz);

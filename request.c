@@ -4,6 +4,8 @@
  */
 #include "ait.h"
 #include "quote.h"
+#include "lockfile.h"
+#include "tempfile.h"
 
 /* one clause of a request as given (6.4): its verb and its words */
 struct clause {
@@ -1165,14 +1167,44 @@ static char *stage_index(void)
 	return xstrfmt("%s/ait/index", gitdir);
 }
 
+/*
+ * Git's index lock excludes add until commit has consumed its snapshot
+ * (2.6.4). Register only a lock we created; signal cleanup must not see
+ * an unregistered lock or remove another process's lock.
+ */
+static struct tempfile *lock_stage(const char *index)
+{
+	struct tempfile *lock = NULL;
+	char *path = xstrfmt("%s.lock", index);
+	sigset_t blocked, previous;
+	int fd, saved;
+
+	sigfillset(&blocked);
+	sigprocmask(SIG_BLOCK, &blocked, &previous);
+	fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+	saved = errno;
+	if (fd >= 0) {
+		lock = register_tempfile(path);
+		lock->fd = fd;
+	}
+	sigprocmask(SIG_SETMASK, &previous, NULL);
+	free(path);
+	if (!lock)
+		unable_to_lock_die(index, saved);
+	return lock;
+}
+
 /* spec 6.5.3: drafts into the contract stage, as they are now */
 static int contract_add(int argc, const char **argv)
 {
+	struct strbuf info = STRBUF_INIT;
+	const char *index;
 	int i;
 
 	if (argc < 2)
 		reject(129, NULL, "add names the drafts");
 	start(0);
+	index = stage_index();
 	for (i = 1; i < argc; i++) {
 		const char *rel;
 		struct strbuf sb = STRBUF_INIT;
@@ -1185,9 +1217,12 @@ static int contract_add(int argc, const char **argv)
 		if (!contract_parse(sb.buf, rel, 1, &err))
 			reject(128, NULL, "bad format: %s", err);
 		oid = line1(git_run(sb.buf, NULL, NULL, "hash-object -w --stdin"));
-		git_run(NULL, stage_index(), NULL, "update-index --add --cacheinfo %s", xstrfmt("100644,%s,%s", oid, rel));
-		printf("add %s\n", rel);
+		strbuf_addf(&info, "100644 %s\t%s%c", oid, rel, 0);
 	}
+	/* One Git index transaction: no partial stage or success output on failure. */
+	git_feed(&info, index, NULL, "update-index -z --index-info");
+	for (i = 1; i < argc; i++)
+		printf("add %s\n", argv[i] + strlen(".ait/"));
 	return 0;
 }
 
@@ -1274,6 +1309,8 @@ static int contract_commit(int argc, const char **argv)
 	struct checkin ck = { 0 };
 	struct string_list_item *item;
 	struct string_list lines = STRING_LIST_INIT_DUP;
+	struct tempfile *lock;
+	const char *index;
 	char *list;
 
 	request_init(&st.q, argv - 1);
@@ -1283,7 +1320,9 @@ static int contract_commit(int argc, const char **argv)
 		reject(129, NULL, "contract commit takes -m, -F and --force");
 	ck.branch = start(START_SESSION | START_WRITES);
 	st.q.x = index_tree();
-	list = access(stage_index(), F_OK) ? xstrdup("") : git_run(NULL, stage_index(), NULL, "ls-files -s");
+	index = stage_index();
+	lock = lock_stage(index);
+	list = access(index, F_OK) ? xstrdup("") : git_run(NULL, index, NULL, "ls-files -s");
 	string_list_split(&lines, list, "\n", -1);
 	for_each_string_list_item(item, &lines) {
 		char mode[8], oid[48];
@@ -1299,7 +1338,10 @@ static int contract_commit(int argc, const char **argv)
 	ck.msg = xstrfmt("[CONTRACT] %s", st.q.msg.buf);
 	ck.data = &st;
 	checkin_run(&ck, commit_judge);
-	unlink(stage_index());
+	if (unlink(index))
+		write_error(index);
+	if (delete_tempfile(&lock))
+		write_error(xstrfmt("%s.lock", index));
 	for_each_string_list_item(item, &st.drafts) {
 		char *id = contract_path_id(item->string);
 

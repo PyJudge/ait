@@ -448,3 +448,36 @@ int git_qsort_s(void *b, size_t n, size_t s,
 	free(tmp);
 	return 0;
 }
+
+/* git v2.53.0 wrapper.c:601 */
+static int warn_if_unremovable(const char *op, const char *file, int rc)
+{
+	int err;
+	if (!rc || errno == ENOENT)
+		return 0;
+	err = errno;
+	warning_errno("unable to %s '%s'", op, file);
+	errno = err;
+	return rc;
+}
+
+/* git v2.53.0 wrapper.c:626 */
+int unlink_or_warn(const char *file)
+{
+	return warn_if_unremovable("unlink", file, unlink(file));
+}
+
+/* git v2.53.0 wrapper.c:631 */
+int rmdir_or_warn(const char *file)
+{
+	return warn_if_unremovable("rmdir", file, rmdir(file));
+}
+
+/* git v2.53.0 wrapper.c:658 */
+char *xgetcwd(void)
+{
+	struct strbuf sb = STRBUF_INIT;
+	if (strbuf_getcwd(&sb))
+		die_errno(_("unable to get current working directory"));
+	return strbuf_detach(&sb, NULL);
+}
