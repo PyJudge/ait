@@ -26,7 +26,7 @@ check "a filled template with the same condition-ids and tasks is kept (7.4)" "g
 run ait fulfill "$O" -r "$res" -m "impl"
 check_rc "fulfill with results" 0
 check "the code commit is git's (6.7.5-1)" "test \"\$(git log -1 --format=%s)\" = impl"
-check "git commit's summary line comes first (6.7.8)" "head -1 $T/out | grep -q '^\[master [0-9a-f]*\] impl'"
+check "fulfilled rows precede git commit's summary (6.7.8)" "head -2 $T/out | grep -c '^fulfilled ' | grep -qx 2 && sed -n '3p' $T/out | grep -q '^\[master [0-9a-f]*\] impl'"
 check "the checkin" "has out '\[FULFILL\] impl'"
 check "both are fulfilled" "has out \"fulfilled $O\" && has out \"fulfilled $D\""
 check "the fulfilment records the commit (2.5)" "git show ait/master:fulfill/\$(git ls-tree --name-only ait/master fulfill/ | sed -n \"s|fulfill/\\($D-.*\\)|\\1|p\") | grep -q \"commit: \$(git rev-parse HEAD)\""
@@ -91,10 +91,10 @@ run ait future demand src/order.c src/stock.c cond4.yaml -m d5; D5=$(newest D)
 run ait fulfill "$D5" -m x
 check_rc "an environment missing at HEAD is refused (7.2)" 128
 check "the message" "has err \"could not read 'specs/environments/node.yaml' at HEAD\""
-mkdir -p specs/environments; printf 'cwd: src\nenv:\n  A: "1"\n' > specs/environments/node.yaml
+mkdir -p specs/environments; printf 'cwd: src\nenv:\n  set:\n    A: "1"\n' > specs/environments/node.yaml
 git add specs; git commit -qm env
 run ait fulfill "$D5" -m x
-check "the environment's lines are under environment: (7.2)" "grep -A3 '^  environment:\$' .git/ait/check-request.yaml | grep -qx '      A: \"1\"'"
+check "the environment's set value is under environment: (7.2)" "grep -A5 '^  environment:\$' .git/ait/check-request.yaml | grep -qx '        \"A\": \"1\"'"
 
 git checkout -q -b side; sed -i.bak 's/^o3$/side/' src/order.c; git commit -qam side
 git checkout -q master; sed -i.bak 's/^o3$/main/' src/order.c; git commit -qam main

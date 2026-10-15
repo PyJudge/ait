@@ -13,6 +13,7 @@ struct clause {
 	int future;
 	int partial;			/* undertake -p */
 	const char *args[4];		/* its words after the verb: scopes and files, IDs */
+	int arg_words[4];		/* their positions in the original command */
 	int nargs;
 	const char *as;
 };
@@ -26,18 +27,19 @@ struct request_input {
 	struct string_list made;	/* the IDs the new contracts took the first time, kept across judgments */
 	struct string_list fixed;	/* step 0's covered set: ID -> its condition-id (6.7.2) */
 	struct strvec words;		/* the command as given, for the hints that repeat it */
+	int *word_index;		/* positional argument -> original command word */
+	int force_word;
 	struct string_list scopes;	/* ID -> "=SCOPES" of ait fulfill */
-	struct string_list files;	/* FILES -> struct condition_set, read once */
+	struct string_list files;	/* path -> immutable struct spec, read once */
 	struct strbuf msg;
 	const char *result;
 	const char *group;
 	int force;
-	int future_force;
 	const char *rid;			/* borrowed from the checkin */
 	/* fulfilling: the code commit and its tree (6.7.5) */
 	char commit[48];
 	struct tree *code;
-	struct string_list results;	/* task -> its result block */
+	struct string_list results;	/* task -> outcome, basis and reason, without a task line */
 };
 
 /* One judgment on T, retained through its CAS, failure hints and output. */
@@ -47,7 +49,9 @@ struct request_result {
 	struct string_list order;	/* the new contracts in order: "+1", "+2", ... (7.1) */
 	struct string_list alias;	/* alias -> ID */
 	struct string_list fulfil;	/* the given contracts and those of the clauses */
-	struct string_list trivial;	/* future amend --force, contract commit --force */
+	struct string_list reopened;	/* explicit empty amends, retained while stamping against T */
+	struct string_list normal_specs;	/* specs changed by an ordinary clause, still different from T */
+	struct string_list provider_words; /* ID -> borrowed position of its last explicit provider */
 	struct string_list covered;	/* the covered set (6.7.2) */
 };
 
@@ -69,7 +73,9 @@ static void request_result_reset(struct request_result *r, struct branch *at)
 	string_list_clear(&r->order, 0);
 	string_list_clear(&r->alias, 1);
 	string_list_clear(&r->fulfil, 0);
-	string_list_clear(&r->trivial, 0);
+	string_list_clear(&r->reopened, 0);
+	string_list_clear(&r->normal_specs, 0);
+	string_list_clear(&r->provider_words, 0);
 	string_list_clear(&r->covered, 0);
 	r->at = at;
 }
@@ -80,6 +86,7 @@ static void request_init(struct request *req, const char **argv)
 	struct request_result *r = &req->result;
 
 	memset(req, 0, sizeof(*req));
+	q->force_word = -1;
 	strvec_init(&q->words);
 	strvec_pushv(&q->words, argv);
 	string_list_init_dup(&q->given);
@@ -93,7 +100,9 @@ static void request_init(struct request *req, const char **argv)
 	string_list_init_dup(&r->order);
 	string_list_init_dup(&r->alias);
 	string_list_init_dup(&r->fulfil);
-	string_list_init_dup(&r->trivial);
+	string_list_init_dup(&r->reopened);
+	string_list_init_dup(&r->normal_specs);
+	string_list_init_dup(&r->provider_words);
 	string_list_init_dup(&r->covered);
 }
 
@@ -108,9 +117,9 @@ static const char *condition_at_t(struct branch *at, const char *id)
 /* the contract ID as it stands after this request's changes so far */
 static struct contract *contract_after(struct request_result *r, const char *id)
 {
-	struct string_list_item *item = string_list_lookup(&r->changed, id);
+	struct contract_view v = { r->at, &r->changed };
 
-	return item ? item->util : contract_get(r->at, id);
+	return contract_lookup(&v, id);
 }
 
 /*
@@ -118,7 +127,7 @@ static struct contract *contract_after(struct request_result *r, const char *id)
  * (or goes, when TO is NULL), EXTRA is added, and a message is asked for
  * when none was given
  */
-static char *command_again(struct request_input *q, const char *from, const char *to, const char *extra)
+static char *command_again(struct request_input *q, int replace_word, const char *to, const char *extra)
 {
 	struct strbuf sb = STRBUF_INIT;
 	size_t i;
@@ -126,54 +135,40 @@ static char *command_again(struct request_input *q, const char *from, const char
 
 	strbuf_addstr(&sb, "ait");
 	for (i = 0; i < q->words.nr; i++) {
-		msg |= !strcmp(q->words.v[i], "-m") || !strcmp(q->words.v[i], "-F");
-		if (from && !to && !strcmp(q->words.v[i], from))
+		/* A consumed stdin or message file is represented by the text already read. */
+		if (!strcmp(q->words.v[i], "-m") || !strcmp(q->words.v[i], "-F")) {
+			if (!msg)
+				strbuf_addf(&sb, " -m %s", quoted(q->msg.buf));
+			msg = 1;
+			i++;
+			continue;
+		}
+		if ((int)i == replace_word && !to)
 			continue;
 		/* each word quoted only where the shell needs it, as git shows a command (quote.c) */
 		strbuf_addch(&sb, ' ');
-		sq_quote_buf_pretty(&sb, from && !strcmp(q->words.v[i], from) ? to : q->words.v[i]);
+		sq_quote_buf_pretty(&sb, (int)i == replace_word ? to : q->words.v[i]);
 	}
 	strbuf_addstr(&sb, extra ? extra : "");
 	if (!msg)
 		strbuf_addstr(&sb, " -m <why>");
-	return strbuf_detach(&sb, NULL);
+	return hint_command("%s", sb.buf);
 }
 
-/*
- * spec 2.4, 4.8 (E_STATE): why a contract may not change. The judgments
- * return the reason and its words are here once, as git's push words its
- * REJECT_* reasons in one table (builtin/push.c).
- */
-enum refusal {
-	CHANGE_OK,
-	ENDED,
-	TARGET,
-	IDENTITY,
-	STATE,
-	FULFILMENT,
-	FORCE_PROVIDER
-};
-
+/* The request supplies context and its retry hint; the reason supplies the words. */
 static NORETURN void refuse(struct request_input *q, enum refusal why, struct contract *c, struct contract *old)
 {
-	switch (why) {
-	case ENDED:
-		reject(1, NULL, "not allowed: '%s' has ended", c->id);
-	case TARGET:
-		reject(1, NULL, "not allowed: '%s' targets '%s', which is not current", c->id, c->target);
-	case IDENTITY:
-		reject(1, NULL, "not allowed: '%s' changes its group, kind or creator", c->id);
-	case STATE:
-		reject(1, NULL, "not allowed: '%s' goes from '%s' to '%s'", c->id, old->state, c->state);
-	case FULFILMENT:
-		reject(1, NULL, "fulfilments are recorded only by 'ait fulfill'");
-	case FORCE_PROVIDER:
-		/* the old fulfilments checked the old provider: the change is made without --force */
-		reject(1, command_again(q, "--force", NULL, NULL), "cannot change the provider of '%s' with --force",
-		       c->id);
-	default:
-		BUG("no words for refusal %d", why);
+	const char *b = NULL, *detail = NULL, *hint = NULL;
+
+	if (why == TARGET)
+		b = c->target;
+	else if (why == STATE) {
+		b = old ? old->state : "absent";
+		detail = c->state;
+	} else if (why == FORCE_PROVIDER) {
+		hint = command_again(q, q->force_word, NULL, NULL);
 	}
+	reject(1, hint, "%s", refusal_words(why, c->id, b, detail));
 }
 
 /* spec 1.4, 2.4: cancelled, withdrawn, or a fulfilled drop: it changes no more */
@@ -182,23 +177,12 @@ static int ended(struct contract *c)
 	return !live(c) || (*c->id == 'X' && c->fulfilled.nr);
 }
 
-/* a contract this request changes: its copy, made once; it must not have ended as it stands (2.4) */
-static struct contract *changing(struct request_input *q, struct request_result *r, const char *id)
+/* A candidate owns its lists; no clause can mutate the state it is judged against. */
+static struct contract *contract_copy(struct contract *c)
 {
-	struct string_list_item *item = string_list_lookup(&r->changed, id);
-	struct contract *c;
-	char *err;
+	char *err, *text = contract_text(c);
 
-	if (item && ended(item->util))
-		refuse(q, ENDED, item->util, NULL);
-	if (item)
-		return item->util;
-	c = contract_get(r->at, id);
-	if (ended(c))
-		refuse(q, ENDED, c, NULL);
-	c = contract_parse(contract_text(c), c->path, 0, &err);
-	string_list_insert(&r->changed, id)->util = c;
-	return c;
+	return contract_parse(text, strlen(text), c->path, 1, &err);
 }
 
 /* K, an ID or an alias of this request, of a kind in KINDS ("DOX") */
@@ -209,53 +193,67 @@ static struct contract *contract_arg(struct request_result *r, const char *k, co
 	struct contract *c = contract_after(r, id);
 
 	if (!c || !strchr(kinds, *c->id))
-		reject(128, NULL, "no such contract: '%s'", k);
+		no_contract(k);
 	return c;
 }
 
 /* spec 3.1: a condition file's path is a repository path, and may be under .ait/ */
-static int condition_path_ok(const char *p)
+static void require_condition_path(const char *path)
 {
-	return worktree_path_ok(p, 1);
+	if (!worktree_path_ok(path, 1))
+		reject(128, NULL, "bad path '%s'", path);
 }
 
-/*
- * v14 2.5.2 without inputs: the condition files of FILES, read from the work
- * tree once (6.4.2): a judgment made again uses what step 0 read (6.7.5)
- */
-static struct condition_set *conditions_from_files(struct request_input *q, const char *files)
+/* Conditions and results cross the same length-aware file/YAML boundary (6.4.2, 7.3). */
+static void read_yaml_file(const char *path, const char *what, struct string_list *kv, const char *read_hint)
 {
-	struct string_list paths = STRING_LIST_INIT_DUP;
-	struct string_list_item *item, *read = string_list_lookup(&q->files, files);
-	struct condition_set *set;
+	struct strbuf sb = STRBUF_INIT;
+	char *err;
+
+	if (strbuf_read_file(&sb, path, 0) < 0)
+		reject(128, read_hint, "could not read '%s'", what);
+	if (yaml_parse(sb.buf, sb.len, kv, &err))
+		reject(128, NULL, "bad format: '%s': %s", what, err);
+	strbuf_release(&sb);
+}
+
+/* 6.4.2, 6.7.5: overlapping FILES lists and later judgments share each path's first read. */
+static const struct spec *condition_from_file(struct request_input *q, const char *path)
+{
+	struct string_list_item *read = string_list_lookup(&q->files, path);
+	struct string_list kv = STRING_LIST_INIT_DUP;
+	struct spec *s;
+	char *err;
 
 	if (read)
 		return read->util;
-	set = xcalloc(1, sizeof(*set));
+	/* The template hint only applies to a path the template can be written at. */
+	require_condition_path(path);
+	read_yaml_file(xstrfmt("%s/%s", top, path), path, &kv,
+		       hint_command("ait contract new spec %s exec|prompt", quoted(path)));
+	if (!(s = spec_from(&kv, "", &err)))
+		reject(128, NULL, "bad format: '%s': %s", path, err);
+	string_list_insert(&q->files, path)->util = s;
+	return s;
+}
+
+/* v14 3.2a, 6.4.2: repeated paths count once, in the order they first occur. */
+static struct condition_set *conditions_from_files(struct request_input *q, const char *files)
+{
+	struct string_list paths = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	struct condition_set *set = xcalloc(1, sizeof(*set));
+
 	string_list_split(&paths, files, ",", -1);
 	for_each_string_list_item(item, &paths) {
-		struct strbuf sb = STRBUF_INIT;
-		struct string_list kv = STRING_LIST_INIT_DUP;
-		struct spec *s;
-		char *err;
-		const char *p = item->string;
-
-		/* the template hint only for a path the template can be written at */
-		if (!condition_path_ok(p))
-			reject(128, NULL, "bad path '%s'", p);
-		if (strbuf_read_file(&sb, xstrfmt("%s/%s", top, p), 0) < 0)
-			reject(128, xstrfmt("ait contract new spec %s exec|prompt", quoted(p)), "could not read '%s'", p);
-		if (yaml_parse(sb.buf, &kv, p, &err))
-			reject(128, NULL, "bad format: %s", err);
-		if (!(s = spec_from(&kv, "", &err)))
-			reject(128, NULL, "bad format: '%s': %s", p, err);
+		if (string_list_has_string(&seen, item->string))
+			continue;
+		string_list_insert(&seen, item->string);
 		REALLOC_ARRAY(set->specs, set->nr + 1);
-		set->specs[set->nr++] = *s;
-		free(s);
-		strbuf_release(&sb);
+		set->specs[set->nr++] = *condition_from_file(q, item->string);
 	}
 	string_list_clear(&paths, 0);
-	string_list_insert(&q->files, files)->util = set;
+	string_list_clear(&seen, 0);
 	return set;
 }
 
@@ -270,22 +268,15 @@ static void specs_from_files(struct request_input *q, struct contract *c, const 
 /* scope arguments fixed at T (spec 3.2); "-" keeps what is there */
 static void scopes_arg(struct string_list *into, const char *arg, struct tree *t, int allow_new, int allow_abs)
 {
-	struct string_list args = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
+	char *err;
 
 	if (!strcmp(arg, "-"))
 		return;
 	string_list_clear(into, 0);
-	string_list_split(&args, arg, ",", -1);
-	for_each_string_list_item(item, &args) {
-		char *err, *pinned = scope_pin(item->string, t, &err);
-
-		if (!pinned || !scope_ok(pinned, allow_new, allow_abs))
-			reject(128, NULL, "bad scope: %s", pinned ? xstrfmt("'%s' is not allowed here", item->string) : err);
-		if (unsorted_string_list_has_string(into, pinned))
-			reject(128, NULL, "bad scope: '%s' is given twice", item->string);
-		string_list_append(into, pinned);
-	}
+	string_list_split(into, arg, ",", -1);
+	err = scopes_refusal(into, allow_new, allow_abs, SCOPE_ARGUMENT);
+	if (err || scopes_pin(into, t, NULL, &err))
+		reject(128, NULL, "bad scope: %s", err);
 }
 
 /* the confirmation conditions of 2.3.3: provider, specs, undertakes */
@@ -300,6 +291,19 @@ static char *conditions(struct contract *c)
 	d.condition_id = d.change_id = d.creator = d.state = (char *)"";
 	d.target = (char *)"";
 	return contract_text(&d);
+}
+
+/* The specs and the other confirmation conditions have separate triviality (C68). */
+static char *condition_part(struct contract *c, int specs)
+{
+	struct contract d = *c;
+	struct string_list none = STRING_LIST_INIT_DUP;
+
+	if (specs)
+		d.provider = d.undertakes = none;
+	else
+		d.nspecs = 0;
+	return conditions(&d);
 }
 
 static char *rows(struct contract *c)
@@ -324,7 +328,6 @@ static void stamp(struct request_input *q, struct contract *c, struct contract *
 		c->change_id = xstrdup(q->rid);
 }
 
-
 static struct contract *make(struct request_input *q, struct request_result *r, const char *kind)
 {
 	char id[16];
@@ -341,7 +344,6 @@ static struct contract *make(struct request_input *q, struct request_result *r, 
 		string_list_append(&q->made, id);
 	c = contract_new(kind, q->group ? q->group : "", id);
 	c->creator = xstrdup(agent);
-	string_list_insert(&r->changed, id)->util = c;
 	string_list_append(&r->order, id);
 	return c;
 }
@@ -349,9 +351,106 @@ static struct contract *make(struct request_input *q, struct request_result *r, 
 /* spec 2.4: the drop X targets a D or O judged current */
 static int target_current(struct request_result *r, struct tree *x, struct contract *drop)
 {
-	struct contract *t = contract_after(r, drop->target);
+	struct contract_view view = { r->at, &r->changed };
+	struct contract *t = contract_lookup(&view, drop->target);
 
-	return t && judge(r->at, t, x) == V_CURRENT;
+	return t && judge_view(&view, t, x) == V_CURRENT;
+}
+
+enum change_action {
+	EDIT,
+	CANCEL,
+	DRAFT,
+	RESCOPE,
+	FULFILL,
+	RECORD,
+	WITHDRAW
+};
+
+static int list_is_prefix(const struct string_list *a, const struct string_list *b)
+{
+	size_t i;
+
+	if (a->nr > b->nr)
+		return 0;
+	for (i = 0; i < a->nr; i++)
+		if (strcmp(a->items[i].string, b->items[i].string))
+			return 0;
+	return 1;
+}
+
+/* spec 2.4: one action is judged against the contract immediately before it. */
+static enum refusal change_refusal(struct request_input *q, struct request_result *r,
+				   struct contract *old, struct contract *c,
+				   enum change_action action, int trivial)
+{
+	if (old && ended(old) && !(action == CANCEL && !strcmp(old->state, "cancelled")) &&
+	    !(action == DRAFT && !strcmp(contract_text(old), contract_text(c))))
+		return ENDED;
+	if (old && (strcmp(c->path, old->path) || strcmp(c->kind, old->kind) || strcmp(c->creator, old->creator)))
+		return IDENTITY;
+	if (old && !list_is_prefix(&old->fulfilled, &c->fulfilled))
+		return FULFILMENT;
+	if (c->fulfilled.nr > (old ? old->fulfilled.nr : 0) &&
+	    !(action == RECORD && q->code && string_list_has_string(&r->covered, c->id)))
+		return FULFILMENT;
+	if ((!old && strcmp(c->state, "future")) ||
+	    (old && strcmp(c->state, old->state) &&
+	     !((action == CANCEL || action == DRAFT) && !strcmp(c->state, "cancelled")) &&
+	     !(action == WITHDRAW && *c->id != 'X' && !strcmp(c->state, "withdrawn"))))
+		return STATE;
+	if (*c->id == 'X' && (!old || strcmp(c->target, old->target) || action == FULFILL) &&
+	    !target_current(r, q->code ? q->code : q->x, c))
+		return TARGET;
+	if (old && trivial && strcmp(scopes_join(&c->provider), scopes_join(&old->provider)))
+		return FORCE_PROVIDER;
+	return CHANGE_OK;
+}
+
+static void validate_change(struct request_input *q, struct request_result *r,
+			    struct contract *old, struct contract *c,
+			    enum change_action action, int trivial)
+{
+	enum refusal why = change_refusal(q, r, old, c, action, trivial);
+
+	if (why)
+		refuse(q, why, c, old);
+}
+
+/* 2.3.3, C68: the final difference from T takes IDs according to its own clauses. */
+static void publish_change(struct request_input *q, struct request_result *r,
+			   struct contract *old, struct contract *c,
+			   enum change_action action, int trivial)
+{
+	struct contract *at = contract_get(r->at, c->id);
+	int trivial_conditions;
+
+	if (action == RESCOPE)
+		string_list_insert(&r->reopened, c->id);
+	if (at && !strcmp(condition_part(c, 1), condition_part(at, 1)))
+		string_list_remove(&r->normal_specs, c->id, 0);
+	else if (!trivial && old && strcmp(condition_part(c, 1), condition_part(old, 1)))
+		string_list_insert(&r->normal_specs, c->id);
+	trivial_conditions = (action == DRAFT && trivial) ||
+		(at && !string_list_has_string(&r->normal_specs, c->id) &&
+		 !strcmp(condition_part(c, 0), condition_part(at, 0)));
+	c->condition_id = at ? at->condition_id : (char *)"";
+	c->change_id = at ? at->change_id : (char *)"";
+	stamp(q, c, at, trivial_conditions);
+	if (string_list_has_string(&r->reopened, c->id)) {
+		c->condition_id = xstrdup(q->rid);
+		c->change_id = xstrdup(q->rid);
+	}
+	string_list_insert(&r->changed, c->id)->util = c;
+}
+
+/* Clauses validate immediately; staged drafts first publish the complete batch. */
+static void accept_change(struct request_input *q, struct request_result *r,
+			  struct contract *old, struct contract *c,
+			  enum change_action action, int trivial)
+{
+	validate_change(q, r, old, c, action, trivial);
+	publish_change(q, r, old, c, action, trivial);
 }
 
 /* spec 6.4: the clause verbs, the one list the grammar and the reserved words come from */
@@ -402,7 +501,7 @@ static void alias_ok(const char *name, struct string_list *seen)
 /* the next word of a clause; only amend's "-" starts with '-' (v14 7.3.1) */
 static const char *word(int argc, const char **argv, int *i)
 {
-	if (*i >= argc || (*argv[*i] == '-' && strcmp(argv[*i], "-")))
+	if (*i >= argc || *argv[*i] == '-')
 		reject(129, NULL, "a clause is cut short");
 	return argv[(*i)++];
 }
@@ -439,11 +538,18 @@ static int read_clauses(struct request_input *q, int argc, const char **argv)
 			cl->partial = 1;
 			i++;
 		}
-		while (cl->nargs < v->words)
-			cl->args[cl->nargs++] = word(argc, argv, &i);
+		while (cl->nargs < v->words) {
+			int at = i;
+			const char *value = word(argc, argv, &i);
+
+			cl->arg_words[cl->nargs] = q->word_index[at];
+			cl->args[cl->nargs++] = value;
+		}
 		/* v14 7.3.1: amend K takes up to three more words; none is the empty amend */
-		while (!strcmp(w, "amend") && i < argc && cl->nargs < 4 && !clause_word(argv[i]))
+		while (!strcmp(w, "amend") && i < argc && cl->nargs < 4 && !clause_word(argv[i])) {
+			cl->arg_words[cl->nargs] = q->word_index[i];
 			cl->args[cl->nargs++] = argv[i++];
+		}
 		if (v->named && i + 1 < argc && !strcmp(argv[i], "as")) {
 			alias_ok(cl->as = argv[i + 1], &aliases);
 			i += 2;
@@ -467,13 +573,16 @@ static void remove_id(struct string_list *l, const char *id)
 /* spec 6.4.1: the clauses applied in order to the branch at T */
 static void apply_clauses(struct request_input *q, struct request_result *r)
 {
-	struct tree *pin_at = head ? tree_load(head) : tree_load(EMPTY_TREE);
+	struct tree *h = tree_load(head ? head : EMPTY_TREE);
 	size_t n;
 
 	for (n = 0; n < q->nclauses; n++) {
 		struct clause *cl = &q->clauses[n];
+		struct tree *pin_at = cl->future ? h : q->x;
 		const char **a = cl->args;
-		struct contract *c, *d, *o;
+		struct contract *c, *old = NULL, *d;
+		enum change_action action = EDIT;
+		int trivial = 0;
 
 		if (!strcmp(cl->verb, "demand") || !strcmp(cl->verb, "offer")) {
 			int demand = !strcmp(cl->verb, "demand");
@@ -482,108 +591,170 @@ static void apply_clauses(struct request_input *q, struct request_result *r)
 			if (demand)
 				scopes_arg(&c->consumer, a[0], pin_at, 1, 0);
 			scopes_arg(&c->provider, a[demand], pin_at, 1, 1);
+			string_list_insert(&r->provider_words, c->id)->util = &cl->arg_words[demand];
 			specs_from_files(q, c, a[demand + 1]);
-			if (cl->as)
-				string_list_insert(&r->alias, cl->as)->util = xstrdup(c->id);
 		} else if (!strcmp(cl->verb, "drop")) {
-			struct contract *t = contract_arg(r, a[0], "DO");
-
+			d = contract_arg(r, a[0], "DO");
 			c = make(q, r, "drop");
-			c->target = xstrdup(t->id);
-			if (cl->as)
-				string_list_insert(&r->alias, cl->as)->util = xstrdup(c->id);
+			c->target = xstrdup(d->id);
 		} else if (!strcmp(cl->verb, "amend")) {
 			int more = cl->nargs - 1;
 
-			c = contract_arg(r, a[0], "DOX");
+			old = contract_arg(r, a[0], "DOX");
 			/* v14 7.3.1: D takes A B FILES, O takes B FILES, X takes K */
-			if (more && more != (*c->id == 'D' ? 3 : *c->id == 'O' ? 2 : 1))
-				reject(129, NULL, "amend '%s' takes %s", c->id,
-				       *c->id == 'D' ? "A B FILES" : *c->id == 'O' ? "B FILES" : "the target");
-			c = changing(q, r, c->id);
+			if (more && more != (*old->id == 'D' ? 3 : *old->id == 'O' ? 2 : 1))
+				reject(129, NULL, "amend '%s' takes %s", old->id,
+				       *old->id == 'D' ? "A B FILES" : *old->id == 'O' ? "B FILES" : "the target");
+			c = contract_copy(old);
 			if (*c->id == 'X' && more) {
-				c->target = xstrdup(contract_arg(r, a[1], "DO")->id);
+				if (strcmp(a[1], "-"))
+					c->target = xstrdup(contract_arg(r, a[1], "DO")->id);
 			} else if (more) {
 				if (*c->id == 'D')
 					scopes_arg(&c->consumer, a[1], pin_at, 1, 0);
 				scopes_arg(&c->provider, a[more - 1], pin_at, 1, 1);
+				if (strcmp(a[more - 1], "-"))
+					string_list_insert(&r->provider_words, c->id)->util = &cl->arg_words[more - 1];
 				if (strcmp(a[more], "-"))
 					specs_from_files(q, c, a[more]);
 			}
-			if (cl->future && q->future_force)
-				string_list_insert(&r->trivial, c->id);
-			/* an empty amend reopens: both IDs move (6.4.1) */
-			if (!more) {
-				c->condition_id = xstrdup(q->rid);
-				c->change_id = xstrdup(q->rid);
-			}
+			trivial = cl->future && q->force;
+			/* an empty amend explicitly reopens, even if later rows return to T */
+			if (!more)
+				string_list_insert(&r->reopened, c->id);
 		} else if (!strcmp(cl->verb, "cancel")) {
-			c = contract_arg(r, a[0], "DOX");
-			if (strcmp(c->state, "cancelled"))
-				changing(q, r, c->id)->state = xstrdup("cancelled");
-			continue;
+			old = contract_arg(r, a[0], "DOX");
+			c = contract_copy(old);
+			c->state = xstrdup("cancelled");
+			action = CANCEL;
 		} else {
 			d = contract_arg(r, a[0], "D");
-			o = contract_arg(r, a[1], "O");
-			if (!strcmp(cl->verb, "undertake") && ended(d))
-				refuse(q, ENDED, d, NULL);
-			o = changing(q, r, o->id);
-			remove_id(&o->undertakes, d->id);
-			remove_id(&o->partially, d->id);
+			old = contract_arg(r, a[1], "O");
 			if (!strcmp(cl->verb, "undertake"))
-				string_list_append(cl->partial ? &o->partially : &o->undertakes, d->id);
-			continue;
+				validate_change(q, r, d, d, EDIT, 0);
+			c = contract_copy(old);
+			remove_id(&c->undertakes, d->id);
+			remove_id(&c->partially, d->id);
+			if (!strcmp(cl->verb, "undertake"))
+				string_list_append(cl->partial ? &c->partially : &c->undertakes, d->id);
 		}
-		if (!cl->future)
+		accept_change(q, r, old, c, action, trivial);
+		if (cl->as)
+			string_list_insert(&r->alias, cl->as)->util = xstrdup(c->id);
+		if (!cl->future && (!strcmp(cl->verb, "demand") || !strcmp(cl->verb, "offer") || !strcmp(cl->verb, "amend")))
 			string_list_insert(&r->fulfil, c->id);
 	}
 }
 
+/* An alias in the original command will name its new contract again on replay. */
+static const char *request_name(struct request_result *r, const char *id)
+{
+	struct string_list_item *item;
 
-/* spec 4.10: the hint that extends this request so the violation V it would add goes */
-static char *violation_hint(struct checkin *ck, struct violation *v)
+	for_each_string_list_item(item, &r->alias)
+		if (!strcmp(item->util, id))
+			return item->string;
+	return id;
+}
+
+/* spec 4.10: repair the initial violations and any pairs the repair would reopen. */
+static char *violation_hint(struct checkin *ck, struct string_list *violations)
 {
 	struct request *req = ck->data;
 	struct request_input *q = &req->input;
 	struct request_result *r = &req->result;
+	struct contract_view view = { r->at, &r->changed };
+	struct string_list fixes = STRING_LIST_INIT_DUP, reopened = STRING_LIST_INIT_DUP;
+	struct strvec pending = STRVEC_INIT;
 	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
+	struct string_list_item *item, *o;
+	char *hint = NULL;
+	size_t i;
 
-	/* a pair: what stands fulfilled is reopened; a mix: the other side, the offers that held D at T, released */
-	if (v->kind == PAIR)
-		strbuf_addf(&sb, " future amend %s", v->a);
-	else
-		for_each_string_list_item(item, &r->at->contracts)
-			if (live(item->util) && holds(item->util, v->a) && !string_list_lookup(&r->changed, item->string))
-				strbuf_addf(&sb, " release %s %s", v->a, item->string);
-	return command_again(q, NULL, NULL, sb.buf);
+	for_each_string_list_item(item, violations) {
+		struct violation *v = item->util;
+
+		if (v->kind == PAIR) {
+			strvec_push(&pending, v->a);
+		} else {
+			struct string_list opposite = STRING_LIST_INIT_DUP;
+
+			undertakings(&view, contract_after(r, v->a), v->kind == MIX_WHOLLY ? 'w' : 'p', &opposite);
+			for_each_string_list_item(o, &opposite) {
+				struct contract *c = o->util;
+
+				/* Rule 7 restricts advice, not the user's explicit release commands. */
+				if (strcmp(c->creator, agent)) {
+					string_list_clear(&opposite, 0);
+					goto done;
+				}
+				string_list_insert(&fixes, xstrfmt("release %s %s", request_name(r, v->a),
+							 request_name(r, o->string)));
+				if (v->kind == MIX_WHOLLY && (has_valid_fulfilment(r->at, c) ||
+				    string_list_has_string(&r->covered, c->id)))
+					strvec_push(&pending, c->id);
+			}
+			string_list_clear(&opposite, 0);
+		}
+	}
+	for (i = 0; i < pending.nr; i++) {
+		struct contract *c = contract_after(r, pending.v[i]);
+		struct string_list dependants = STRING_LIST_INIT_DUP;
+
+		if (string_list_has_string(&reopened, c->id))
+			continue;
+		/* Reopening cannot undo a scheduled fulfilment; =SCOPES gets a future-only preparation. */
+		if (!q->scopes.nr && string_list_has_string(&r->covered, c->id))
+			goto done;
+		string_list_insert(&reopened, c->id);
+		string_list_insert(&fixes, xstrfmt("future amend %s", request_name(r, c->id)));
+		undertakings(&view, c, !strcmp(c->kind, "demand") ? 'w' : 'p', &dependants);
+		for_each_string_list_item(o, &dependants)
+			if (has_valid_fulfilment(r->at, o->util) || string_list_has_string(&r->covered, o->string))
+				strvec_push(&pending, o->string);
+		string_list_clear(&dependants, 0);
+	}
+	/* fulfill accepts IDs, not repair clauses. */
+	if (!q->scopes.nr && !strcmp(q->words.v[0], "fulfill"))
+		goto done;
+	if (q->scopes.nr) {
+		strbuf_addstr(&sb, "ait");
+		for_each_string_list_item(item, &q->scopes) {
+			struct contract *c = contract_after(r, item->string);
+
+			strbuf_addf(&sb, " future amend %s%s %s -", c->id,
+				    !strcmp(c->kind, "demand") ? " -" : "", quoted(item->util));
+		}
+	}
+	for_each_string_list_item(item, &fixes)
+		strbuf_addf(&sb, " %s", item->string);
+	if (q->scopes.nr) {
+		strbuf_addf(&sb, " -m %s", quoted(q->msg.buf));
+		hint = hint_command("%s", sb.buf);
+	} else {
+		hint = command_again(q, -1, NULL, sb.buf);
+	}
+done:
+	strvec_clear(&pending);
+	string_list_clear(&reopened, 0);
+	string_list_clear(&fixes, 0);
+	strbuf_release(&sb);
+	return hint;
 }
 
 /* spec 6.7.2: the covered set of K, judged in X */
 static void cover(struct request_result *r, struct tree *x, struct contract *k, struct string_list *out)
 {
+	struct contract_view v = { r->at, &r->changed };
+	struct string_list needs = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
 	string_list_insert(out, k->id);
-	if (!strcmp(k->kind, "offer")) {
-		for_each_string_list_item(item, &k->undertakes)
-			if (live(contract_after(r, item->string)))
-				string_list_insert(out, item->string);
-	} else if (!strcmp(k->kind, "demand")) {
-		/* the offers at T and those this request makes */
-		struct string_list ids = STRING_LIST_INIT_DUP;
-
-		for_each_string_list_item(item, &r->at->contracts)
-			string_list_insert(&ids, item->string);
-		for_each_string_list_item(item, &r->order)
-			string_list_insert(&ids, item->string);
-		for_each_string_list_item(item, &ids) {
-			struct contract *o = contract_after(r, item->string);
-
-			if (live(o) && holds(o, k->id) == 'p' && judge(r->at, o, x) != V_CURRENT)
-				string_list_insert(out, o->id);
-		}
-	}
+	dependencies(&v, k, &needs);
+	for_each_string_list_item(item, &needs)
+		if (!strcmp(k->kind, "offer") || judge_view(&v, item->util, x) != V_CURRENT)
+			string_list_insert(out, item->string);
+	string_list_clear(&needs, 0);
 }
 
 static char *task_of(const char *id, size_t n)
@@ -602,49 +773,195 @@ static const char *task_id(struct request_result *r, const char *id)
 	return id;
 }
 
-/* spec 7.2 (C39): the environment definition, read from the code at HEAD, its lines under "environment:" */
-static void environment_out(struct strbuf *sb, const char *name)
+/* Environment strings and argv share one flow-list writer and scalar boundary. */
+static char *environment_list(struct strbuf *sb, struct string_list *kv, const char *key, int nonempty)
 {
-	char *path = xstrfmt("specs/environments/%s.yaml", name), *text;
-	struct string_list lines = STRING_LIST_INIT_DUP;
 	size_t i;
 
-	if (!head || !(text = object(xstrfmt("%s:%s", head, path), 1, NULL, NULL)))
-		reject(128, NULL, "could not read '%s' at HEAD", path);
-	strbuf_addstr(sb, "  environment:\n");
-	string_list_split(&lines, text, "\n", -1);
-	for (i = 0; i < lines.nr && (i + 1 < lines.nr || *lines.items[i].string); i++)
-		strbuf_addf(sb, "%s%s\n", *lines.items[i].string ? "    " : "", lines.items[i].string);
+	if (ykind(kv, key) != 'l' || (nonempty && !yget(kv, xstrfmt("%s.0", key))))
+		return yaml_refusal(kv, key, "'%s' %s", key, nonempty ? "is not a nonempty argv list" : "is not a string list");
+	strbuf_addch(sb, '[');
+	for (i = 0; yget(kv, xstrfmt("%s.%d", key, (int)i)); i++) {
+		char *element = xstrfmt("%s.%d", key, (int)i);
+
+		if (ykind(kv, element))
+			return yaml_refusal(kv, element, "'%s' is not a string", element);
+		if (i)
+			strbuf_addstr(sb, ", ");
+		yaml_out_scalar(sb, yget(kv, element));
+	}
+	strbuf_addstr(sb, "]\n");
+	return NULL;
 }
 
-/* what makes a result template the same one (7.4): its condition-ids and its tasks, in order */
-static char *template_key(const char *text)
+static char *environment_commands(struct strbuf *sb, struct string_list *kv, const char *key)
 {
-	struct string_list kv = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	struct strbuf sb = STRBUF_INIT;
+	size_t i;
 	char *err;
 
-	if (yaml_parse(text, &kv, "", &err))
-		return xstrdup("");
-	for_each_string_list_item(item, &kv)
-		if (starts_with(item->string, "condition-ids.") ||
-		    (starts_with(item->string, "results.") && ends_with(item->string, ".task")))
-			strbuf_addf(&sb, "%s=%s\n", item->string, yget(&kv, item->string));
-	return strbuf_detach(&sb, NULL);
+	if (!yget(kv, key))
+		return NULL;
+	if (ykind(kv, key) != 'l')
+		return yaml_refusal(kv, key, "'%s' is not a list of argv lists", key);
+	strbuf_addf(sb, "    %s:%s\n", key, yget(kv, xstrfmt("%s.0", key)) ? "" : " []");
+	for (i = 0; yget(kv, xstrfmt("%s.%d", key, (int)i)); i++) {
+		strbuf_addstr(sb, "    - ");
+		if ((err = environment_list(sb, kv, xstrfmt("%s.%d", key, (int)i), 1)))
+			return err;
+	}
+	return NULL;
+}
+
+/* spec 7.2 and v14 2.5.3: validate HEAD's environment and emit its parsed values. */
+static char *environment_out(struct strbuf *sb, const char *name)
+{
+	static const char *const keys[] = { "cwd", "timeout_ms", "env", "prepare", "cleanup", NULL };
+	static const char *const env_keys[] = { "inherit", "set", "required", NULL };
+	char *path = xstrfmt("specs/environments/%s.yaml", name), *text, *err;
+	struct string_list kv = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	const char *value;
+	size_t len;
+	int i;
+
+	if (!head || !(text = object(xstrfmt("%s:%s", head, path), 1, NULL, &len)))
+		return xstrfmt("could not read '%s' at HEAD", path);
+	if (yaml_parse(text, len, &kv, &err))
+		goto bad_format;
+	if ((err = keys_refusal(&kv, "", keys, 0)))
+		goto bad_format;
+	strbuf_addf(sb, "  environment:%s\n", kv.nr == 1 ? " {}" : "");
+	if ((value = yget(&kv, "cwd"))) {
+		if (ykind(&kv, "cwd")) {
+			err = yaml_refusal(&kv, "cwd", "'cwd' is not a string");
+			goto bad_format;
+		}
+		strbuf_addstr(sb, "    cwd: ");
+		yaml_out_scalar(sb, value);
+		strbuf_addch(sb, '\n');
+	}
+	if ((value = yget(&kv, "timeout_ms"))) {
+		if (ykind(&kv, "timeout_ms") || !*value || value[strspn(value, "0123456789")]) {
+			err = yaml_refusal(&kv, "timeout_ms", "'timeout_ms' is not a decimal integer");
+			goto bad_format;
+		}
+		strbuf_addf(sb, "    timeout_ms: %s\n", value);
+	}
+	if (yget(&kv, "env")) {
+		if (ykind(&kv, "env") != 'm') {
+			err = yaml_refusal(&kv, "env", "'env' is not a map");
+			goto bad_format;
+		}
+		if ((err = keys_refusal(&kv, "env", env_keys, 0)))
+			goto bad_format;
+		strbuf_addf(sb, "    env:%s\n", yget(&kv, "env.inherit") || yget(&kv, "env.set") || yget(&kv, "env.required") ? "" : " {}");
+		for (i = 0; env_keys[i]; i++) {
+			char *key = xstrfmt("env.%s", env_keys[i]);
+
+			if (!yget(&kv, key))
+				continue;
+			if (strcmp(env_keys[i], "set")) {
+				strbuf_addf(sb, "      %s: ", env_keys[i]);
+				if ((err = environment_list(sb, &kv, key, 0)))
+					goto bad_format;
+				continue;
+			}
+			if (ykind(&kv, key) != 'm') {
+				err = yaml_refusal(&kv, key, "'%s' is not a map of strings", key);
+				goto bad_format;
+			}
+			strbuf_addstr(sb, "      set:");
+			value = NULL;
+			for_each_string_list_item(item, &kv) {
+				const char *encoded;
+				char *decoded;
+
+				if (!skip_prefix(item->string, "env.set.", &encoded))
+					continue;
+				if (ykind(&kv, item->string)) {
+					err = yaml_refusal(&kv, item->string, "'%s' is not a string", item->string);
+					goto bad_format;
+				}
+				if (!value)
+					strbuf_addch(sb, '\n');
+				value = yget(&kv, item->string);
+				decoded = yaml_key_decode(encoded);
+				strbuf_addstr(sb, "        ");
+				yaml_out_scalar(sb, decoded);
+				strbuf_addstr(sb, ": ");
+				yaml_out_scalar(sb, value);
+				strbuf_addch(sb, '\n');
+				free(decoded);
+			}
+			if (!value)
+				strbuf_addstr(sb, " {}\n");
+		}
+	}
+	if ((err = environment_commands(sb, &kv, "prepare")) || (err = environment_commands(sb, &kv, "cleanup")))
+		goto bad_format;
+	return NULL;
+bad_format:
+	return xstrfmt("bad format: '%s': %s", path, err);
+}
+
+/* spec 7.3: the existing covered contracts have exactly these condition-ids at T. */
+static int conditions_changed(struct request_result *r, struct string_list *kv)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, kv) {
+		const char *id;
+
+		if (skip_prefix(item->string, "condition-ids.", &id) &&
+		    (!string_list_has_string(&r->covered, id) || strcmp(task_id(r, id), id)))
+			return 1;
+	}
+	for_each_string_list_item(item, &r->covered) {
+		const char *got = yget(kv, xstrfmt("condition-ids.%s", item->string));
+
+		if (!strcmp(task_id(r, item->string), item->string) &&
+		    (!got || strcmp(got, condition_at_t(r->at, item->string))))
+			return 1;
+	}
+	return 0;
+}
+
+/* spec 7.4: map order is irrelevant, but task positions remain part of the template identity. */
+static int template_same(struct request_result *r, struct string_list *kv)
+{
+	struct string_list_item *item;
+	size_t n, position = 0;
+
+	if (ykind(kv, "condition-ids") != 'm' || conditions_changed(r, kv) || ykind(kv, "results") != 'l')
+		return 0;
+	for_each_string_list_item(item, &r->covered) {
+		struct contract *c = contract_after(r, item->string);
+
+		for (n = 0; n < c->nspecs; n++) {
+			char *key = xstrfmt("results.%d.task", (int)position++);
+			const char *task = yget(kv, key);
+
+			if (!task || ykind(kv, key) || strcmp(task, task_of(task_id(r, c->id), n)))
+				return 0;
+		}
+	}
+	return !yget(kv, xstrfmt("results.%d", (int)position));
 }
 
 /* spec 7.2: the check request and the result template, unless the template is already this one */
-static void write_check_files(struct request_input *q, struct request_result *r)
+static char *write_check_files(struct request_input *q, struct request_result *r, struct string_list *input)
 {
 	struct strbuf req = STRBUF_INIT, res = STRBUF_INIT, ids = STRBUF_INIT, old = STRBUF_INIT;
+	struct strbuf task_lines = STRBUF_INIT;
+	struct string_list environments = STRING_LIST_INIT_DUP, previous = STRING_LIST_INIT_DUP;
+	struct string_list *existing = &previous;
 	struct string_list_item *item;
-	char *dir = xstrfmt("%s/ait", gitdir), *rq = xstrfmt("%s/check-request.yaml", dir),
-	     *rs = xstrfmt("%s/check-result.yaml", dir);
+	char *dir = worktree_state_dir(), *rq = xstrfmt("%s/check-request.yaml", dir),
+	     *rs = xstrfmt("%s/check-result.yaml", dir), *err;
+	struct stat supplied, stored;
 	size_t n;
 	int tasks = 0;
 
-	mkdir(dir, 0777);
 	for_each_string_list_item(item, &r->covered)
 		if (!strcmp(task_id(r, item->string), item->string))
 			strbuf_addf(&ids, "  %s: \"%s\"\n", item->string, condition_at_t(r->at, item->string));
@@ -657,7 +974,7 @@ static void write_check_files(struct request_input *q, struct request_result *r)
 			struct spec *s = &c->specs[n];
 			char *task = task_of(task_id(r, c->id), n);
 
-			printf("task %s\n", task);
+			strbuf_addf(&task_lines, "task %s\n", task);
 			tasks++;
 			strbuf_addf(&req, "- task: \"%s\"\n  contract: \"%s\"\n  kind: \"%s\"\n", task, task_id(r, c->id), c->kind);
 			if (!strcmp(c->kind, "demand")) {
@@ -670,71 +987,104 @@ static void write_check_files(struct request_input *q, struct request_result *r)
 			strbuf_addf(&req, "\n  engine: \"%s\"\n  body: ", s->engine ? "exec" : "prompt");
 			yaml_out_body(&req, s->body, "    ");
 			if (s->engine)
-				spec_lists(&req, s, 1);
-			if (s->environment)
-				environment_out(&req, s->environment);
+				spec_lists(&req, s);
+			if (s->environment) {
+				struct string_list_item *env = string_list_lookup(&environments, s->environment);
+
+				if (!env) {
+					struct strbuf text = STRBUF_INIT;
+
+					if ((err = environment_out(&text, s->environment)))
+						return err;
+					env = string_list_insert(&environments, s->environment);
+					env->util = strbuf_detach(&text, NULL);
+				}
+				strbuf_addstr(&req, env->util);
+			}
 			strbuf_addf(&res, "- task: \"%s\"\n  outcome:\n  basis: |\n  reason:\n", task);
 		}
 	}
 	if (!tasks)
-		return;
+		return NULL;
 	write_state(rq, req.buf);
 	/* 7.4: a template with these condition-ids and tasks stays, filled or not */
-	if (strbuf_read_file(&old, rs, 0) < 0 || strcmp(template_key(old.buf), template_key(res.buf)))
+	if (input && !stat(q->result, &supplied) && !stat(rs, &stored) &&
+	    supplied.st_dev == stored.st_dev && supplied.st_ino == stored.st_ino)
+		existing = input;
+	else if (strbuf_read_file(&old, rs, 0) < 0 || yaml_parse(old.buf, old.len, &previous, &err))
+		existing = NULL;
+	if (!existing || !template_same(r, existing))
 		write_state(rs, res.buf);
+	fputs(task_lines.buf, stdout);
 	printf("request %s\nresult %s\n", rq, rs);
 	reject(1, xstrfmt("check each task, fill '%s', and rerun with -r %s\n"
 			  "if it is trivial, add --force instead (recorded as forced)", rs, quoted(rs)),
 	       "check results required: %d task(s)", tasks);
 }
 
-/* spec 7.3: the result file against the covered set; each task's block kept for its fulfilment */
-static void read_results(struct request_input *q, struct request_result *r)
+static NORETURN void result_bad(struct request_input *q, const char *why)
 {
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list kv = STRING_LIST_INIT_DUP, want = STRING_LIST_INIT_DUP, failed = STRING_LIST_INIT_DUP;
+	reject(128, NULL, "bad format: '%s': %s", q->result, why);
+}
+
+/* spec 7.3, v14 8.4: read once, then compare input identity before providers or task contents. */
+static int read_result_input(struct request_input *q, struct request_result *r, struct string_list *kv)
+{
+	read_yaml_file(q->result, q->result, kv, NULL);
+	if (ykind(kv, "condition-ids") != 'm')
+		result_bad(q, yaml_refusal(kv, "condition-ids", "'condition-ids' is missing or not a map"));
+	return conditions_changed(r, kv);
+}
+
+/* v14 8.4: after matching input and located providers, retain each task's accepted result. */
+static void check_results(struct request_input *q, struct request_result *r, struct string_list *kv)
+{
+	static const char *const keys[] = { "condition-ids", "results", NULL },
+		*const fields[] = { "task", "outcome", "basis", "reason", NULL };
+	struct string_list want = STRING_LIST_INIT_DUP, failed = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	char *err, *fix = xstrfmt("fix '%s': every task needs an outcome (pass, fail or unknown), and a pass needs a basis",
-				  q->result);
+	char *err;
 	size_t n;
 	int i;
 
-	if (strbuf_read_file(&sb, q->result, 0) < 0)
-		reject(128, NULL, "could not read '%s'", q->result);
-	if (yaml_parse(sb.buf, &kv, q->result, &err))
-		reject(128, NULL, "bad format: %s", err);
-	/* 7.3: the condition-ids are those of the covered contracts at T, none missing, none more; else a new template */
-	for_each_string_list_item(item, &kv) {
-		const char *id;
-
-		if (skip_prefix(item->string, "condition-ids.", &id) &&
-		    (!string_list_has_string(&r->covered, id) || strcmp(task_id(r, id), id)))
-			write_check_files(q, r);
-	}
 	for_each_string_list_item(item, &r->covered) {
 		struct contract *c = contract_after(r, item->string);
-		const char *got = yget(&kv, xstrfmt("condition-ids.%s", item->string));
 
-		if (!strcmp(task_id(r, c->id), c->id) && (!got || strcmp(got, condition_at_t(r->at, c->id))))
-			write_check_files(q, r);
 		for (n = 0; n < c->nspecs; n++)
 			string_list_insert(&want, task_of(task_id(r, c->id), n));
 	}
-	for (i = 0; yget(&kv, xstrfmt("results.%d", i)); i++) {
-		const char *task = yget(&kv, xstrfmt("results.%d.task", i)),
-			   *outcome = yget(&kv, xstrfmt("results.%d.outcome", i)),
-			   *basis = yget(&kv, xstrfmt("results.%d.basis", i)),
-			   *reason = yget(&kv, xstrfmt("results.%d.reason", i));
+	if ((err = keys_refusal(kv, "", keys, 0)))
+		result_bad(q, err);
+	if (ykind(kv, "results") != 'l')
+		result_bad(q, yaml_refusal(kv, "results", "'results' is missing or not a list"));
+	for (i = 0; yget(kv, xstrfmt("results.%d", i)); i++) {
+		char *prefix = xstrfmt("results.%d", i);
+		const char *task = yget(kv, xstrfmt("results.%d.task", i)),
+			   *outcome = yget(kv, xstrfmt("results.%d.outcome", i)),
+			   *basis = yget(kv, xstrfmt("results.%d.basis", i)),
+			   *reason = yget(kv, xstrfmt("results.%d.reason", i));
 		struct strbuf block = STRBUF_INIT;
 
+		if (ykind(kv, prefix) != 'm')
+			result_bad(q, yaml_refusal(kv, prefix, "a result is not a map"));
+		if ((err = keys_refusal(kv, prefix, fields, 0)))
+			result_bad(q, err);
+		for (n = 0; fields[n]; n++) {
+			char *key = xstrfmt("%s.%s", prefix, fields[n]);
+			char kind = ykind(kv, key);
+
+			if (yget(kv, key) && kind && kind != '?')
+				result_bad(q, yaml_refusal(kv, key, "'%s' is not a scalar", fields[n]));
+		}
 		if (!task || !string_list_has_string(&want, task) || string_list_has_string(&q->results, task))
-			reject(128, fix, "bad format: '%s': task '%s' is unknown or given twice", q->result, task ? task : "");
-		if (!outcome || (strcmp(outcome, "pass") && strcmp(outcome, "fail") && strcmp(outcome, "unknown")) ||
-		    (!strcmp(outcome, "pass") && (!basis || !*basis)))
-			reject(128, fix, "bad format: '%s': task '%s' has no outcome or basis", q->result, task);
+			result_bad(q, yaml_refusal(kv, xstrfmt("%s.task", prefix), "task '%s' is unknown or given twice", task ? task : ""));
+		if (!outcome || (strcmp(outcome, "pass") && strcmp(outcome, "fail") && strcmp(outcome, "unknown")))
+			result_bad(q, yaml_refusal(kv, xstrfmt("%s.outcome", prefix), "task '%s' has no valid outcome", task));
+		if (!strcmp(outcome, "pass") && (!basis || !*basis))
+			result_bad(q, yaml_refusal(kv, xstrfmt("%s.basis", prefix), "task '%s' has no basis", task));
 		if (strcmp(outcome, "pass"))
 			string_list_append(&failed, task);
-		strbuf_addf(&block, "- task: %s\n  outcome: %s\n  basis: ", task, outcome);
+		strbuf_addf(&block, "  outcome: %s\n  basis: ", outcome);
 		yaml_out_body(&block, basis ? basis : "", "    ");
 		if (reason && *reason) {
 			strbuf_addstr(&block, "  reason: ");
@@ -744,41 +1094,63 @@ static void read_results(struct request_input *q, struct request_result *r)
 	}
 	for_each_string_list_item(item, &want)
 		if (!string_list_has_string(&q->results, item->string))
-			reject(128, fix, "bad format: '%s': task '%s' is missing", q->result, item->string);
+			result_bad(q, yaml_refusal(kv, "results", "task '%s' is missing", item->string));
 	if (failed.nr) {
 		for_each_string_list_item(item, &failed)
 			fprintf(stderr, "%s\n", item->string);
-		reject(1, "make the code meet the failed task(s) and stage it, then rerun without -r",
-		       "check failed: %d task(s)", (int)failed.nr);
+		reject(1, NULL, "check failed: %d task(s)", (int)failed.nr);
 	}
 }
 
+/* 3.3: repair a parsed provider argument, or name an implicitly covered contract. */
+static char *concrete_hint(struct request_input *q, struct request_result *r, struct contract *c)
+{
+	struct string_list_item *at;
+	char *narrowed = xstrfmt("%s=<scope>", c->id);
+
+	if (!strcmp(q->words.v[0], "fulfill")) {
+		at = string_list_lookup(&q->given, c->id);
+		return at ? command_again(q, *(int *)at->util, narrowed, NULL) :
+			command_again(q, -1, NULL, xstrfmt(" %s", quoted(narrowed)));
+	}
+	at = string_list_lookup(&r->provider_words, c->id);
+	if (at)
+		return command_again(q, *(int *)at->util, "<scope>", NULL);
+	if (contract_get(r->at, c->id))
+		return command_again(q, -1, NULL, xstrfmt(" amend %s %s%s -", c->id,
+				     *c->id == 'D' ? "- " : "", quoted("<scope>")));
+	return NULL;
+}
+
 /* spec 6.7.4: every provider scope of C is found in T; the refusal names what is not */
-static void locate_all(struct request_input *q, struct contract *c, struct tree *t)
+static char *locate_all(struct request_input *q, struct request_result *r, struct contract *c, struct tree *t,
+		       char **hint)
 {
 	struct string_list_item *item;
-	char *where;
+	struct scope_location where;
 
+	*hint = NULL;
 	for_each_string_list_item(item, &c->provider)
 		switch (scope_locate(item->string, t, &where)) {
 		case FOUND:
 			break;
 		case ABSTRACT:
 			/* 3.3: the same command, the contract narrowed */
-			reject(128, command_again(q, c->id, xstrfmt("%s=<scope>", c->id), NULL),
-			       "bad scope: '%s' needs concrete scopes to be fulfilled", c->id);
+			*hint = concrete_hint(q, r, c);
+			return xstrfmt("bad scope: '%s' needs concrete scopes to be fulfilled", c->id);
 		case NOBASE:
 			/* the provider given again at this code takes new base blobs */
-			reject(128, xstrfmt("ait future amend %s %s%s - -m <why>", c->id, strcmp(c->kind, "demand") ? "" : "- ",
-					    quoted(scopes_bare(&c->provider))),
-			       "repository lacks the base blob of '%s' ('%s')", c->id, scope_path(item->string));
+			*hint = hint_command("ait future amend %s %s%s - -m <why>", c->id, strcmp(c->kind, "demand") ? "" : "- ",
+					     quoted(scopes_bare(&c->provider)));
+			return xstrfmt("repository lacks the base blob of '%s' ('%s')", c->id, scope_path(item->string));
 		default:
-			reject(128, NULL, "bad scope: '%s' of '%s' is not in the code", item->string, c->id);
+			return xstrfmt("bad scope: '%s' of '%s' is not in the code", item->string, c->id);
 		}
+	return NULL;
 }
 
 /* the names of IDs as messages give them: 'A', 'B' */
-static char *names(struct string_list *ids)
+static char *contract_names(struct string_list *ids)
 {
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
@@ -794,13 +1166,14 @@ static void record(struct request_input *q, struct request_result *r, struct che
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &r->covered) {
-		struct contract *c = changing(q, r, item->string);
+		struct contract *old = contract_after(r, item->string), *c = contract_copy(old);
 		struct fulfilment f = { 0 };
 		struct string_list_item *s;
 		struct strbuf body = STRBUF_INIT;
+		char *err, *hint;
 		size_t n;
 
-		f.path = xstrfmt("%s%sfulfill/%s-%s.md", c->group, *c->group ? "/" : "", c->id, q->rid);
+		f.path = fulfil_path(c, q->rid);
 		f.contract = c->id;
 		f.condition_id = c->condition_id;
 		f.by = xstrdup(agent);
@@ -808,8 +1181,8 @@ static void record(struct request_input *q, struct request_result *r, struct che
 		f.commit = q->commit;
 		f.outcome = xstrdup(!strcmp(c->kind, "drop") ? "withdrawn" : q->force ? "forced" : "pass");
 		string_list_init_dup(&f.code);
-		if (strcmp(c->kind, "drop"))
-			locate_all(q, c, q->code);
+		if ((err = locate_all(q, r, c, q->code, &hint)))
+			reject(128, hint, "%s", err);
 		for_each_string_list_item(s, &c->provider)
 			string_list_insert(&f.code, s->string)->util = code_entry(s->string, q->code);
 		for (n = 0; n < c->nspecs && !q->force; n++) {
@@ -817,74 +1190,24 @@ static void record(struct request_input *q, struct request_result *r, struct che
 
 			/* v14 8.4: a new contract's "+n" becomes its ID */
 			if (result)
-				strbuf_addf(&body, "- task: %s:%d%s", c->id, (int)n + 1,
-					    strchr((char *)result->util, '\n'));
+				strbuf_addf(&body, "- task: %s:%d\n%s", c->id, (int)n + 1, (char *)result->util);
 		}
 		if (q->force || !body.len)
 			strbuf_add(&body, q->msg.buf, q->msg.len);
 		f.body = strbuf_detach(&body, NULL);
 		string_list_append(&c->fulfilled, f.path);
+		accept_change(q, r, old, c, RECORD, 0);
 		string_list_insert(&ck->put, f.path)->util = fulfil_text(&f);
-		if (!strcmp(c->kind, "drop"))
-			changing(q, r, c->target)->state = xstrdup("withdrawn");
 	}
 }
 
-/*
- * spec 2.4, 6.4.1: the reason C, changed from OLD at T (NULL: a new
- * contract), may not stand, or CHANGE_OK. The clauses checked what they
- * change; the drafts of contract commit change anything, so every write
- * path asks here.
- */
-static enum refusal change_refusal(struct request_input *q, struct request_result *r, struct contract *old, struct contract *c)
-{
-	struct string_list_item *item;
-	int withdrawn = 0;
-	size_t k;
-
-	if (*c->id == 'X' && (!old || strcmp(c->target, old->target)) && !target_current(r, q->x, c))
-		return TARGET;
-	for (k = 0; old && k < old->fulfilled.nr; k++)
-		if (k >= c->fulfilled.nr || strcmp(c->fulfilled.items[k].string, old->fulfilled.items[k].string))
-			return FULFILMENT;
-	if (c->fulfilled.nr > (old ? old->fulfilled.nr : 0) && !(q->code && string_list_has_string(&r->covered, c->id)))
-		return FULFILMENT;
-	if (!old)
-		return CHANGE_OK;
-	if (strcmp(c->path, old->path) || strcmp(c->kind, old->kind) || strcmp(c->creator, old->creator))
-		return IDENTITY;
-	for_each_string_list_item(item, &r->covered)
-		withdrawn |= *item->string == 'X' && q->code && !strcmp(contract_after(r, item->string)->target, c->id);
-	if (strcmp(c->state, old->state) && strcmp(c->state, "cancelled") && !(withdrawn && !strcmp(c->state, "withdrawn")))
-		return STATE;
-	/* a trivial change keeps the fulfilments, which checked the old provider */
-	if (string_list_has_string(&r->trivial, c->id) && strcmp(scopes_join(&c->provider), scopes_join(&old->provider)))
-		return FORCE_PROVIDER;
-	return CHANGE_OK;
-}
-
-/* spec 2.3.3: the IDs of every contract the request changed, from T */
-static void stamp_all(struct request_input *q, struct request_result *r)
+/* The validated candidates go into the checkin as their contract files. */
+static void settle(struct request_result *r, struct checkin *ck)
 {
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &r->changed)
-		stamp(q, item->util, contract_get(r->at, item->string), string_list_has_string(&r->trivial, item->string));
-}
-
-/* every contract the request changed takes its transition (2.4) and goes in as its file */
-static void settle(struct request_input *q, struct request_result *r, struct checkin *ck)
-{
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, &r->changed) {
-		struct contract *old = contract_get(r->at, item->string);
-		enum refusal why = change_refusal(q, r, old, item->util);
-
-		if (why)
-			refuse(q, why, item->util, old);
 		string_list_insert(&ck->put, ((struct contract *)item->util)->path)->util = contract_text(item->util);
-	}
 }
 
 /* the judge of a request's checkin: everything again on the tip (spec 4.4-1) */
@@ -893,30 +1216,37 @@ static void request_judge(struct checkin *ck)
 	struct request *req = ck->data;
 	struct request_input *q = &req->input;
 	struct request_result *r = &req->result;
+	struct string_list targets = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 
 	request_result_reset(r, ck->at);
+	/* 2.1.3, 6.7.2: a retry keeps its new IDs, but cannot take an ID another checkin made. */
+	for_each_string_list_item(item, &q->made)
+		if (contract_get(r->at, item->string))
+			checkin_moved(ck);
 	/* the contracts fulfill names exist before anything is done to them */
 	for_each_string_list_item(item, &q->given) {
 		if (!contract_after(r, item->string))
-			reject(128, NULL, "no such contract: '%s'", item->string);
+			no_contract(item->string);
 		string_list_insert(&r->fulfil, item->string);
 	}
 	apply_clauses(q, r);
-	for_each_string_list_item(item, &q->scopes)
-		scopes_arg(&changing(q, r, item->string)->provider, item->util, q->x, 0, 0);
+	for_each_string_list_item(item, &q->scopes) {
+		struct contract *old = contract_after(r, item->string), *c = contract_copy(old);
+
+		scopes_arg(&c->provider, item->util, q->x, 0, 0);
+		accept_change(q, r, old, c, RESCOPE, 0);
+	}
 	for_each_string_list_item(item, &r->fulfil) {
 		struct contract *c = contract_after(r, item->string);
 
-		if (ended(c))
-			refuse(q, ENDED, c, NULL);
-		/* 2.4: a drop is fulfilled while its target is current */
-		if (*c->id == 'X' && !target_current(r, q->x, c))
-			refuse(q, TARGET, c, NULL);
 		cover(r, q->x, c, &r->covered);
 	}
-	/* the IDs first: a fulfilment records its contract's new condition-id */
-	stamp_all(q, r);
+	for_each_string_list_item(item, &r->covered) {
+		struct contract *c = contract_after(r, item->string);
+
+		validate_change(q, r, c, c, FULFILL, 0);
+	}
 	/* 6.7.2: the covered set fixed at step 0, with the condition-ids its results are for, holds to the end */
 	for_each_string_list_item(item, &r->covered)
 		if (q->fixed.nr && (!string_list_lookup(&q->fixed, item->string) ||
@@ -926,7 +1256,22 @@ static void request_judge(struct checkin *ck)
 		checkin_moved(ck);
 	if (q->code)
 		record(q, r, ck);
-	settle(q, r, ck);
+	/* A drop's final state effect is present at step zero, before 4.10 too. */
+	for_each_string_list_item(item, &r->covered) {
+		struct contract *c = contract_after(r, item->string);
+
+		if (*c->id == 'X')
+			string_list_insert(&targets, c->target);
+	}
+	for_each_string_list_item(item, &targets) {
+		struct contract *old = contract_after(r, item->string), *c = contract_copy(old);
+
+		c->state = xstrdup("withdrawn");
+		accept_change(q, r, old, c, WITHDRAW, 0);
+	}
+	string_list_clear(&targets, 0);
+	ck->fulfilling = !q->code && !q->scopes.nr ? &r->covered : NULL;
+	settle(r, ck);
 }
 
 /* spec 6.7.5-3: ait fulfill as given, when the covered contracts are as they were at OLD */
@@ -946,7 +1291,7 @@ static char *retry(struct checkin *ck, const char *old)
 	for_each_string_list_item(item, &r->covered)
 		strvec_push(&args, contract_get(r->at, item->string)->path);
 	git_args(&args, NULL, NULL, &rc);
-	return rc ? NULL : command_again(q, NULL, NULL, NULL);
+	return rc ? NULL : command_again(q, -1, NULL, NULL);
 }
 
 /* spec 6.7.5: judge first, commit the staged code, then check in */
@@ -955,8 +1300,10 @@ static void run_request(struct request *req, int fulfilling)
 	struct checkin ck = { .msg = NULL };
 	struct request_input *q = &req->input;
 	struct request_result *r = &req->result;
+	struct string_list result_input = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	int rc;
+	char *summary, *scope_error = NULL, *scope_hint = NULL, *err;
+	int rc, stale = 0;
 
 	ck.branch = start(START_SESSION | START_WRITES | (fulfilling ? START_FULFILS : 0));
 	q->x = index_tree();
@@ -970,36 +1317,42 @@ static void run_request(struct request *req, int fulfilling)
 		/* step 0: everything judged on T as a checkin judges it (4.10 too), nothing changed */
 		checkin_tip(&ck);
 		checkin_judge(&ck, request_judge);
-		for_each_string_list_item(item, &r->covered)
-			if (strcmp(contract_after(r, item->string)->kind, "drop"))
-				locate_all(q, contract_after(r, item->string), q->x);
-		if (!q->result && !q->force)
-			write_check_files(q, r);
 		if (q->result)
-			read_results(q, r);
+			stale = read_result_input(q, r, &result_input);
+		for_each_string_list_item(item, &r->covered)
+			if ((scope_error = locate_all(q, r, contract_after(r, item->string), q->x, &scope_hint)))
+				break;
+		if (stale) {
+			/* 7.3 wins; v14 8.4 only emits a template when its code and environment are available. */
+			if (!scope_error)
+				write_check_files(q, r, &result_input);
+			reject(1, NULL, "check results required: condition-ids differ");
+		}
+		if (scope_error)
+			reject(128, scope_hint, "%s", scope_error);
+		if (!q->result && !q->force && (err = write_check_files(q, r, NULL)))
+			reject(128, NULL, "%s", err);
+		if (q->result)
+			check_results(q, r, &result_input);
 		for_each_string_list_item(item, &r->covered)
 			string_list_insert(&q->fixed, item->string)->util = xstrdup(condition_at_t(r->at, item->string));
 		/* step 1: the staged code, committed by git */
-		git_run(NULL, NULL, &rc, "diff --cached --quiet");
+		git_run(NULL, NULL, &rc, "diff", "--cached", "--quiet");
 		if (rc) {
-			struct strvec args = STRVEC_INIT;
-
-			/* git's summary line, hooks and errors reach the user as they are (6.7.5-1, 6.7.8) */
-			strvec_pushl(&args, "commit", "-m", q->msg.buf, NULL);
-			if (git_pass(&args))
-				reject(1, NULL, "commit failed; %s not fulfilled", names(&r->covered));
+			if (git_commit(q->msg.buf))
+				reject(1, NULL, "commit failed; %s not fulfilled", contract_names(&r->covered));
 			not_recorded = xstrfmt("committed '%s' but %s not fulfilled",
-					       line1(git("rev-parse --short HEAD")), names(&r->covered));
+					       line1(git("rev-parse", "--short", "HEAD")), contract_names(&r->covered));
 		} else {
 			warning("nothing to commit; recording the code at HEAD ('%s') for %s",
-				line1(git("rev-parse --short HEAD")), names(&r->covered));
-			not_recorded = xstrfmt("%s not fulfilled", names(&r->covered));
+				line1(git("rev-parse", "--short", "HEAD")), contract_names(&r->covered));
+			not_recorded = xstrfmt("%s not fulfilled", contract_names(&r->covered));
 		}
-		snprintf(q->commit, sizeof(q->commit), "%s", line1(git("rev-parse HEAD")));
+		snprintf(q->commit, sizeof(q->commit), "%s", line1(git("rev-parse", "HEAD")));
 		q->code = tree_load(q->commit);
 	}
 	ck.msg = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", q->msg.buf);
-	checkin_run(&ck, request_judge);
+	summary = checkin_run(&ck, request_judge);
 	not_recorded = NULL;
 	for_each_string_list_item(item, &r->order) {
 		struct string_list_item *a;
@@ -1015,7 +1368,16 @@ static void run_request(struct request *req, int fulfilling)
 		if (*item->string == 'X')
 			printf("withdrawn %s\n", contract_after(r, item->string)->target);
 	}
+	checkin_report(summary);
 	request_result_reset(r, NULL);
+}
+
+/* Keep source positions while removing options; later hints use the parsed word's identity. */
+static void positional_word(struct request_input *q, struct strvec *rest, const char *value, int at)
+{
+	REALLOC_ARRAY(q->word_index, rest->nr + 1);
+	q->word_index[rest->nr] = at;
+	strvec_push(rest, value);
 }
 
 /* the options of a request, taken out of ARGV (spec 6.4) */
@@ -1045,6 +1407,8 @@ static void options(struct request_input *q, int argc, const char **argv, struct
 			if ((strcmp(argv[i + 1], "-") ? strbuf_read_file(&q->msg, argv[i + 1], 0) :
 			     strbuf_read(&q->msg, 0, 0)) < 0)
 				reject(128, NULL, "could not read '%s'", argv[i + 1]);
+			if (memchr(q->msg.buf, 0, q->msg.len))
+				reject(1, NULL, "a NUL byte in commit log message is not allowed");
 			i++;
 		} else if ((!strcmp(argv[i], "-r") || !strcmp(argv[i], "--result")) && i + 1 < argc) {
 			if (q->result)
@@ -1052,16 +1416,17 @@ static void options(struct request_input *q, int argc, const char **argv, struct
 			q->result = argv[++i];
 		} else if (!strcmp(argv[i], "--force")) {
 			q->force = 1;
+			q->force_word = (int)q->words.nr - argc + i;
 		} else if (!strcmp(argv[i], "-g") && i + 1 < argc) {
 			q->group = argv[++i];
 			if (!group_ok(q->group) || !*q->group)
 				reject(129, NULL, "bad group '%s'", q->group);
 		} else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--partial")) {
-			strvec_push(rest, argv[i]);
+			positional_word(q, rest, argv[i], (int)q->words.nr - argc + i);
 		} else if (*argv[i] == '-' && strcmp(argv[i], "-")) {
 			reject(129, NULL, "unknown option '%s'", argv[i]);
 		} else {
-			strvec_push(rest, argv[i]);
+			positional_word(q, rest, argv[i], (int)q->words.nr - argc + i);
 		}
 	}
 	if (q->result && q->force)
@@ -1082,11 +1447,6 @@ int cmd_request(int argc, const char **argv)
 	request_init(&q, argv);
 	options(&q.input, argc, argv, &rest);
 	fulfilling = read_clauses(&q.input, rest.nr, rest.v);
-	/* a --force with no clause that fulfils is the trivial change of 6.4.1 */
-	if (q.input.force && !fulfilling) {
-		q.input.future_force = 1;
-		q.input.force = 0;
-	}
 	run_request(&q, fulfilling);
 	return 0;
 }
@@ -1106,7 +1466,9 @@ int cmd_fulfill(int argc, const char **argv)
 		const char *eq = strchr(rest.v[i], '=');
 		char *id = eq ? xstrndup(rest.v[i], eq - rest.v[i]) : xstrdup(rest.v[i]);
 
-		string_list_insert(&q.input.given, id);
+		if (eq && (*id == 'X' || !strcmp(eq + 1, "-")))
+			reject(129, NULL, "=SCOPES takes concrete provider scopes of a demand or offer");
+		string_list_insert(&q.input.given, id)->util = &q.input.word_index[i];
 		if (eq)
 			string_list_insert(&q.input.scopes, id)->util = xstrdup(eq + 1);
 	}
@@ -1124,35 +1486,16 @@ static char *draft_path(struct contract *c)
 static void write_new_file(const char *rel, const char *text)
 {
 	char *full = xstrfmt("%s/%s", top, rel);
-	int fd, failed, saved;
 
-	leading_dirs(full);
-	/* Git's entry.c:create_file reserves a new worktree path atomically. */
-	fd = open(full, O_WRONLY | O_CREAT | O_EXCL, 0666);
-	if (fd < 0) {
-		if (errno == EEXIST)
-			reject(1, NULL, "not allowed: '%s' already exists", rel);
-		write_error(full);
-	}
-	failed = write_in_full(fd, text, strlen(text)) < 0;
-	saved = errno;
-	if (close(fd) && !failed) {
-		failed = 1;
-		saved = errno;
-	}
-	if (failed) {
-		unlink(full);
-		errno = saved;
-		write_error(full);
-	}
+	if (!create_file(full, text, 0))
+		reject(1, NULL, "%s", refusal_words(EXISTS, rel, NULL, NULL));
 	printf("path %s\n", rel);
 }
 
 /* spec 6.5.1: the condition file template (v14 7.4.1a without inputs) */
 static int contract_new_spec(const char *path, const char *engine)
 {
-	if (!condition_path_ok(path))
-		reject(128, NULL, "bad path '%s'", path);
+	require_condition_path(path);
 	write_new_file(path, !strcmp(engine, "exec") ?
 		"# ait spec (exec): the checker runs 'command'; it passes if the exit code is in 'success'.\n"
 		"# Keys: body, engine, command, success, environment. Any other key is a format error.\n"
@@ -1175,13 +1518,14 @@ static int contract_new_draft(const char *kind, const char *group)
 	struct names n;
 	struct spec s = { 0 };
 	struct strbuf hint = STRBUF_INIT;
-	const char *msg, *chosen = branch_find(&msg, &hint);
+	const char *msg, *chosen;
 	struct string_list_item *item;
 	int taken;
 
 	if (!group_ok(group))
 		reject(129, NULL, "bad group '%s'", group);
 	names_load(&n);
+	chosen = branch_find(&n, &msg, &hint, NULL);
 	/* unique on the contract branch, or on every local one when none is chosen (6.5.2) */
 	do {
 		newid(id, kind_letter(kind));
@@ -1217,7 +1561,7 @@ static int contract_checkout(int argc, const char **argv)
 		struct contract *c = contract_get(b, argv[i]);
 
 		if (!c)
-			reject(128, NULL, "no such contract: '%s'", argv[i]);
+			no_contract(argv[i]);
 		write_new_file(draft_path(c), object(blob_at(b->tree, c->path), 1, NULL, NULL));
 	}
 	return 0;
@@ -1225,7 +1569,8 @@ static int contract_checkout(int argc, const char **argv)
 
 static char *stage_index(void)
 {
-	mkdir(xstrfmt("%s/ait", gitdir), 0777);
+	worktree_state_dir();
+	/* Git's writer, our lock, and consumption must name the same symlink target. */
 	return git_path("ait/index");
 }
 
@@ -1295,9 +1640,9 @@ static int contract_add(int argc, const char **argv)
 			reject(129, NULL, "'%s' is not a draft: .ait/<group>/<ID>.yaml", argv[i]);
 		if (strbuf_read_file(&sb, xstrfmt("%s/%s", top, argv[i]), 0) < 0)
 			reject(128, NULL, "could not read '%s'", argv[i]);
-		if (!contract_parse(sb.buf, rel, 1, &err))
-			reject(128, NULL, "bad format: %s", err);
-		oid = line1(git_run(sb.buf, NULL, NULL, "hash-object -w --stdin"));
+		if (!contract_parse(sb.buf, sb.len, rel, 1, &err))
+			reject(128, NULL, "bad format: '%s': %s", rel, err);
+		oid = line1(git_run(sb.buf, NULL, NULL, "hash-object", "-w", "--stdin"));
 		strvec_pushl(&args, "--cacheinfo", xstrfmt("100644,%s,%s", oid, rel), NULL);
 	}
 	/* --index-info silently skips invalid paths; --cacheinfo refuses the transaction. */
@@ -1309,33 +1654,17 @@ static int contract_add(int argc, const char **argv)
 
 struct staged {
 	struct request q;
-	struct string_list drafts;	/* path -> text */
+	struct string_list drafts;	/* path -> struct strbuf, the staged bytes */
 };
 
-/*
- * v14 3.3: a drafted line range without its base blob keeps the tip's base
- * when the tip has the same range, and is fixed at HEAD otherwise
- */
+/* v14 3.3: drafts are fixed at HEAD, retaining unchanged tuples from T. */
 static void pin_drafted(struct string_list *scopes, struct string_list *was)
 {
-	struct string_list_item *item, *w;
 	struct tree *h = tree_load(head ? head : EMPTY_TREE);
+	char *err;
 
-	for_each_string_list_item(item, scopes) {
-		char *err, *pinned = NULL;
-		int a, b;
-
-		if (scope_blob(item->string) || range_of(item->string, &a, &b) != 1)
-			continue;
-		if (was)
-			for_each_string_list_item(w, was)
-				if (!strcmp(xstrndup(w->string, strcspn(w->string, " ")), item->string))
-					pinned = xstrdup(w->string);
-		if (!pinned && !(pinned = scope_pin(item->string, h, &err)))
-			reject(128, NULL, "bad scope: %s", err);
-		free(item->string);
-		item->string = pinned;
-	}
+	if (scopes_pin(scopes, h, was, &err))
+		reject(128, NULL, "bad scope: %s", err);
 }
 
 /* spec 6.5.4: the staged drafts judged against the tip, each a change from T */
@@ -1349,35 +1678,39 @@ static void commit_judge(struct checkin *ck)
 	request_result_reset(r, ck->at);
 	for_each_string_list_item(item, &st->drafts) {
 		char *err;
-		struct contract *d = contract_parse(item->util, item->string, 1, &err), *old = contract_get(r->at, d->id);
-		size_t k;
+		struct strbuf *text = item->util;
+		struct contract *d = contract_parse(text->buf, text->len, item->string, 1, &err), *old;
+		struct string_list_item *prior;
 
+		if (!d)
+			reject(128, NULL, "bad format: '%s': %s", item->string, err);
+		old = contract_get(r->at, d->id);
+		prior = string_list_lookup(&r->changed, d->id);
+		if (prior)
+			reject(128, NULL, "bad format: '%s': %s", d->path,
+			       yaml_refusal_at(1, "'%s' is also at '%s'", d->id, ((struct contract *)prior->util)->path));
 		pin_drafted(&d->consumer, old ? &old->consumer : NULL);
 		pin_drafted(&d->provider, old ? &old->provider : NULL);
 		if (!old) {
 			d->creator = xstrdup(agent);
-			d->state = xstrdup("future");
 			string_list_append(&r->order, d->id);
 		} else {
 			if (strcmp(d->change_id, old->change_id))
-				reject(1, xstrfmt("ait contract checkout %s", d->id), "'%s' changed at '%s' since '.ait/%s' was written",
-				       d->id, ck->branch, item->string);
+				reject(1, NULL, "%s",
+				       refusal_words(STALE_DRAFT, d->id, ck->branch, xstrfmt(".ait/%s", item->string)));
 			/* a draft's fulfilled is what it was checked out with: T's list, or the start of it */
-			for (k = 0; k < d->fulfilled.nr; k++)
-				if (k >= old->fulfilled.nr || strcmp(d->fulfilled.items[k].string, old->fulfilled.items[k].string))
-					refuse(q, FULFILMENT, d, old);
+			if (!list_is_prefix(&d->fulfilled, &old->fulfilled))
+				refuse(q, FULFILMENT, d, old);
 			d->fulfilled = old->fulfilled;
 			d->condition_id = old->condition_id;
 			d->change_id = old->change_id;
-			if (strcmp(contract_text(d), contract_text(old)) && ended(old))
-				refuse(q, ENDED, old, NULL);
 		}
-		string_list_insert(&r->changed, d->id)->util = d;
-		if (q->force)
-			string_list_insert(&r->trivial, d->id);
+		publish_change(q, r, old, d, DRAFT, q->force);
 	}
-	stamp_all(q, r);
-	settle(q, r, ck);
+	/* 6.5.4 is a staged batch: every target is judged in the same final view. */
+	for_each_string_list_item(item, &r->changed)
+		validate_change(q, r, contract_get(r->at, item->string), item->util, DRAFT, q->force);
+	settle(r, ck);
 }
 
 /* spec 6.5.4 */
@@ -1390,6 +1723,7 @@ static int contract_commit(int argc, const char **argv)
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct tempfile *lock;
 	const char *index;
+	char *summary;
 
 	request_init(&st.q, argv - 1);
 	string_list_init_dup(&st.drafts);
@@ -1401,21 +1735,29 @@ static int contract_commit(int argc, const char **argv)
 	st.q.input.rid = ck.rid;
 	index = stage_index();
 	lock = lock_stage(index);
-	git_records(&lines, index, NULL, "ls-files -s -z");
+	git_records(&lines, index, NULL, "ls-files", "-s", "-z");
 	for_each_string_list_item(item, &lines) {
-		char mode[8], oid[48];
+		char mode[8], oid[48], *bytes;
+		struct strbuf *text = xcalloc(1, sizeof(*text));
+		size_t len;
 
 		if (!*item->string)
 			continue;
 		sscanf(item->string, "%7s %47s", mode, oid);
-		string_list_insert(&st.drafts, strchr(item->string, '\t') + 1)->util = object(oid, 1, NULL, NULL);
+		bytes = object(oid, 1, NULL, &len);
+		if (!bytes)
+			reject(128, NULL, "could not read '%s' from the contract stage", strchr(item->string, '\t') + 1);
+		strbuf_init(text, len);
+		strbuf_add(text, bytes, len);
+		free(bytes);
+		string_list_insert(&st.drafts, strchr(item->string, '\t') + 1)->util = text;
 	}
 	if (!st.drafts.nr)
-		reject(1, "ait contract add <path>...", "nothing staged");
+		reject(1, hint_command("ait contract add <path>..."), "nothing staged");
 	string_list_init_dup(&ck.put);
 	ck.msg = xstrfmt("[CONTRACT] %s", st.q.input.msg.buf);
 	ck.data = &st;
-	checkin_run(&ck, commit_judge);
+	summary = checkin_run(&ck, commit_judge);
 	if (unlink(index))
 		write_error(index);
 	unlock_stage(&lock, index);
@@ -1424,6 +1766,7 @@ static int contract_commit(int argc, const char **argv)
 
 		printf("%s %s\n", unsorted_string_list_has_string(&st.q.result.order, id) ? "new" : "change", id);
 	}
+	checkin_report(summary);
 	request_result_reset(&st.q.result, NULL);
 	return 0;
 }
@@ -1437,8 +1780,8 @@ static char *remote_of(const char *branch, const char *which, int argc, const ch
 		reject(129, NULL, "too many arguments");
 	if (argc == 2)
 		return xstrdup(argv[1]);
-	r = line1(git("for-each-ref --format=%s %s", xstrfmt("%%(%s:remotename)", which),
-		      xstrfmt("refs/heads/%s", branch)));
+	r = line1(git("for-each-ref", xstrfmt("--format=%%(%s:remotename)", which),
+		xstrfmt("refs/heads/%s", branch)));
 	return *r ? r : xstrdup("origin");
 }
 
@@ -1458,10 +1801,10 @@ struct pull {
 	char *name;			/* U as git's merge message names it (fmt-merge-msg.c) */
 };
 
-static char *pull_hint(struct checkin *ck, struct violation *v)
+static char *pull_hint(struct checkin *ck, struct string_list *violations)
 {
-	return xstrfmt("merge '%s' into '%s' and resolve the conflicts there (enter it with 'ait switch %s')",
-		       ((struct pull *)ck->data)->name, ck->branch, ck->branch);
+	return xstrfmt("merge '%s' into '%s' and resolve the conflicts there (enter it with '%s')",
+		       ((struct pull *)ck->data)->name, ck->branch, hint_command("ait switch %s", quoted(ck->branch)));
 }
 
 /*
@@ -1486,7 +1829,7 @@ static void pull_judge(struct checkin *ck)
 		return;
 	}
 	ck->second_parent = xstrdup(u);
-	git_records(&lines, NULL, &rc, "merge-tree --write-tree --name-only -z %s %s", ck->tip, u);
+	git_records(&lines, NULL, &rc, "merge-tree", "--write-tree", "--name-only", "-z", ck->tip, u);
 	if (rc != 0 && rc != 1)
 		reject(128, NULL, "git failed: 'git merge-tree': %s", git_error);
 	if (!lines.nr)
@@ -1512,13 +1855,13 @@ static int contract_pull(int argc, const char **argv)
 		return 1;
 	if (!(p.upstream = upstream_of(ck.branch)))
 		reject(128, NULL, "'%s' has no upstream", ck.branch);
-	p.name = line1(git("rev-parse --abbrev-ref %s", p.upstream));
+	p.name = line1(git("rev-parse", "--abbrev-ref", p.upstream));
 	string_list_init_dup(&ck.put);
 	ck.msg = xstrfmt("[CONTRACT] merge '%s'", p.name);
 	ck.refusal = xstrfmt("merging '%s' breaks contract rules: ", p.name);
 	ck.violation_hint = pull_hint;
 	ck.data = &p;
-	checkin_run(&ck, pull_judge);
+	checkin_report(checkin_run(&ck, pull_judge));
 	return 0;
 }
 

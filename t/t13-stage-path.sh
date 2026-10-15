@@ -26,6 +26,14 @@ YAML
 cp "$P" "$Q"
 cp "$P" "$R"
 
+# Explicit contract-stage indexes override the separately selected code index.
+code_index="$T/selected-code-index"
+GIT_INDEX_FILE="$code_index" git read-tree HEAD
+printf 'selected code index\n' >> src/stock.c
+GIT_INDEX_FILE="$code_index" git add src/stock.c
+code_tree=$(GIT_INDEX_FILE="$code_index" git write-tree)
+ordinary_tree=$(git write-tree)
+
 for shape in absolute chain
 do
 	# Each case starts with a native, valid index at the alias target.
@@ -52,12 +60,12 @@ echo $? >"$T/nested.rc"
 exit 0
 HOOK
 	rm -f "$T/nested.rc" "$T/nested.out" "$T/nested.err"
-	run env PATH="$T/bin:$PATH" ait contract commit -m "$shape index"
+	run env PATH="$T/bin:$PATH" GIT_INDEX_FILE="$code_index" ait contract commit -m "$shape index"
 	check_rc "$shape index alias commits its snapshot" 0
 	check "$shape index alias excludes a concurrent add" "test \"\$(cat $T/nested.rc)\" = 128 && ! grep -q '^add ' $T/nested.out"
 	check "$shape index alias remains while its consumed target is empty" "test -L $stage && ! test -e $stage && ! test -e $backing"
 	check "$shape index alias commits only the original snapshot" "git cat-file -e ait/master:${draft#.ait/} && ! git cat-file -e ait/master:${extra#.ait/} 2>/dev/null"
-	run ait contract add "$extra"
+	run env GIT_INDEX_FILE="$code_index" ait contract add "$extra"
 	check_rc "$shape dangling alias can stage the next draft" 0
 	GIT_INDEX_FILE="$stage" git show ":${extra#.ait/}" >"$T/next-draft"
 	check "$shape alias stores the next draft at its original target" "test -L $stage && test -f $backing && cmp -s $extra $T/next-draft"
@@ -68,12 +76,14 @@ cp "$backing" "$T/stage-before"
 printf 'foreign lock\n' >"$backing.lock"
 cp "$backing.lock" "$T/foreign-lock"
 tip=$(git rev-parse ait/master)
-run ait contract commit -m foreign
+run env GIT_INDEX_FILE="$code_index" ait contract commit -m foreign
 check_rc "commit respects a foreign lock at the alias target" 128
 check "foreign target lock, stage and branch are preserved" "cmp -s $T/foreign-lock $backing.lock && cmp -s $T/stage-before $backing && test \"\$(git rev-parse ait/master)\" = $tip"
 rm "$backing.lock"
-run ait contract commit -m retry
+run env GIT_INDEX_FILE="$code_index" ait contract commit -m retry
 check_rc "the alias snapshot can be retried after the foreign lock is gone" 0
 check "retry consumes the alias target and retains its path" "test -L $stage && ! test -e $stage && ! test -e $backing"
+
+check "stage alias locking and consumption preserve both code indexes" "test \"\$(GIT_INDEX_FILE=\"$code_index\" git write-tree)\" = $code_tree && test \"\$(git write-tree)\" = $ordinary_tree"
 
 done_testing

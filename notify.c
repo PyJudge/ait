@@ -3,8 +3,6 @@
  * shown and sent is computed from the branch each time (rule 1).
  */
 #include "ait.h"
-#include "run-command.h"
-#include <sys/file.h>
 #include <signal.h>
 #include <time.h>
 
@@ -18,10 +16,11 @@ static char *pathspec_of(const char *arg)
 
 static void block(struct branch *b, struct contract *c, struct tree *x, struct tree *h, const char *me)
 {
+	struct contract_view view = { b, NULL };
 	enum verdict v = judge(b, c, x);
 	struct string_list_item *item;
 	size_t i;
-	int held = 0;
+	int demand = !strcmp(c->kind, "demand"), held = 0;
 
 	printf("id %s\nkind %s\ngroup %s\nstate %s\ncreator %s\n", c->id, c->kind, *c->group ? c->group : "-",
 	       verdict_word(v), c->creator);
@@ -34,25 +33,19 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 	for (i = 0; i < c->nspecs; i++)
 		printf("spec %s %.*s\n", c->specs[i].engine ? "exec" : "prompt", (int)strcspn(c->specs[i].body, "\n"),
 		       c->specs[i].body);
-	if (!strcmp(c->kind, "offer")) {
-		for (i = 0; i < 2; i++)
-			for_each_string_list_item(item, i ? &c->partially : &c->undertakes) {
-				struct contract *d = contract_get(b, item->string);
+	for (i = 0; i < 2; i++) {
+		struct string_list related = STRING_LIST_INIT_DUP;
 
-				printf("undertakes %s %s %s %s\n", item->string, d ? verdict_word(judge(b, d, x)) : "-",
-				       d ? d->creator : "-", i ? "partial" : "whole");
-			}
-	}
-	if (!strcmp(c->kind, "demand"))
-		for_each_string_list_item(item, &b->contracts) {
-			struct contract *o = item->util;
-			int how = holds(o, c->id);
+		undertakings(&view, c, i ? 'p' : 'w', &related);
+		held |= related.nr > 0;
+		for_each_string_list_item(item, &related) {
+			struct contract *other = item->util;
 
-			held |= live(o) && how;
-			if (how)
-				printf("undertaken-by %s %s %s %s\n", o->id, verdict_word(judge(b, o, x)), o->creator,
-				       how == 'p' ? "partial" : "whole");
+			printf("%s %s %s %s %s\n", demand ? "undertaken-by" : "undertakes", other->id,
+			       verdict_word(judge(b, other, x)), other->creator, i ? "partial" : "whole");
 		}
+		string_list_clear(&related, 0);
+	}
 	for_each_string_list_item(item, &c->fulfilled) {
 		struct string_list_item *f = string_list_lookup(&b->fulfils, item->string);
 		struct fulfilment *ful = f ? f->util : NULL;
@@ -66,9 +59,10 @@ static void block(struct branch *b, struct contract *c, struct tree *x, struct t
 		puts("touch");
 	putchar('\n');
 	if (me && !strcmp(c->creator, me) && promise(c, v) && strcmp(c->kind, "drop"))
-		suggest("ait fulfill %s -m <why>", c->id);
+		suggest("%s", hint_command("ait fulfill %s -m <why>", c->id));
 	if (!strcmp(c->kind, "demand") && live(c) && !held)
-		suggest("ait future offer %s <files> as o undertake %s o -m <why>", quoted(scopes_bare(&c->provider)), c->id);
+		suggest("%s", hint_command("ait future offer %s <files> as o undertake %s o -m <why>",
+					  quoted(scopes_bare(&c->provider)), c->id));
 }
 
 /* spec 6.3-4: a violation (4.10) names ID */
@@ -95,16 +89,13 @@ int cmd_status(int argc, const char **argv)
 	struct branch *b;
 	struct tree *x, *h;
 	const char *name, *me;
-	struct names n;
 	int i, rc;
 
 	for (i = 1; i < argc; i++)
 		if (!scope_arg_ok(argv[i], 1, 1))
 			reject(129, NULL, "status takes scopes only: '%s'", argv[i]);
 	name = start(START_WARNS);
-	names_load(&n);
-	printf("On contract branch %s%s\n", name,
-	       n.local.nr == 1 && !access(checkout_file(), F_OK) ? "" : n.local.nr == 1 ? " (the only one)" : "");
+	printf("On contract branch %s%s\n", name, branch_only() ? " (the only one)" : "");
 	x = index_tree();
 	h = head ? tree_load(head) : NULL;
 	strvec_pushl(&args, "--no-literal-pathspecs", "status", NULL);
@@ -128,7 +119,7 @@ int cmd_status(int argc, const char **argv)
 	putchar('\n');
 	b = branch_load(name, NULL, NULL);
 	me = session(0) ? agent : NULL;
-	invariants(b, b, &bad);
+	invariants(b, b, NULL, &bad);
 	for_each_string_list_item(item, &bad)
 		warning("%s", violation_words(item->util));
 	for_each_string_list_item(item, &b->contracts) {
@@ -168,29 +159,18 @@ static void append_seen(const char *s, const char *keys)
 		return;
 	if ((fd = open(session_path(s, ".seen"), O_WRONLY | O_APPEND | O_CREAT, 0666)) < 0 ||
 	    write_in_full(fd, keys, strlen(keys)) < 0 || close(fd))
-		reject(128, NULL, "write error: '%s': %s", session_path(s, ".seen"), strerror(errno));
+		listen_write_error(session_path(s, ".seen"));
 }
 
 /* spec 9.1: the tip lines, a snapshot of the ait refs, local and remote-tracking (2.1.2) */
 static void tips_now(struct string_list *out)
 {
-	struct string_list refs = STRING_LIST_INIT_DUP, tracking = STRING_LIST_INIT_DUP;
-	struct string_list_item *r, *t;
-	struct strvec args = STRVEC_INIT;
+	struct string_list_item *t;
 	struct names n;
 
 	names_load(&n);
-	for_each_string_list_item(t, &n.remote)
-		for_each_string_list_item(r, (struct string_list *)t->util)
-			string_list_insert(&tracking, r->string);
-	strvec_pushl(&args, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/ait/", "refs/remotes/", NULL);
-	string_list_split(&refs, git_args(&args, NULL, NULL, NULL), "\n", -1);
-	for_each_string_list_item(r, &refs) {
-		const char *name = strchr(r->string, ' ');
-
-		if (name && (starts_with(name + 1, "refs/heads/ait/") || string_list_has_string(&tracking, name + 1)))
-			string_list_append(out, xstrfmt("tip %s", r->string));
-	}
+	for_each_string_list_item(t, &n.tips)
+		string_list_append(out, t->string);
 }
 
 /*
@@ -246,7 +226,7 @@ static char *sub_line(const char *arg)
 
 	if (id_ok(arg, "DOX")) {
 		if (!contract_get(branch_load(branch_name(), NULL, NULL), arg))
-			reject(128, NULL, "no such contract: '%s'", arg);
+			no_contract(arg);
 		return xstrfmt("sub id %s", arg);
 	}
 	if (!scope_arg_ok(arg, 1, 1))
@@ -276,9 +256,18 @@ static char *sub_display(const char *line, struct tree *x)
 	return xstrfmt("sub scope %s", scope_display(scope, x));
 }
 
+static void save_subscriptions(struct string_list *lines, struct strbuf *changes, FILE *out, int fd)
+{
+	session_write(sid, lines);
+	close(fd);
+	fputs(changes->buf, out);
+	strbuf_release(changes);
+}
+
 static void subscribe(int argc, const char **argv, FILE *out)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
+	struct strbuf added = STRBUF_INIT;
 	int i, fd;
 
 	if (argc < 2)
@@ -291,10 +280,9 @@ static void subscribe(int argc, const char **argv, FILE *out)
 		if (unsorted_string_list_has_string(&lines, line))
 			continue;
 		string_list_append(&lines, line);
-		fprintf(out, "%s\n", sub_display(line, NULL));
+		strbuf_addf(&added, "%s\n", sub_display(line, NULL));
 	}
-	session_write(sid, &lines);
-	close(fd);
+	save_subscriptions(&lines, &added, out, fd);
 }
 
 int cmd_sub(int argc, const char **argv)
@@ -309,6 +297,7 @@ int cmd_unsub(int argc, const char **argv)
 	struct string_list lines = STRING_LIST_INIT_DUP, keep = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct tree *h = tree_load(head ? head : EMPTY_TREE);
+	struct strbuf removed = STRBUF_INIT;
 	int fd, i;
 
 	session(1);
@@ -322,12 +311,11 @@ int cmd_unsub(int argc, const char **argv)
 			drop |= !strcmp(item->string, xstrfmt("sub id %s", argv[i])) ||
 				(starts_with(display, "sub scope ") && !strcmp(display + 10, argv[i]));
 		if (starts_with(item->string, "sub ") && (argc == 1 || drop))
-			printf("un%s\n", display);
+			strbuf_addf(&removed, "un%s\n", display);
 		else
 			string_list_append(&keep, item->string);
 	}
-	session_write(sid, &keep);
-	close(fd);
+	save_subscriptions(&keep, &removed, stdout, fd);
 	return 0;
 }
 
@@ -338,35 +326,94 @@ static void stop(int sig)
 	stopping = sig;
 }
 
+/* spec 9.7: category order, then ID or DISPLAY order within each category. */
+enum reason_kind {
+	REASON_FUTURE_DEMAND,
+	REASON_FUTURE_OFFER,
+	REASON_FUTURE_DROP,
+	REASON_DEMAND,
+	REASON_SUB_ID,
+	REASON_SUB_SCOPE,
+	REASON_NR
+};
+
+struct event_reasons {
+	struct string_list values[REASON_NR];
+};
+
+static const char *const reason_words[REASON_NR] = {
+	[REASON_FUTURE_DEMAND] = "future demand",
+	[REASON_FUTURE_OFFER] = "future offer",
+	[REASON_FUTURE_DROP] = "future drop",
+	[REASON_DEMAND] = "demand",
+	[REASON_SUB_ID] = "sub id",
+	[REASON_SUB_SCOPE] = "sub scope"
+};
+
+static void add_reason(struct event_reasons *reasons, enum reason_kind kind, const char *value)
+{
+	string_list_insert(&reasons->values[kind], value);
+}
+
+static enum reason_kind future_reason(const struct contract *c)
+{
+	if (!strcmp(c->kind, "demand"))
+		return REASON_FUTURE_DEMAND;
+	if (!strcmp(c->kind, "offer"))
+		return REASON_FUTURE_OFFER;
+	return REASON_FUTURE_DROP;
+}
+
+static void reason_lines(struct event_reasons *reasons, struct strbuf *out)
+{
+	enum reason_kind kind;
+	struct string_list_item *value;
+
+	for (kind = 0; kind < REASON_NR; kind++) {
+		for_each_string_list_item(value, &reasons->values[kind])
+			strbuf_addf(out, "reason %s %s\n", reason_words[kind], value->string);
+		string_list_clear(&reasons->values[kind], 0);
+	}
+}
+
 /* spec 9.5: why the session's agent receives C (OLD at the first parent): relations at MINE and HEAD H */
 static void reasons(struct branch *mine, struct tree *h, struct contract *c, struct contract *old,
-		    struct string_list *subs, struct strbuf *out)
+		    struct string_list *subs, struct event_reasons *out)
 {
+	struct contract_view view = { mine, NULL };
+	struct string_list related = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *s;
-	struct contract *k = contract_get(mine, c->id) ? contract_get(mine, c->id) : c;
-	enum verdict v = judge(mine, k, h);
+	struct contract *k = contract_get(mine, c->id);
+	enum verdict v = k ? judge(mine, k, h) : V_FUTURE;
 
-	if (!strcmp(k->creator, agent) && promise(k, v))
-		strbuf_addf(out, "reason future %s %s\n", k->kind, k->id);
+	if (k && !strcmp(k->creator, agent) && promise(k, v))
+		add_reason(out, future_reason(k), k->id);
+	if (k) {
+		undertakings(&view, k, 'w', &related);
+		undertakings(&view, k, 'p', &related);
+	}
 	for_each_string_list_item(item, &mine->contracts) {
 		struct contract *m = item->util;
+		int counterpart;
 
-		if (strcmp(m->creator, agent) || !promise(m, judge(mine, m, h)))
+		if (!k || strcmp(m->creator, agent) || !promise(m, judge(mine, m, h)))
 			continue;
-		if (holds(m, k->id) || holds(k, m->id) ||
-		    (!strcmp(m->kind, "drop") && m->target && !strcmp(m->target, k->id)))
-			strbuf_addf(out, "reason future %s %s\n", m->kind, m->id);
+		counterpart = string_list_has_string(&related, m->id) ||
+			      (!strcmp(m->kind, "drop") && !strcmp(m->target, k->id));
+		if (counterpart)
+			add_reason(out, future_reason(m), m->id);
 	}
-	if (!strcmp(k->kind, "demand") && !strcmp(k->creator, agent) && v == V_CURRENT)
-		strbuf_addf(out, "reason demand %s\n", k->id);
+	string_list_clear(&related, 0);
+	if (k && !strcmp(k->kind, "demand") && !strcmp(k->creator, agent) && v == V_CURRENT)
+		add_reason(out, REASON_DEMAND, k->id);
 	for_each_string_list_item(s, subs) {
 		const char *rest;
 
-		if (skip_prefix(s->string, "sub id ", &rest) && !strcmp(rest, k->id))
-			strbuf_addf(out, "reason sub id %s\n", k->id);
+		if (skip_prefix(s->string, "sub id ", &rest) && !strcmp(rest, c->id))
+			add_reason(out, REASON_SUB_ID, c->id);
 		if (skip_prefix(s->string, "sub scope ", &rest) &&
 		    (contract_overlaps(c, rest, h, 1) || (old && contract_overlaps(old, rest, h, 1))))
-			strbuf_addf(out, "reason sub scope %s\n", scope_display(rest, h));
+			add_reason(out, REASON_SUB_SCOPE, scope_display(rest, h));
 	}
 }
 
@@ -375,32 +422,16 @@ static void actions(struct contract *c, struct contract *old, struct strbuf *out
 {
 	if (!old) {
 		strbuf_addf(out, "contract %s create\n", c->id);
-		return;
+	} else {
+		if (strcmp(c->condition_id, old->condition_id))
+			strbuf_addf(out, "contract %s amend\n", c->id);
+		else if (strcmp(c->change_id, old->change_id))
+			strbuf_addf(out, "contract %s edit\n", c->id);
+		if (strcmp(c->state, old->state))
+			strbuf_addf(out, "contract %s %s\n", c->id, c->state);
 	}
-	if (strcmp(c->condition_id, old->condition_id))
-		strbuf_addf(out, "contract %s amend\n", c->id);
-	else if (strcmp(c->change_id, old->change_id))
-		strbuf_addf(out, "contract %s edit\n", c->id);
-	if (strcmp(c->state, old->state))
-		strbuf_addf(out, "contract %s %s\n", c->id, c->state);
-	if (c->fulfilled.nr > old->fulfilled.nr)
+	if (c->fulfilled.nr > (old ? old->fulfilled.nr : 0))
 		strbuf_addf(out, "contract %s fulfil\n", c->id);
-}
-
-/* the reasons, sorted and each once (v14 9.7) */
-static char *sorted_lines(const char *text)
-{
-	struct string_list lines = STRING_LIST_INIT_DUP, sorted = STRING_LIST_INIT_DUP;
-	struct string_list_item *r;
-	struct strbuf sb = STRBUF_INIT;
-
-	string_list_split(&lines, text, "\n", -1);
-	for_each_string_list_item(r, &lines)
-		if (*r->string)
-			string_list_insert(&sorted, r->string);
-	for_each_string_list_item(r, &sorted)
-		strbuf_addf(&sb, "%s\n", r->string);
-	return strbuf_detach(&sb, NULL);
 }
 
 /*
@@ -414,18 +445,24 @@ static void event(const char *name, const char *e, struct string_list *watched, 
 	struct tree *h = tree_load(head ? head : EMPTY_TREE);
 	struct string_list files = STRING_LIST_INIT_DUP;
 	struct string_list_item *f;
-	struct strbuf why = STRBUF_INIT, acts = STRBUF_INIT, refs = STRBUF_INIT;
+	struct event_reasons why;
+	struct strbuf reason_text = STRBUF_INIT, acts = STRBUF_INIT, refs = STRBUF_INIT;
+	enum reason_kind kind;
 	char *parent;
 	int rc, in_head = 1;
 
-	parent = line1(git_run(NULL, NULL, &rc, "rev-parse -q --verify %s", xstrfmt("%s^1", e)));
+	for (kind = 0; kind < REASON_NR; kind++)
+		string_list_init_dup(&why.values[kind]);
+	parent = line1(git_run(NULL, NULL, &rc, "rev-parse", "-q", "--verify", xstrfmt("%s^1", e)));
 	if (!rc)
 		before = branch_load(name, parent, parent);
-	git_records(&files, NULL, NULL, "diff-tree -r -z --root --name-only --no-commit-id --diff-merges=first-parent %s", e);
+	git_records(&files, NULL, NULL, "diff-tree", "-r", "-z", "--root", "--name-only", "--no-commit-id",
+		"--diff-merges=first-parent", e);
 	for_each_string_list_item(f, &files) {
-		const char *blob = blob_at(at->tree, f->string), *base = strrchr(f->string, '/');
+		const char *blob = blob_at(at->tree, f->string);
+		char *id = contract_path_id(f->string);
 		struct string_list_item *ful = string_list_lookup(&at->fulfils, f->string);
-		struct contract *c = contract_get(at, xstrndup(base ? base + 1 : f->string, 13)), *old;
+		struct contract *c = id ? contract_get(at, id) : NULL, *old;
 		char *key;
 
 		if (!blob || (!ful && (!c || strcmp(c->path, f->string))))
@@ -446,16 +483,17 @@ static void event(const char *name, const char *e, struct string_list *watched, 
 			reasons(mine, h, contract_get(at, c->target), before ? contract_get(before, c->target) : NULL,
 				subs, &why);
 	}
-	if (!why.len)
+	reason_lines(&why, &reason_text);
+	if (!reason_text.len)
 		return;
 	for_each_string_list_item(f, watched) {
 		if (is_ancestor(e, f->string))
 			strbuf_addf(&refs, "ref %s\n", f->string);
 	}
 	strbuf_addf(payload, "ait-event 1\ncommit %s\nrecipient %s\n%s%sin-head %s\n%s\n", e, sid, refs.buf,
-		    sorted_lines(why.buf), in_head ? "yes" : "no", acts.buf);
-	strbuf_addstr(payload, git("show --no-color --no-ext-diff --no-textconv --no-show-signature "
-				   "--diff-merges=first-parent --format=fuller --stat --patch %s", e));
+		    reason_text.buf, in_head ? "yes" : "no", acts.buf);
+	strbuf_addstr(payload, git("show", "--no-color", "--no-ext-diff", "--no-textconv", "--no-show-signature",
+		"--diff-merges=first-parent", "--format=fuller", "--stat", "--patch", e));
 	strbuf_addstr(payload, "ait-event-end\n");
 }
 
@@ -496,7 +534,8 @@ static void deliver(const char *name)
 	for_each_string_list_item(item, &tips)
 		if (string_list_has_string(&watched, item->string + 45))
 			strbuf_addf(&in, "%.40s\n", item->string + 4);
-	string_list_split(&cand, git_run(in.buf, NULL, NULL, "rev-list --reverse --topo-order --ignore-missing --stdin"),
+	string_list_split(&cand, git_run(in.buf, NULL, NULL, "rev-list", "--reverse", "--topo-order",
+		"--ignore-missing", "--stdin"),
 			  "\n", -1);
 	for_each_string_list_item(e, &cand) {
 		struct strbuf keys = STRBUF_INIT, payload = STRBUF_INIT;
@@ -512,7 +551,7 @@ static void deliver(const char *name)
 				string_list_insert(&seen, item->string);
 		/* 9.4: the session's own request is skipped, its keys kept like any skipped event's (v14 9.5-3) */
 		if (!payload.len ||
-		    !strcmp(line1(git("log -1 --format=%(trailers:key=Ait-Session,valueonly) %s", e->string)), sid)) {
+		    !strcmp(line1(git("log", "-1", "--format=%(trailers:key=Ait-Session,valueonly)", e->string)), sid)) {
 			strbuf_add(&skipped, keys.buf, keys.len);
 			continue;
 		}
@@ -528,7 +567,7 @@ static void deliver(const char *name)
 				signal(SIGPIPE, SIG_DFL);
 				raise(SIGPIPE);
 			}
-			reject(128, NULL, "write error: standard output: %s", strerror(errno));
+			stdout_write_error();
 		}
 		append_seen(sid, keys.buf);
 	}
@@ -557,8 +596,12 @@ static void listen_loop(int fetch)
 			fetched = time(NULL);
 		}
 		if (size != seen_wake || time(NULL) - polled >= every) {
+			struct names n;
 			struct strbuf hint = STRBUF_INIT;
-			const char *msg, *name = branch_find(&msg, &hint);
+			const char *msg, *name;
+
+			names_load(&n);
+			name = branch_find(&n, &msg, &hint, NULL);
 
 			/* 6.8: a branch that cannot be chosen skips the round, said once */
 			if (!name && !warned)

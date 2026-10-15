@@ -12,52 +12,52 @@
 #include <dirent.h>
 #include <sys/file.h>
 
-const char *top, *head, *gitdir, *commondir;
+const char *top, *head, *gitdir;
+static const char *commondir;
 char *git_error;
-char *not_recorded, *retry_command;
+char *not_recorded;
+static char *retry_command;
 size_t git_out_len;
 char agent[72], sid[16];
 static char *git_cmd;
 static const char *code_index;
+static const char *caller_index;
+static struct strbuf code_output = STRBUF_INIT;
 
 /* "AIT_SESSION=SID " when the session in use is not this worktree's default (set by session()) */
 static char *cmd_prefix;
 
-/* a hint line with the session named in each ait command it gives, whole or quoted */
-static char *prefixed(const char *hint)
+/* A known command gets its session once; message text is never parsed as commands. */
+char *hint_command_for(const char *session_id, const char *fmt, ...)
 {
 	struct strbuf sb = STRBUF_INIT;
-	const char *p = hint, *hit;
+	va_list ap;
 
-	if (cmd_prefix && starts_with(hint, "ait "))
+	if (session_id)
+		strbuf_addf(&sb, "AIT_SESSION=%s ", session_id);
+	else if (cmd_prefix)
 		strbuf_addstr(&sb, cmd_prefix);
-	for (; cmd_prefix && (hit = strstr(p, "'ait ")); p = hit + 1) {
-		strbuf_add(&sb, p, hit + 1 - p);
-		strbuf_addstr(&sb, cmd_prefix);
-	}
-	strbuf_addstr(&sb, p);
+	va_start(ap, fmt);
+	strbuf_vaddf(&sb, fmt, ap);
+	va_end(ap);
 	return strbuf_detach(&sb, NULL);
 }
 
-/* every hint goes through here: git's advise(), each line once */
+/* Git's advise() preserves the lines of one logical hint, including quoted messages. */
 void suggest(const char *fmt, ...)
 {
 	static struct string_list said = STRING_LIST_INIT_DUP;
-	struct string_list lines = STRING_LIST_INIT_DUP;
-	struct string_list_item *line;
 	struct strbuf sb = STRBUF_INIT;
 	va_list ap;
 
 	va_start(ap, fmt);
 	strbuf_vaddf(&sb, fmt, ap);
 	va_end(ap);
-	string_list_split(&lines, sb.buf, "\n", -1);
-	for_each_string_list_item(line, &lines) {
-		if (!*line->string || string_list_has_string(&said, line->string))
-			continue;
-		string_list_insert(&said, line->string);
-		advise("%s", prefixed(line->string));
+	if (sb.len && !string_list_has_string(&said, sb.buf)) {
+		string_list_insert(&said, sb.buf);
+		advise("%s", sb.buf);
 	}
+	strbuf_release(&sb);
 }
 
 /* a message is one line, whatever a value in it holds (v14 5.6); git's vreportf keeps LF and TAB */
@@ -78,11 +78,22 @@ static void warn_line(const char *fmt, va_list ap)
 	report_line("warning: ", fmt, ap);
 }
 
+/* 6.7.8: delay only Git's stdout; a later refusal still owes it to the user. */
+static void show_code_output(void)
+{
+	if (code_output.len) {
+		fwrite(code_output.buf, 1, code_output.len, stdout);
+		strbuf_release(&code_output);
+		fflush(stdout);
+	}
+}
+
 /* git's fatal: and error: forms, the usage line of 129, and a hint (spec 4.7) */
 void reject(int code, const char *hint, const char *fmt, ...)
 {
 	va_list ap;
 
+	show_code_output();
 	/* 6.7.5-3: after the code commit a refusal says what was not recorded, and only a retry is hinted */
 	if (not_recorded) {
 		code = 1;
@@ -98,6 +109,36 @@ void reject(int code, const char *hint, const char *fmt, ...)
 	exit(code);
 }
 
+NORETURN void no_contract(const char *id)
+{
+	reject(128, NULL, "no such contract: '%s'", id);
+}
+
+/* Like unpack-trees' error table, each E_STATE reason has one wording (4.8). */
+char *refusal_words(enum refusal why, const char *a, const char *b, const char *detail)
+{
+	static const char *const words[] = {
+		[ENDED] = "not allowed: '%s' has ended",
+		[TARGET] = "not allowed: '%s' targets '%s', which is not current",
+		[IDENTITY] = "not allowed: '%s' changes its group, kind or creator",
+		[STATE] = "not allowed: '%s' goes from '%s' to '%s'",
+		[FULFILMENT] = "fulfilments are recorded only by 'ait fulfill'",
+		[FORCE_PROVIDER] = "cannot change the provider of '%s' with --force",
+		[STALE_DRAFT] = "'%s' changed at '%s' since '%s' was written",
+		[EXISTS] = "not allowed: '%s' already exists",
+		[UNMERGED] = "fulfilling is not possible because you have unmerged files",
+		[MIX_WHOLLY] = "'%s' is already undertaken wholly by '%s'",
+		[MIX_PARTIALLY] = "'%s' is already undertaken partially by '%s'",
+		[PAIR] = "changing '%s' would leave '%s' fulfilled on top of an unfulfilled '%s'"
+	};
+
+	if (why <= CHANGE_OK || (size_t)why >= ARRAY_SIZE(words) || !words[why])
+		BUG("no words for refusal %d", why);
+	if (why == PAIR)
+		return xstrfmt(words[why], b, a, b);
+	return xstrfmt(words[why], a, b, detail);
+}
+
 /* git runs on the repository and worktree ait settled at start (v14 5.12) */
 static void at_repository(struct child_process *cmd, const char *index, int caller_paths)
 {
@@ -110,10 +151,12 @@ static void at_repository(struct child_process *cmd, const char *index, int call
 	}
 	if (commondir)
 		strvec_pushf(&cmd->env, "GIT_COMMON_DIR=%s", commondir);
-	if (index || code_index)
-		strvec_pushf(&cmd->env, "GIT_INDEX_FILE=%s", index ? index : code_index);
+	if (!index)
+		index = caller_paths ? caller_index : code_index;
+	if (index)
+		strvec_pushf(&cmd->env, "GIT_INDEX_FILE=%s", index);
 	if (!caller_paths)
-		strvec_pushl(&cmd->env, "GIT_LITERAL_PATHSPECS=1", "GIT_GLOB_PATHSPECS",
+		strvec_pushl(&cmd->env, "GIT_DIFF_OPTS", "GIT_LITERAL_PATHSPECS=1", "GIT_GLOB_PATHSPECS",
 			     "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS", NULL);
 }
 
@@ -193,58 +236,42 @@ char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 	return git_args_n(args, in, in ? strlen(in) : 0, index, rc);
 }
 
-static void words_of(struct strvec *args, const char *fmt, va_list ap)
+/* Git takes an argv vector; argument bytes never pass through a command parser. */
+static char *git_argv_n(const char *in, size_t len, const char *index, int *rc, const char **argv)
 {
-	struct string_list words = STRING_LIST_INIT_DUP;
-	size_t i;
+	struct strvec args = STRVEC_INIT;
+	char *out;
 
-	string_list_split(&words, fmt, " ", -1);
-	for (i = 0; i < words.nr; i++)
-		strvec_push(args, strcmp(words.items[i].string, "%s") ? words.items[i].string : va_arg(ap, const char *));
-	string_list_clear(&words, 0);
+	strvec_pushv(&args, argv);
+	out = git_args_n(&args, in, len, index, rc);
+	strvec_clear(&args);
+	return out;
+}
+
+char *git_argv(const char *in, const char *index, int *rc, const char **argv)
+{
+	return git_argv_n(in, in ? strlen(in) : 0, index, rc, argv);
 }
 
 /* Git's -z records preserve path bytes; no caller decodes display quoting. */
-void git_records(struct string_list *out, const char *index, int *rc, const char *fmt, ...)
+void git_records_argv(struct string_list *out, const char *index, int *rc, const char **argv)
 {
-	struct strvec args = STRVEC_INIT;
-	va_list ap;
-	char *p, *end;
+	char *p = git_argv(NULL, index, rc, argv), *end;
 
-	va_start(ap, fmt);
-	words_of(&args, fmt, ap);
-	va_end(ap);
-	p = git_args(&args, NULL, index, rc);
 	for (end = p + git_out_len; p < end; p += strlen(p) + 1)
 		string_list_append(out, p);
 }
 
-/* git_run() fed the bytes of IN, NULs too (the -z inputs of update-index) */
-static char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...)
+/* Binary index input retains its byte length, including NUL record separators. */
+static char *git_feed_argv(const struct strbuf *in, const char *index, int *rc, const char **argv)
 {
-	struct strvec args = STRVEC_INIT;
-	va_list ap;
-
-	va_start(ap, fmt);
-	words_of(&args, fmt, ap);
-	va_end(ap);
-	return git_args_n(&args, in->buf, in->len, index, rc);
+	return git_argv_n(in->buf, in->len, index, rc, argv);
 }
+#define git_feed(in, index, rc, ...) \
+	git_feed_argv(in, index, rc, (const char *[]){ __VA_ARGS__, NULL })
 
-/* git_args() with the words of FMT, each "%s" word taking one argument verbatim */
-char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...)
-{
-	struct strvec args = STRVEC_INIT;
-	va_list ap;
-
-	va_start(ap, fmt);
-	words_of(&args, fmt, ap);
-	va_end(ap);
-	return git_args(&args, in, index, rc);
-}
-
-/* git with ARGS on ait's own stdout and stderr: what git says is what the user sees (spec 4.7) */
-static int pass_git(struct strvec *args, int caller_paths)
+/* Git run-command.h: pipe_command can collect stdout while inheriting stderr. */
+static int pass_git(struct strvec *args, int caller_paths, struct strbuf *out)
 {
 	struct child_process cmd = CHILD_PROCESS_INIT;
 
@@ -252,14 +279,23 @@ static int pass_git(struct strvec *args, int caller_paths)
 	at_repository(&cmd, NULL, caller_paths);
 	strvec_pushv(&cmd.args, args->v);
 	fflush(stdout);
-	if (start_command(&cmd))
-		return -1;
-	return finish_command(&cmd);
+	return pipe_command(&cmd, NULL, 0, out, 0, NULL, 0);
 }
 
 int git_pass(struct strvec *args)
 {
-	return pass_git(args, 0);
+	return pass_git(args, 0, NULL);
+}
+
+int git_commit(const char *msg)
+{
+	struct strvec args = STRVEC_INIT;
+	int rc;
+
+	strvec_pushl(&args, "commit", "-m", msg, NULL);
+	rc = pass_git(&args, 0, &code_output);
+	strvec_clear(&args);
+	return rc;
 }
 
 char *line1(char *s)
@@ -274,7 +310,7 @@ int config_true(const char *key)
 {
 	int rc;
 
-	return !strcmp(line1(git_run(NULL, NULL, &rc, "config --bool %s", key)), "true");
+	return !strcmp(line1(git_run(NULL, NULL, &rc, "config", "--bool", key)), "true");
 }
 
 /* the object NAME resolves to, through one "git cat-file --batch-command" (git-cat-file(1)) */
@@ -312,6 +348,11 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 	if (fread(buf, 1, n, out) != n || fgetc(out) != '\n')
 		reject(128, NULL, "git failed: 'git cat-file': it stopped");
 	return buf;
+}
+
+int branch_tip(const char *name, char *oid)
+{
+	return !!object(xstrfmt("refs/heads/%s^{commit}", name), 0, oid, NULL);
 }
 
 /* S as one shell word for the commands hints give (v14 5.9a), quoted only where needed, as git shows a command */
@@ -352,7 +393,7 @@ int agent_ok(const char *name)
 /* Git prints one scalar path followed by a newline; embedded newlines are path bytes. */
 char *git_path(const char *name)
 {
-	char *path = git("rev-parse --path-format=absolute --git-path %s", name);
+	char *path = git("rev-parse", "--path-format=absolute", "--git-path", name);
 
 	if (git_out_len && path[git_out_len - 1] == '\n')
 		path[git_out_len - 1] = 0;
@@ -367,26 +408,32 @@ static void setup(void)
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	int i, major = 0, minor = 0, rc;
 	char oid[48];
+	const char *index_env = getenv("GIT_INDEX_FILE");
 
 	if (sscanf(git_run(NULL, NULL, &rc, "version"), "git version %d.%d", &major, &minor) != 2)
 		reject(128, "install git 2.38 or later", "cannot run git");
 	/* git merge-tree --write-tree came in 2.38 (git v2.53.0 Documentation/RelNotes/2.38.0.adoc) */
 	if (major < 2 || (major == 2 && minor < 38))
 		reject(128, "install git 2.38 or later", "git %d.%d is too old for ait", major, minor);
-	string_list_split(&lines, git_run(NULL, NULL, &rc, "rev-parse --absolute-git-dir --path-format=absolute "
-					  "--git-common-dir --show-object-format --show-toplevel"), "\n", -1);
+	string_list_split(&lines, git_run(NULL, NULL, &rc, "rev-parse", "--absolute-git-dir",
+		"--path-format=absolute", "--git-common-dir", "--show-object-format", "--show-toplevel"), "\n", -1);
 	if (lines.nr < 4)
 		reject(128, NULL, "not a git repository");
 	if (rc)
 		reject(128, NULL, "this operation must be run in a work tree");
 	if (lines.nr > 5)
 		reject(128, NULL, "not supported: a repository path with a line feed");
-	gitdir = lines.items[0].string;
-	commondir = lines.items[1].string;
 	if (strcmp(lines.items[2].string, "sha1"))
 		reject(128, NULL, "not supported: object format '%s'", lines.items[2].string);
+	/*
+	 * Git's setup_explicit_git_dir keeps the caller's cwd outside a worktree.
+	 * Native commands keep the raw value; an empty value names no path to resolve.
+	 */
+	caller_index = index_env ? xstrdup(index_env) : NULL;
+	code_index = caller_index && !*caller_index ? caller_index : git_path("index");
+	gitdir = lines.items[0].string;
+	commondir = lines.items[1].string;
 	top = lines.items[3].string;
-	code_index = git_path("index");
 	for (i = 0; clear[i]; i++)
 		unsetenv(clear[i]);
 	if (object("HEAD^{commit}", 0, oid, NULL))
@@ -406,10 +453,40 @@ static void state_dirs(void)
 	mkdir(state_path("worktrees"), 0777);
 }
 
+static NORETURN void write_failure(const char *path, int listening)
+{
+	int saved = errno;
+	const char *retry;
+
+	if (!path)
+		reject(128, NULL, "write error: standard output: %s", strerror(saved));
+	retry = listening ? xstrfmt("start '%s' again", hint_command("ait listen")) : "rerun this command";
+	reject(128, xstrfmt("make '%s' writable (free space, permissions), then %s", path, retry),
+	       "write error: '%s': %s", path, strerror(saved));
+}
+
 NORETURN void write_error(const char *path)
 {
-	reject(128, xstrfmt("make '%s' writable (free space, permissions), then rerun this command", path),
-	       "write error: '%s': %s", path, strerror(errno));
+	write_failure(path, 0);
+}
+
+NORETURN void listen_write_error(const char *path)
+{
+	write_failure(path, 1);
+}
+
+NORETURN void stdout_write_error(void)
+{
+	write_failure(NULL, 0);
+}
+
+/* Worktree-local ait files use Git's directory choice at one boundary (2.6). */
+char *worktree_state_dir(void)
+{
+	char *dir = git_path("ait");
+
+	mkdir(dir, 0777);
+	return dir;
 }
 
 /* a file ait writes is written whole (v14 5.7) */
@@ -437,7 +514,7 @@ static char *pointer_path(const char *wt)
 
 	if (!hit) {
 		hit = string_list_insert(&hashed, wt);
-		hit->util = line1(git_run(wt, NULL, NULL, "hash-object --stdin"));
+		hit->util = line1(git_run(wt, NULL, NULL, "hash-object", "--stdin"));
 	}
 	return state_path(xstrfmt("worktrees/%s", (char *)hit->util));
 }
@@ -509,7 +586,7 @@ static struct string_list *worktrees(void)
 
 	if (list.nr)
 		return &list;
-	git_records(&records, NULL, NULL, "worktree list --porcelain -z");
+	git_records(&records, NULL, NULL, "worktree", "list", "--porcelain", "-z");
 	for_each_string_list_item(item, &records)
 		if (skip_prefix(item->string, "worktree ", &path))
 			string_list_insert(&list, path);
@@ -557,16 +634,18 @@ const char *session(int need)
 			unlink(pointer_path(top));
 		close(fd);
 	} else if (env && !wt) {
-		reject(128, "ait session list", "no usable ait session: unknown session '%s'", env);
+		reject(128, hint_command("ait session list"), "no usable ait session: unknown session '%s'", env);
 	} else if (wt && strcmp(wt, top)) {
-		char *hint = gone(wt) ? xstrfmt("its worktree is gone; close it: 'ait session close %s', then open a session "
-						"with the same name in the worktree of your branch: 'ait session open --agent %s'",
-						env, agent) : xstrfmt("use it in its worktree '%s'", wt);
+		char *hint = gone(wt) ? xstrfmt("its worktree is gone; close it: '%s', then open a session "
+						"with the same name in the worktree of your branch: '%s'",
+						hint_command("ait session close %s", env),
+						hint_command("ait session open --agent %s", agent)) : xstrfmt("use it in its worktree '%s'", wt);
 
 		reject(128, hint, "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
 	}
 	if (!wt && need)
-		reject(128, "find your session with 'ait session list', or open one: 'ait session open --agent <name>'",
+		reject(128, xstrfmt("find your session with '%s', or open one: '%s'",
+				    hint_command("ait session list"), hint_command("ait session open --agent <name>")),
 		       "no usable ait session: none for this worktree");
 	if (!wt)
 		return NULL;
@@ -618,13 +697,14 @@ static void session_open(struct string_list *ids, const char *name)
 			continue;
 		warning("agent name '%s' is also used by session '%s' (worktree '%s')", name, item->string, f->wt);
 		if (gone(f->wt))
-			suggest("its worktree is gone; close it: 'ait session close %s', and keep this one if this worktree "
-				"is on your branch, otherwise close this one too ('ait session close %s') and open it again "
-				"in the worktree of your branch", item->string, sid);
+			suggest("its worktree is gone; close it: '%s', and keep this one if this worktree "
+				"is on your branch, otherwise close this one too ('%s') and open it again "
+				"in the worktree of your branch", hint_command("ait session close %s", item->string),
+				hint_command("ait session close %s", sid));
 		else
-			suggest("if '%s' is yours, close this one: 'ait session close %s', and use '%s' in '%s' with "
+			suggest("if '%s' is yours, close this one: '%s', and use '%s' in '%s' with "
 				"AIT_SESSION=%s; otherwise close this one and open again with another name",
-				item->string, sid, item->string, f->wt, item->string);
+				item->string, hint_command("ait session close %s", sid), item->string, f->wt, item->string);
 	}
 	fd = hold_lock(top);
 	dflt = default_of(top);
@@ -670,7 +750,7 @@ static void session_close(struct string_list *ids, const char *s)
 	int fd;
 
 	if (!item)
-		reject(128, "ait session list", "no usable ait session: unknown session '%s'", s);
+		reject(128, hint_command("ait session list"), "no usable ait session: unknown session '%s'", s);
 	f = item->util;
 	/* v14 4.5: the worktree's lock, the session's, then the listener's tried */
 	fd = hold_lock(f->wt);
@@ -711,43 +791,62 @@ static int cmd_session(int argc, const char **argv)
  * spec 2.1.2: the names of the local ait branches and of the remote-tracking
  * ones, matched against the configured remotes, whose names may hold '/'
  */
+static const char *remote_ait_name(const struct string_list *remotes, const char *ref)
+{
+	struct string_list_item *r;
+	const char *rest, *best = NULL;
+
+	if (!skip_prefix(ref, "refs/remotes/", &rest))
+		return NULL;
+	/* the longest configured remote that names the start, then "/ait/" */
+	for_each_string_list_item(r, remotes) {
+		size_t len = strlen(r->string);
+
+		if (*r->string && !strncmp(rest, r->string, len) && starts_with(rest + len, "/ait/") &&
+		    rest[len + 5] && (!best || len > strlen(best)))
+			best = r->string;
+	}
+	return best ? rest + strlen(best) + 1 : NULL;
+}
+
 void names_load(struct names *n)
 {
 	struct string_list refs = STRING_LIST_INIT_DUP;
-	struct string_list_item *ref, *r;
+	struct string_list_item *ref;
 
 	string_list_init_dup(&n->local);
 	string_list_init_dup(&n->remote);
 	string_list_init_dup(&n->remotes);
+	string_list_init_dup(&n->tips);
 	string_list_split(&n->remotes, git("remote"), "\n", -1);
-	string_list_split(&refs, git("for-each-ref --format=%(refname) refs/heads/ait/ refs/remotes/"), "\n", -1);
+	string_list_split(&refs, git("for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/ait/",
+		"refs/remotes/"), "\n", -1);
 	for_each_string_list_item(ref, &refs) {
+		const char *name = strchr(ref->string, ' ');
 		const char *rest;
-		const char *best = NULL;
+		const char *remote_name;
 
-		if (skip_prefix(ref->string, "refs/heads/ait/", &rest) && *rest) {
+		if (!name)
+			continue;
+		name++;
+		if (skip_prefix(name, "refs/heads/ait/", &rest) && *rest) {
 			string_list_insert(&n->local, xstrfmt("ait/%s", rest));
+			string_list_append(&n->tips, xstrfmt("tip %s", ref->string));
 			continue;
 		}
-		if (!skip_prefix(ref->string, "refs/remotes/", &rest))
-			continue;
-		/* the longest configured remote that names the start, then "/ait/" */
-		for_each_string_list_item(r, &n->remotes) {
-			size_t len = strlen(r->string);
-
-			if (*r->string && !strncmp(rest, r->string, len) && starts_with(rest + len, "/ait/") &&
-			    rest[len + 5] && (!best || len > strlen(best)))
-				best = r->string;
-		}
-		if (best) {
-			struct string_list_item *item = string_list_insert(&n->remote,
-				xstrfmt("ait/%s", rest + strlen(best) + 5));
+		remote_name = remote_ait_name(&n->remotes, name);
+		if (remote_name) {
+			struct string_list_item *item = string_list_insert(&n->remote, remote_name);
 
 			if (!item->util)
 				item->util = xcalloc(1, sizeof(struct string_list));
-			string_list_append(item->util, ref->string);
+			string_list_append(item->util, name);
+			string_list_append(&n->tips, xstrfmt("tip %s", ref->string));
 		}
 	}
+	n->nr = n->local.nr;
+	for_each_string_list_item(ref, &n->remote)
+		n->nr += !string_list_has_string(&n->local, ref->string);
 }
 
 /*
@@ -768,7 +867,7 @@ static const char *init_source(struct names *n, const char *name)
 	refs = item->util;
 	if (refs->nr == 1)
 		return refs->items[0].string;
-	dflt = line1(git_run(NULL, NULL, &rc, "config --get checkout.defaultRemote"));
+	dflt = line1(git_run(NULL, NULL, &rc, "config", "--get", "checkout.defaultRemote"));
 	for (i = 0; !rc && i < refs->nr; i++)
 		if (!strcmp(refs->items[i].string, xstrfmt("refs/remotes/%s/%s", dflt, name)))
 			return refs->items[i].string;
@@ -780,18 +879,25 @@ int is_ancestor(const char *a, const char *b)
 {
 	int rc;
 
-	git_run(NULL, NULL, &rc, "merge-base --is-ancestor %s %s", a, b);
+	git_run(NULL, NULL, &rc, "merge-base", "--is-ancestor", a, b);
 	return !rc;
 }
 
-/* spec 6.5.6-2, 9.2: the upstream of BRANCH when it is a remote-tracking ref, or NULL */
+/* spec 6.5.6-2, 9.2: the upstream of BRANCH when it is a remote ait ref, or NULL */
 char *upstream_of(const char *branch)
 {
+	struct string_list remotes = STRING_LIST_INIT_DUP;
 	int rc;
-	char *up = line1(git_run(NULL, NULL, &rc, "rev-parse -q --verify --symbolic-full-name %s",
-				 xstrfmt("%s@{upstream}", branch)));
+	char *up = line1(git_run(NULL, NULL, &rc, "rev-parse", "-q", "--verify", "--symbolic-full-name",
+		xstrfmt("%s@{upstream}", branch)));
+	char *result;
 
-	return !rc && starts_with(up, "refs/remotes/") ? up : NULL;
+	if (rc)
+		return NULL;
+	string_list_split(&remotes, git("remote"), "\n", -1);
+	result = remote_ait_name(&remotes, up) ? up : NULL;
+	string_list_clear(&remotes, 0);
+	return result;
 }
 
 /* the directories that hold PATH, made as needed (git's safe_create_leading_directories) */
@@ -801,6 +907,37 @@ void leading_dirs(const char *path)
 
 	for (slash = strchr(path + 1, '/'); slash; slash = strchr(slash + 1, '/'))
 		mkdir(xstrndup(path, slash - path), 0777);
+}
+
+/*
+ * Git's entry.c:create_file reserves an absent path atomically. Return zero
+ * if it exists; a nonzero MODE fixes permissions after all bytes are written.
+ */
+int create_file(const char *path, const char *text, mode_t mode)
+{
+	int fd, failed, saved;
+
+	leading_dirs(path);
+	fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+	if (fd < 0) {
+		if (errno == EEXIST)
+			return 0;
+		write_error(path);
+	}
+	failed = write_in_full(fd, text, strlen(text)) < 0;
+	if (!failed && mode)
+		failed = fchmod(fd, mode);
+	saved = errno;
+	if (close(fd) && !failed) {
+		failed = 1;
+		saved = errno;
+	}
+	if (failed) {
+		unlink(path);
+		errno = saved;
+		write_error(path);
+	}
+	return 1;
 }
 
 /* spec 2.6.1: the worktree's checkout file */
@@ -831,46 +968,59 @@ static const char *init_hint(struct names *n)
  * spec 4.2, 4.3 0-2: the contract branch this worktree works with; NULL with
  * the refusal in MSG and HINT (listen goes on after one, 6.8)
  */
-const char *branch_find(const char **msg, struct strbuf *hint)
+const char *branch_find(struct names *n, const char **msg, struct strbuf *hint, int *only)
 {
-	struct names n;
 	struct string_list_item *item;
 	char *chosen;
-	int others = 0;
 
-	names_load(&n);
+	if (only)
+		*only = 0;
 	strbuf_reset(hint);
-	if (!n.local.nr) {
-		*msg = n.remote.nr ? "no local ait branch" : "no ait branch";
-		strbuf_addstr(hint, n.remote.nr && !init_hint(&n) ? "" : "ait init");
+	if (!n->local.nr) {
+		*msg = n->remote.nr ? "no local ait branch" : "no ait branch";
+		if (!n->remote.nr || init_hint(n))
+			strbuf_addstr(hint, hint_command("ait init"));
 		return NULL;
 	}
 	chosen = checkout_read();
-	if (chosen && string_list_has_string(&n.local, chosen))
+	if (chosen && string_list_has_string(&n->local, chosen))
 		return chosen;
 	/* 2.1.2: one name, counting the remote-tracking names too, so a DWIM-made branch is not taken silently */
-	for_each_string_list_item(item, &n.remote)
-		others |= !string_list_has_string(&n.local, item->string);
-	if (!chosen && n.local.nr == 1 && !others)
-		return n.local.items[0].string;
-	for_each_string_list_item(item, &n.local)
-		strbuf_addf(hint, "ait checkout %s\n", item->string);
-	if (init_hint(&n))
-		strbuf_addstr(hint, "ait init\n");
+	if (!chosen && n->nr == 1) {
+		if (only)
+			*only = 1;
+		return n->local.items[0].string;
+	}
+	for_each_string_list_item(item, &n->local)
+		strbuf_addf(hint, "%s\n", hint_command("ait checkout %s", quoted(item->string)));
+	if (init_hint(n))
+		strbuf_addf(hint, "%s\n", hint_command("ait init"));
 	*msg = chosen ? xstrfmt("contract branch '%s' does not exist", chosen) :
 			"more than one ait branch; none is checked out";
 	return NULL;
 }
 
+static int only_branch;
+
 const char *branch_name(void)
 {
 	static const char *name;
+	struct names n;
 	struct strbuf hint = STRBUF_INIT;
 	const char *msg;
 
-	if (!name && !(name = branch_find(&msg, &hint)))
-		reject(128, hint.len ? hint.buf : NULL, "%s", msg);
+	if (!name) {
+		names_load(&n);
+		if (!(name = branch_find(&n, &msg, &hint, &only_branch)))
+			reject(128, hint.len ? hint.buf : NULL, "%s", msg);
+	}
 	return name;
+}
+
+int branch_only(void)
+{
+	branch_name();
+	return only_branch;
 }
 
 /*
@@ -881,8 +1031,8 @@ static void refuse_used(const char *branch, const char *commit)
 {
 	int rc;
 
-	git_run(NULL, NULL, &rc, "fetch -q --dry-run --no-write-fetch-head --no-recurse-submodules . %s",
-		xstrfmt("%s:refs/heads/%s", commit, branch));
+	git_run(NULL, NULL, &rc, "fetch", "-q", "--dry-run", "--no-write-fetch-head", "--no-recurse-submodules",
+		".", xstrfmt("%s:refs/heads/%s", commit, branch));
 	if (rc == 128)
 		reject(128, NULL, "%s", git_error);
 }
@@ -898,30 +1048,38 @@ static void refuse_malformed(struct branch *b, int warn)
 	struct string_list_item *e;
 
 	for_each_string_list_item(e, &b->errors) {
-		/* every error is "'<path>': <why>" */
-		int path = strstr(e->string, "': ") - e->string + 1;
-		char *line = xstrfmt("bad format: %.*s at '%s': %s", path, e->string, b->name, e->string + path + 2);
+		char *line = xstrfmt("bad format: '%s' at '%s': %s", e->string, b->name, (char *)e->util);
 
 		if (warn)
 			warning("%s", line);
 		else
-			reject(128, xstrfmt("fix %.*s in '%s' (enter it with 'ait switch %s')", path, e->string,
-					    b->name, b->name), "%s", line);
-	}
+			reject(128, xstrfmt("fix '%s' in '%s' (enter it with '%s')", e->string,
+					    b->name, hint_command("ait switch %s", quoted(b->name))), "%s", line);
+	}}
+
+/* the branch HEAD is on, for the hints of 6.2 */
+static char *head_branch(void)
+{
+	int rc;
+	const char *name;
+	char *ref = line1(git_run(NULL, NULL, &rc, "symbolic-ref", "-q", "HEAD"));
+
+	/* --short is display disambiguation: a same-name tag can produce heads/NAME. */
+	return !rc && skip_prefix(ref, "refs/heads/", &name) ? xstrdup(name) : NULL;
 }
 
 const char *start(int how)
 {
 	struct branch *b = branch_load(branch_name(), NULL, NULL);
+	char *on;
 
 	refuse_malformed(b, how & START_WARNS);
 	if ((how & START_WRITES) && *b->tip)
 		refuse_used(b->name, b->tip);
-	if ((how & START_FULFILS) &&
-	    starts_with(line1(git_run(NULL, NULL, NULL, "rev-parse --symbolic-full-name HEAD")), "refs/heads/ait/"))
-		reject(128, NULL, "HEAD is on contract branch '%s'", line1(git("rev-parse --abbrev-ref HEAD")));
-	if ((how & START_FULFILS) && *git("ls-files --unmerged"))
-		reject(1, NULL, "fulfilling is not possible because you have unmerged files");
+	if ((how & START_FULFILS) && (on = head_branch()) && starts_with(on, "ait/"))
+		reject(128, NULL, "HEAD is on contract branch '%s'", on);
+	if ((how & START_FULFILS) && *git("ls-files", "--unmerged"))
+		reject(1, NULL, "%s", refusal_words(UNMERGED, NULL, NULL, NULL));
 	session(!!(how & START_SESSION));
 	return b->name;
 }
@@ -951,8 +1109,8 @@ char *tree_with(const char *treeish, const struct strbuf *info)
 		write_error(dir);
 	dir = xstrdup(absolute_path(dir));
 	index = xstrfmt("%s/index", dir);
-	git_run(NULL, index, NULL, "read-tree %s", treeish);
-	git_feed(info, index, NULL, "update-index -z --index-info");
+	git_run(NULL, index, NULL, "read-tree", treeish);
+	git_feed(info, index, NULL, "update-index", "-z", "--index-info");
 	tree = line1(git_run(NULL, index, NULL, "write-tree"));
 	unlink(index);
 	rmdir(dir);
@@ -966,7 +1124,8 @@ static char *checkin_tree(struct checkin *c)
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &c->put)
-		strbuf_addf(&info, "100644 %s\t%s%c", line1(git_run(item->util, NULL, NULL, "hash-object -w --stdin")),
+		strbuf_addf(&info, "100644 %s\t%s%c", line1(git_run(item->util, NULL, NULL, "hash-object", "-w",
+			"--stdin")),
 			    item->string, 0);
 	return tree_with(*c->tip ? c->tip : EMPTY_TREE, &info);
 }
@@ -978,19 +1137,26 @@ static char *checkin_tree(struct checkin *c)
 static void checkin_invariants(struct checkin *c, struct branch *now, const char *tree)
 {
 	struct branch *after = branch_load(c->branch, NULL, tree);
-	struct string_list before = STRING_LIST_INIT_DUP, then = STRING_LIST_INIT_DUP;
+	struct string_list before = STRING_LIST_INIT_DUP, then = STRING_LIST_INIT_DUP, added = STRING_LIST_INIT_DUP;
 	struct string_list_item *v;
 
 	if (after->errors.nr && !c->refusal)
-		BUG("ait wrote a malformed contract: %s", after->errors.items[0].string);
+		BUG("ait wrote a malformed contract: '%s': %s", after->errors.items[0].string,
+		    (char *)after->errors.items[0].util);
 	if (after->errors.nr)
-		reject(1, c->violation_hint(c, NULL), "%s%s", c->refusal, after->errors.items[0].string);
-	invariants(now, now, &before);
-	invariants(after, now, &then);
+		reject(1, c->violation_hint ? c->violation_hint(c, NULL) : NULL, "%s'%s': %s", c->refusal, after->errors.items[0].string,
+		       (char *)after->errors.items[0].util);
+	invariants(now, now, NULL, &before);
+	invariants(after, now, c->fulfilling, &then);
 	for_each_string_list_item(v, &then)
 		if (!string_list_has_string(&before, v->string))
-			reject(1, c->violation_hint ? c->violation_hint(c, v->util) : NULL, "%s%s",
-			       c->refusal ? c->refusal : "", violation_words(v->util));
+			string_list_insert(&added, v->string)->util = v->util;
+	if (added.nr)
+		reject(1, c->violation_hint ? c->violation_hint(c, &added) : NULL, "%s%s",
+		       c->refusal ? c->refusal : "", violation_words(added.items[0].util));
+	string_list_clear(&added, 0);
+	string_list_clear(&before, 1);
+	string_list_clear(&then, 1);
 }
 
 /* spec 4.4-4 (E_MOVED): what the checkin read changed meanwhile */
@@ -1002,7 +1168,7 @@ NORETURN void checkin_moved(struct checkin *c)
 /* spec 4.4-1: T, the branch's tip now ("" when it has no commit) */
 void checkin_tip(struct checkin *c)
 {
-	if (!object(xstrfmt("refs/heads/%s^{commit}", c->branch), 0, c->tip, NULL))
+	if (!branch_tip(c->branch, c->tip))
 		*c->tip = 0;
 }
 
@@ -1017,6 +1183,7 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
 	string_list_clear(&c->put, 0);
 	c->tree = NULL;
 	c->second_parent = c->ff = NULL;
+	c->fulfilling = NULL;
 	c->at = now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
 	/* a tip that a git commit or merge broke after start() (4.3-3) */
 	refuse_malformed(now, 0);
@@ -1035,7 +1202,7 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
  * whole command is judged again on the new tip, unless a file it puts moved.
  * A judge that names a commit to fast-forward to (6.5.6) moves the branch there.
  */
-void checkin_run(struct checkin *c, judge_fn decide)
+char *checkin_run(struct checkin *c, judge_fn decide)
 {
 	/* Register after a caller's stage lock so children are reaped before it is released. */
 	guard_git_children();
@@ -1045,32 +1212,36 @@ void checkin_run(struct checkin *c, judge_fn decide)
 	for (;;) {
 		char old[48], *tree = checkin_judge(c, decide);
 		const char *commit;
-		struct strbuf parents = STRBUF_INIT;
 		struct strvec args = STRVEC_INIT;
 		struct string_list_item *item;
 		int rc;
 
 		/* a request that changes nothing is a noop (6.4.1): no commit */
 		if (!c->ff && !c->second_parent && *c->tip && !strcmp(tree, c->at->tree->oid))
-			return;
-		if (*c->tip)
-			strbuf_addf(&parents, "-p %s ", c->tip);
-		if (c->second_parent)
-			strbuf_addf(&parents, "-p %s ", c->second_parent);
-		commit = c->ff ? c->ff :
-			 line1(git_run(checkin_message(c), NULL, NULL, xstrfmt("commit-tree %s%%s", parents.buf), tree));
+			return NULL;
+		if (c->ff) {
+			commit = c->ff;
+		} else {
+			strvec_pushl(&args, "commit-tree", tree, NULL);
+			if (*c->tip)
+				strvec_pushl(&args, "-p", c->tip, NULL);
+			if (c->second_parent)
+				strvec_pushl(&args, "-p", c->second_parent, NULL);
+			commit = line1(git_args(&args, checkin_message(c), NULL, NULL));
+			strvec_clear(&args);
+		}
 		/* 4.4-3: (a) no worktree uses the branch, judged by git; (b) the CAS */
 		refuse_used(c->branch, commit);
 		/* pipe_command sends input only after Git has registered the child for cleanup. */
 		git_run(xstrfmt("update refs/heads/%s %s %s\n", c->branch, commit, *c->tip ? c->tip : NULL_OID),
-			NULL, &rc, "update-ref -m %s --stdin", c->msg);
+			NULL, &rc, "update-ref", "-m", c->msg, "--stdin");
 		if (!rc && c->ff)
-			printf("Fast-forward %.7s..%.7s\n", c->tip, commit);
+			return xstrfmt("Fast-forward %.7s..%.7s\n", c->tip, commit);
 		else if (!rc && !c->no_trailers)
-			printf("[%s %s%s] %s\n", c->branch, line1(git("rev-parse --short %s", commit)),
-			       *c->tip ? "" : " (root-commit)", line1(xstrdup(c->msg)));
+			return xstrfmt("[%s %s%s] %s\n", c->branch, line1(git("rev-parse", "--short", commit)),
+				       *c->tip ? "" : " (root-commit)", line1(xstrdup(c->msg)));
 		if (!rc)
-			return;
+			return NULL;
 		/* 4.4-4: T' is read once, compared, and judged on: T := T' */
 		snprintf(old, sizeof(old), "%s", c->tip);
 		checkin_tip(c);
@@ -1090,6 +1261,15 @@ void checkin_run(struct checkin *c, judge_fn decide)
 	}
 }
 
+/* Like Git's builtin/commit.c:1974, report after publication; porcelain comes first. */
+void checkin_report(char *summary)
+{
+	show_code_output();
+	if (summary)
+		fputs(summary, stdout);
+	free(summary);
+}
+
 /* the notification hook (spec 9, U51): git's reference-transaction hook (githooks(5)) wakes ait listen */
 static const char hook_text[] =
 	"#!/bin/sh\n"
@@ -1104,7 +1284,8 @@ static const char hook_text[] =
 
 static char *hook_file(void)
 {
-	return git_path("hooks/reference-transaction");
+	/* Keep the leaf itself: even a dangling hook symlink is an existing hook. */
+	return xstrfmt("%s/reference-transaction", git_path("hooks"));
 }
 
 /* the hook is ait's (9.8); another one leaves listen to polling every second */
@@ -1120,15 +1301,11 @@ static void install_hook(void)
 {
 	char *path = hook_file();
 
-	if (!access(path, F_OK)) {
+	if (!create_file(path, hook_text, 0755)) {
 		if (!hook_installed())
 			warning("'%s' exists; 'ait listen' wakes by polling only", path);
 		return;
 	}
-	leading_dirs(path);
-	write_state(path, hook_text);
-	if (chmod(path, 0755))
-		write_error(path);
 	mkdir(state_path(""), 0777);
 }
 
@@ -1162,7 +1339,7 @@ static int cmd_init(int argc, const char **argv)
 				(int)((struct string_list *)item->util)->nr);
 			continue;
 		}
-		git("branch -q %s %s", item->string, from);
+		git("branch", "-q", item->string, from);
 		printf("branch %s\n", item->string);
 		made++;
 	}
@@ -1176,28 +1353,20 @@ static int cmd_init(int argc, const char **argv)
 
 			if (!*r->string)
 				continue;
-			out = git_run(NULL, NULL, &rc, "ls-remote %s refs/heads/ait/*", r->string);
+			out = git_run(NULL, NULL, &rc, "ls-remote", r->string, "refs/heads/ait/*");
 			if (rc)
 				warning("cannot reach '%s'; skipped", r->string);
 			else if (*out)
-				reject(128, xstrfmt("fetch 'refs/heads/ait/*' from '%s', then 'ait init'", r->string),
+				reject(128, xstrfmt("fetch 'refs/heads/ait/*' from '%s', then '%s'", r->string,
+						    hint_command("ait init")),
 				       "'%s' has ait branches that are not fetched", r->string);
 		}
-		c.branch = xstrfmt("ait/%s", line1(git("var GIT_DEFAULT_BRANCH")));
+		c.branch = xstrfmt("ait/%s", line1(git("var", "GIT_DEFAULT_BRANCH")));
 		string_list_init_dup(&c.put);
 		checkin_run(&c, NULL);
 		printf("branch %s\n", c.branch);
 	}
 	return 0;
-}
-
-/* the branch HEAD is on, for the hints of 6.2 */
-static char *head_branch(void)
-{
-	int rc;
-	char *name = line1(git_run(NULL, NULL, &rc, "symbolic-ref -q --short HEAD"));
-
-	return rc ? NULL : name;
 }
 
 /* spec 6.2-6.3: the form ait takes is exactly ait/<name> (and for checkout ait/<name> --) of a known name */
@@ -1215,20 +1384,20 @@ static int pass_to_git(const char *cmd, const char **argv)
 
 	strvec_push(&args, cmd);
 	strvec_pushv(&args, argv + 1);
-	return pass_git(&args, 1);
+	return pass_git(&args, 1, NULL);
 }
 
 static void local_or_refuse(struct names *n, const char *name)
 {
 	if (!string_list_has_string(&n->local, name))
-		reject(128, init_source(n, name) ? "ait init" : NULL, "no local branch '%s'", name);
+		reject(128, init_source(n, name) ? hint_command("ait init") : NULL, "no local branch '%s'", name);
 }
 
 static int clean_work_tree(void)
 {
 	int rc;
 
-	git_run(NULL, NULL, &rc, "diff --quiet HEAD");
+	git_run(NULL, NULL, &rc, "diff", "--quiet", "HEAD");
 	return !rc;
 }
 
@@ -1244,11 +1413,12 @@ static int cmd_checkout(int argc, const char **argv)
 	write_state(checkout_file(), xstrfmt("%s\n", argv[1]));
 	printf("On contract branch %s\n", argv[1]);
 	on = head_branch();
+	on = on ? xstrfmt("'%s'", on) : xstrdup("a detached HEAD");
 	if (clean_work_tree())
-		suggest("the work tree stays on '%s'; to enter the contract branch: 'ait switch %s'",
-			on ? on : "a detached HEAD", argv[1]);
+		suggest("the work tree stays on %s; to enter the contract branch: '%s'",
+			on, hint_command("ait switch %s", quoted(argv[1])));
 	else
-		suggest("the work tree stays on '%s'", on ? on : "a detached HEAD");
+		suggest("the work tree stays on %s", on);
 	return 0;
 }
 
@@ -1267,7 +1437,7 @@ static int cmd_switch(int argc, const char **argv)
 	strvec_pushl(&args, "switch", argv[1], NULL);
 	rc = git_pass(&args);
 	if (!rc)
-		suggest("contracts change only through ait commands; to go back: 'ait switch -'");
+		suggest("contracts change only through ait commands; to go back: '%s'", hint_command("ait switch -"));
 	return rc;
 }
 
@@ -1309,7 +1479,7 @@ int main(int argc, const char **argv)
 		precompose_argv_prefix(argc, argv, NULL);
 		status = commands[i].fn(argc - 1, argv + 1);
 		if (fflush(stdout) || ferror(stdout))
-			reject(128, NULL, "write error: standard output: %s", strerror(errno));
+			stdout_write_error();
 		return status;
 	}
 	reject(129, NULL, "'%s' is not an ait command", argv[1]);
