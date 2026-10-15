@@ -24,7 +24,7 @@ specs:
     added content
 fulfilled:
 YAML
-cp "$P" "$Q"
+sed 's/added content/added content for second draft/' "$P" >"$Q"
 printf 'kind: demand\n' >"$R"
 
 # Real Git seeds the stage so a broken ait add cannot hide commit regressions.
@@ -42,6 +42,9 @@ run ait contract add "$P" "$Q"
 check_rc "one add accepts multiple valid drafts" 0
 check "add reports both drafts after staging them" "test \"\$(grep -c '^add ' $T/out)\" = 2"
 check "both added blobs are in the contract stage" "test \"\$(GIT_INDEX_FILE=$stage git ls-files --stage | wc -l | tr -d ' ')\" = 2"
+GIT_INDEX_FILE="$stage" git show ":${P#.ait/}" >"$T/added-p"
+GIT_INDEX_FILE="$stage" git show ":${Q#.ait/}" >"$T/added-q"
+check "add stores each draft's exact bytes" "cmp -s $P $T/added-p && cmp -s $Q $T/added-q"
 check "add leaves no owned index lock" "! test -e $stage.lock"
 check "add does not move either branch" "test \"\$(git rev-parse HEAD)\" = $code_head && test \"\$(git rev-parse ait/master)\" = $tip"
 git ls-files --stage >"$T/code-after"
@@ -59,9 +62,23 @@ run ait contract add "$Q" .ait/stage/D444444444444.yaml
 check_rc "an unreadable second draft rejects the whole add" 128
 check "a read failure preserves the stage and reports no additions" "cmp -s $T/stage-before $stage && ! has out '^add '"
 
-# Helpers must not consume an unrelated manually staged contract or code.
+# --index-info silently ignores .git paths; a batch must reject them atomically.
 rm -f "$stage" "$stage.lock"
 seed_stage "$P"
+cp "$stage" "$T/stage-before"
+mkdir -p .ait/.git
+bad=.ait/.git/D555555555555.yaml
+cp "$Q" "$bad"
+run ait contract add "$Q" "$bad"
+check_rc "a native Git path refusal rejects the whole add" 128
+check "a native Git refusal preserves stage bytes and reports no additions" "cmp -s $T/stage-before $stage && ! has out '^add '"
+check "a native Git refusal leaves no index lock" "! test -e $stage.lock"
+
+# Helpers must not consume an unrelated manually staged contract or code.
+# Use ait add here, so the snapshot case below verifies its bytes end to end.
+rm -f "$stage" "$stage.lock"
+run ait contract add "$P"
+check_rc "add stages the draft used by the snapshot commit" 0
 cp "$stage" "$T/stage-before"
 run ait future demand src/order.c src/stock.c cond.yaml -m helper
 check_rc "future demand checks in while another draft is staged" 0
@@ -147,35 +164,66 @@ rm -f "$stage" "$stage.lock"
 seed_stage "$P"
 cp "$stage" "$T/stage-before"
 tip=$(git rev-parse ait/master)
+rm -f "$T/rejected-with-lock"
 cat >.git/hooks/reference-transaction <<'HOOK'
 #!/bin/sh
-test "$1" != prepared
+updates=$(cat)
+case "$updates" in
+	*" refs/heads/ait/master"*) ;;
+	*) exit 0 ;;
+esac
+if test "$1" = prepared
+then
+	test -e "$stage.lock" && : >"$T/rejected-with-lock"
+	exit 1
+fi
+exit 0
 HOOK
 chmod +x .git/hooks/reference-transaction
 run ait contract commit -m rejected
 check_rc "a real reference-transaction hook can refuse the checkin" 128
+check "the actual CAS refusal occurs while the stage lock is held" "test -e $T/rejected-with-lock"
 check "a refused checkin preserves stage and branch, and removes its lock" "cmp -s $T/stage-before $stage && test \"\$(git rev-parse ait/master)\" = $tip && ! test -e $stage.lock"
 rm .git/hooks/reference-transaction
 run ait contract commit -m retry
 check_rc "the same staged data can be committed after fixing the refusal" 0
 check "retry consumes the stage and releases the lock" "! test -e $stage && ! test -e $stage.lock"
 
-# Hold a child at a known point, terminate ait, and then let the child exit.
+# Block a real update-ref transaction, not an object-only commit-tree child.
+# Empty dry-run transactions from refuse_used must not trigger this hook.
 rm -f "$stage" "$stage.lock"
 git show ait/master:stage/D222222222222.yaml >"$Q"
 sed -i.bak 's/next version/interrupted version/' "$Q"
 seed_stage "$Q"
 cp "$stage" "$T/stage-before"
-cat >"$T/before-commit-tree" <<'HOOK'
-: >"$T/ready"
-for i in $(seq 1 100)
-do
-	test -e "$T/continue" && exit 0
-	sleep 0.05
-done
-exit 1
+tip=$(git rev-parse ait/master)
+rm -f "$T/ready" "$T/continue" "$T/update-ref.pid" "$T/ref-committed"
+cat >.git/hooks/reference-transaction <<'HOOK'
+#!/bin/sh
+updates=$(cat)
+case "$updates" in
+	*" refs/heads/ait/master"*) ;;
+	*) exit 0 ;;
+esac
+case "$1" in
+prepared)
+	echo "$PPID" >"$T/update-ref.pid"
+	: >"$T/ready"
+	for i in $(seq 1 500)
+	do
+		test -e "$T/continue" && exit 0
+		sleep 0.05
+	done
+	exit 1
+	;;
+committed)
+	: >"$T/ref-committed"
+	;;
+esac
+exit 0
 HOOK
-env PATH="$T/bin:$PATH" ait contract commit -m interrupted >"$T/out" 2>"$T/err" &
+chmod +x .git/hooks/reference-transaction
+ait contract commit -m interrupted >"$T/out" 2>"$T/err" &
 committer=$!
 for i in $(seq 1 100)
 do
@@ -184,21 +232,111 @@ do
 done
 if test -e "$T/ready"
 then
+	git_child=$(cat "$T/update-ref.pid")
+	# A second commit must fail promptly at the contract lock, before reading it.
+	run perl -e 'alarm 5; exec @ARGV; die $!' ait contract commit -m competing
+	check_rc "a competing commit is refused without blocking" 128
+	check "a competing commit respects the live stage lock" "has err 'index.lock' && cmp -s $T/stage-before $stage && test \"\$(git rev-parse ait/master)\" = $tip"
 	kill -TERM "$committer"
 	wait "$committer" 2>/dev/null
-	rc=$?
+	signal_rc=$?
+	check "SIGTERM terminates the committing process" "test $signal_rc -gt 128"
+	check "update-ref has exited before the terminated parent is reaped" "! kill -0 $git_child 2>/dev/null"
+	check "signal cleanup removes its lock and preserves staged bytes" "! test -e $stage.lock && cmp -s $T/stage-before $stage"
+	# If a Git child survived, release it and wait long enough to expose its CAS.
 	: >"$T/continue"
+	for i in $(seq 1 100)
+	do
+		kill -0 "$git_child" 2>/dev/null || break
+		sleep 0.05
+	done
+	check "a terminated commit cannot move the ref after releasing its lock" "! test -e $T/ref-committed && test \"\$(git rev-parse ait/master)\" = $tip && ! kill -0 $git_child 2>/dev/null"
 else
 	kill -TERM "$committer" 2>/dev/null
 	wait "$committer" 2>/dev/null
-	rc=0
+	: >"$T/continue"
+	say_fail "the real update-ref transaction reached the interruption point"
 fi
-check "SIGTERM terminates the committing process" "test $rc -gt 128"
-check "signal cleanup removes the owned lock and preserves the stage" "! test -e $stage.lock && cmp -s $T/stage-before $stage"
+rm .git/hooks/reference-transaction
+run ait contract add "$Q"
+check_rc "add works after the interrupted Git child has exited" 0
 run ait contract commit -m after-signal
-check_rc "commit can be retried after interruption" 0
+check_rc "the preserved snapshot can be committed after interruption" 0
+check "the retry consumes the stage and releases the lock" "! test -e $stage && ! test -e $stage.lock"
 run ait contract commit -m empty
 check_rc "an empty stage is refused" 1
+check "an empty stage refusal reports nothing staged" "has err 'nothing staged'"
 check "an empty stage refusal releases the lock" "! test -e $stage.lock"
+
+
+# An inherited ignored signal must not run cleanup and resume without the lock.
+rm -f "$stage" "$stage.lock"
+I=.ait/stage/D666666666666.yaml
+J=.ait/stage/D777777777777.yaml
+cat >"$I" <<'YAML'
+condition-id: ""
+change-id: ""
+kind: demand
+creator: ""
+consumer: "src/order.c"
+provider: "src/stock.c"
+state: future
+specs:
+- body: |
+    ignored signal snapshot
+fulfilled:
+YAML
+cp "$I" "$J"
+seed_stage "$I"
+cp "$stage" "$T/stage-before"
+rm -f "$T/ready" "$T/continue"
+cat >.git/hooks/reference-transaction <<'HOOK'
+#!/bin/sh
+updates=$(cat)
+case "$updates" in
+	*" refs/heads/ait/master"*) ;;
+	*) exit 0 ;;
+esac
+test "$1" = prepared || exit 0
+: >"$T/ready"
+for i in $(seq 1 100)
+do
+	test -e "$T/continue" && exit 0
+	sleep 0.05
+done
+exit 1
+HOOK
+chmod +x .git/hooks/reference-transaction
+(trap '' INT QUIT; exec ait contract commit -m ignored-signal) >"$T/ignored.out" 2>"$T/ignored.err" &
+committer=$!
+for i in $(seq 1 100)
+do
+	test -e "$T/ready" && break
+	sleep 0.05
+done
+if test -e "$T/ready"
+then
+	kill -INT "$committer"
+	for i in $(seq 1 100)
+	do
+		test -e "$stage.lock" || break
+		sleep 0.01
+	done
+	check "an inherited ignored SIGINT keeps the live commit locked" "kill -0 $committer && test -e $stage.lock && cmp -s $T/stage-before $stage"
+	run ait contract add "$J"
+	check_rc "add is refused while a commit ignores SIGINT" 128
+	check "an ignored signal cannot expose stage data to a concurrent add" "cmp -s $T/stage-before $stage && ! has out '^add '"
+	: >"$T/continue"
+	wait "$committer"
+	rc=$?
+	check_rc "a commit can finish after its ignored signal" 0
+	check "the completed commit consumes its snapshot and releases its lock" "! test -e $stage && ! test -e $stage.lock && git cat-file -e ait/master:stage/D666666666666.yaml && ! git cat-file -e ait/master:stage/D777777777777.yaml 2>/dev/null"
+else
+	kill -TERM "$committer" 2>/dev/null
+	wait "$committer" 2>/dev/null
+	: >"$T/continue"
+	say_fail "the ignored-signal commit reached its ref transaction"
+fi
+rm .git/hooks/reference-transaction
 
 done_testing

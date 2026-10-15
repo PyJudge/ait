@@ -16,7 +16,7 @@ extern char *git_error;
 extern char *not_recorded, *retry_command;
 extern size_t git_out_len;
 char *git_args(struct strvec *args, const char *in, const char *index, int *rc);
-char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...);
+void guard_git_children(void);
 char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...);
 #define git(...) git_run(NULL, NULL, NULL, __VA_ARGS__)
 int git_pass(struct strvec *args);

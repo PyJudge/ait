@@ -1,7 +1,7 @@
-/* git v2.53.0 sigchain.c:1 */
 #include "git-compat-util.h"
 #include "sigchain.h"
 
+/* git v2.53.0 sigchain.c:4-11 */
 #define SIGCHAIN_MAX_SIGNALS 32
 
 struct sigchain_signal {
@@ -11,12 +11,14 @@ struct sigchain_signal {
 };
 static struct sigchain_signal signals[SIGCHAIN_MAX_SIGNALS];
 
+/* git v2.53.0 sigchain.c:13 */
 static void check_signum(int sig)
 {
 	if (sig < 1 || sig >= SIGCHAIN_MAX_SIGNALS)
 		BUG("signal out of range: %d", sig);
 }
 
+/* git v2.53.0 sigchain.c:19 */
 int sigchain_push(int sig, sigchain_fun f)
 {
 	struct sigchain_signal *s = signals + sig;
@@ -30,6 +32,7 @@ int sigchain_push(int sig, sigchain_fun f)
 	return 0;
 }
 
+/* git v2.53.0 sigchain.c:32 */
 int sigchain_pop(int sig)
 {
 	struct sigchain_signal *s = signals + sig;
@@ -43,15 +46,7 @@ int sigchain_pop(int sig)
 	return 0;
 }
 
-void sigchain_push_common(sigchain_fun f)
-{
-	sigchain_push(SIGINT, f);
-	sigchain_push(SIGHUP, f);
-	sigchain_push(SIGTERM, f);
-	sigchain_push(SIGQUIT, f);
-	sigchain_push(SIGPIPE, f);
-}
-
+/* git v2.53.0 sigchain.c:54 */
 void sigchain_pop_common(void)
 {
 	sigchain_pop(SIGPIPE);

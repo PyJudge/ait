@@ -1,5 +1,6 @@
 #include "git-compat-util.h"
 #include "run-command.h"
+#include "sigchain.h"
 #include "strbuf.h"
 #include "string-list.h"
 
@@ -15,6 +16,123 @@ void child_process_clear(struct child_process *child)
 {
 	strvec_clear(&child->args);
 	strvec_clear(&child->env);
+}
+
+/* git v2.53.0 run-command.c:34-41 */
+struct child_to_clean {
+	pid_t pid;
+	struct child_process *process;
+	struct child_to_clean *next;
+};
+static struct child_to_clean *children_to_clean;
+static int installed_child_cleanup_handler;
+
+/* git v2.53.0 run-command.c:42 */
+static void cleanup_children(int sig, int in_signal)
+{
+	struct child_to_clean *children_to_wait_for = NULL;
+
+	while (children_to_clean) {
+		struct child_to_clean *p = children_to_clean;
+		children_to_clean = p->next;
+
+		if (p->process && !in_signal) {
+			struct child_process *process = p->process;
+			if (process->clean_on_exit_handler) {
+				trace_printf(
+					"trace: run_command: running exit handler for pid %"
+					PRIuMAX, (uintmax_t)p->pid
+				);
+				process->clean_on_exit_handler(process);
+			}
+		}
+
+		kill(p->pid, sig);
+
+		if (p->process && p->process->wait_after_clean) {
+			p->next = children_to_wait_for;
+			children_to_wait_for = p;
+		} else {
+			if (!in_signal)
+				free(p);
+		}
+	}
+
+	while (children_to_wait_for) {
+		struct child_to_clean *p = children_to_wait_for;
+		children_to_wait_for = p->next;
+
+		while (waitpid(p->pid, NULL, 0) < 0 && errno == EINTR)
+			; /* spin waiting for process exit or error */
+
+		if (!in_signal)
+			free(p);
+	}
+}
+
+/* Chain synchronously after reaping, keeping other cleanup signals blocked. */
+static void cleanup_children_on_signal(int sig)
+{
+	sigset_t current;
+
+	cleanup_children(sig, 1);
+	sigchain_pop(sig);
+	sigemptyset(&current);
+	sigaddset(&current, sig);
+	sigprocmask(SIG_UNBLOCK, &current, NULL);
+	raise(sig);
+}
+
+/* Keep the following tempfile exit cleanup protected through process exit. */
+static void cleanup_children_on_exit(void)
+{
+	sigset_t blocked;
+
+	sigfillset(&blocked);
+	sigprocmask(SIG_BLOCK, &blocked, NULL);
+	cleanup_children(SIGTERM, 0);
+}
+
+/* Install after a caller's tempfile registration, before any child can start. */
+void prepare_child_cleanup(void)
+{
+	if (installed_child_cleanup_handler)
+		return;
+	atexit(cleanup_children_on_exit);
+	sigchain_push_common(cleanup_children_on_signal);
+	installed_child_cleanup_handler = 1;
+}
+
+/* git v2.53.0 run-command.c:96 */
+static void mark_child_for_cleanup(pid_t pid, struct child_process *process)
+{
+	struct child_to_clean *p = xmalloc(sizeof(*p));
+	p->pid = pid;
+	p->process = process;
+	p->next = children_to_clean;
+	children_to_clean = p;
+
+	if (!installed_child_cleanup_handler) {
+		atexit(cleanup_children_on_exit);
+		sigchain_push_common(cleanup_children_on_signal);
+		installed_child_cleanup_handler = 1;
+	}
+}
+
+/* git v2.53.0 run-command.c:111 */
+static void clear_child_for_cleanup(pid_t pid)
+{
+	struct child_to_clean **pp;
+
+	for (pp = &children_to_clean; *pp; pp = &(*pp)->next) {
+		struct child_to_clean *clean_me = *pp;
+
+		if (clean_me->pid == pid) {
+			*pp = clean_me->next;
+			free(clean_me);
+			return;
+		}
+	}
 }
 
 /* git v2.53.0 run-command.c:126 */

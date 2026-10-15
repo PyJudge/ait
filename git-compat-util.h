@@ -100,7 +100,7 @@ void write_file(const char *path, const char *fmt, ...);
 
 /*
  * git infrastructure that ait does not carry: tracing, translation, the object
- * store, child cleanup at exit, the git command wrapper and GIT_ALLOC_LIMIT.
+ * store, the git command wrapper and GIT_ALLOC_LIMIT.
  * The ported code calls these; here they do nothing.
  */
 #define NO_PTHREADS
@@ -113,11 +113,10 @@ void write_file(const char *path, const char *fmt, ...);
 #define trace2_child_exit(cmd, code) do { } while (0)
 #define trace2_exec(file, argv) 0
 #define trace2_exec_result(id, ec) do { } while (0)
+#define trace_printf(...) do { } while (0)
 #define trace_run_command(cmd) do { } while (0)
 #define trace_argv_printf(argv, fmt) do { } while (0)
 #define odb_close(odb) do { } while (0)
-#define mark_child_for_cleanup(pid, cmd) do { } while (0)
-#define clear_child_for_cleanup(pid) do { } while (0)
 #define invalidate_lstat_cache() do { } while (0)
 #define prepare_git_cmd(out, argv) BUG("git_cmd is not used by ait")
 #define git_env_ulong(key, val) (val)

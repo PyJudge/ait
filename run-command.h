@@ -115,6 +115,7 @@ struct child_process {
 void child_process_init(struct child_process *);
 void child_process_clear(struct child_process *);
 int start_command(struct child_process *);
+void prepare_child_cleanup(void);
 int finish_command(struct child_process *);
 int pipe_command(struct child_process *cmd,
 		 const char *in, size_t in_len,

@@ -1186,6 +1186,7 @@ static struct tempfile *lock_stage(const char *index)
 	if (fd >= 0) {
 		lock = register_tempfile(path);
 		lock->fd = fd;
+		guard_git_children();
 	}
 	sigprocmask(SIG_SETMASK, &previous, NULL);
 	free(path);
@@ -1194,10 +1195,27 @@ static struct tempfile *lock_stage(const char *index)
 	return lock;
 }
 
+/* A released lock must leave the cleanup list before another owner can lose it. */
+static void unlock_stage(struct tempfile **lock, const char *index)
+{
+	sigset_t blocked, previous;
+	int failed, saved;
+
+	sigfillset(&blocked);
+	sigprocmask(SIG_BLOCK, &blocked, &previous);
+	failed = delete_tempfile(lock);
+	saved = errno;
+	sigprocmask(SIG_SETMASK, &previous, NULL);
+	if (failed) {
+		errno = saved;
+		write_error(xstrfmt("%s.lock", index));
+	}
+}
+
 /* spec 6.5.3: drafts into the contract stage, as they are now */
 static int contract_add(int argc, const char **argv)
 {
-	struct strbuf info = STRBUF_INIT;
+	struct strvec args = STRVEC_INIT;
 	const char *index;
 	int i;
 
@@ -1205,6 +1223,7 @@ static int contract_add(int argc, const char **argv)
 		reject(129, NULL, "add names the drafts");
 	start(0);
 	index = stage_index();
+	strvec_pushl(&args, "update-index", "--add", NULL);
 	for (i = 1; i < argc; i++) {
 		const char *rel;
 		struct strbuf sb = STRBUF_INIT;
@@ -1217,10 +1236,10 @@ static int contract_add(int argc, const char **argv)
 		if (!contract_parse(sb.buf, rel, 1, &err))
 			reject(128, NULL, "bad format: %s", err);
 		oid = line1(git_run(sb.buf, NULL, NULL, "hash-object -w --stdin"));
-		strbuf_addf(&info, "100644 %s\t%s%c", oid, rel, 0);
+		strvec_pushl(&args, "--cacheinfo", xstrfmt("100644,%s,%s", oid, rel), NULL);
 	}
-	/* One Git index transaction: no partial stage or success output on failure. */
-	git_feed(&info, index, NULL, "update-index -z --index-info");
+	/* --index-info silently skips invalid paths; --cacheinfo refuses the transaction. */
+	git_args(&args, NULL, index, NULL);
 	for (i = 1; i < argc; i++)
 		printf("add %s\n", argv[i] + strlen(".ait/"));
 	return 0;
@@ -1340,8 +1359,7 @@ static int contract_commit(int argc, const char **argv)
 	checkin_run(&ck, commit_judge);
 	if (unlink(index))
 		write_error(index);
-	if (delete_tempfile(&lock))
-		write_error(xstrfmt("%s.lock", index));
+	unlock_stage(&lock, index);
 	for_each_string_list_item(item, &st.drafts) {
 		char *id = contract_path_id(item->string);
 

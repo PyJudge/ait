@@ -7,6 +7,7 @@
 #include "quote.h"
 #include "precompose.h"
 #include "setup.h"
+#include "sigchain.h"
 #include <dirent.h>
 #include <sys/file.h>
 
@@ -111,6 +112,38 @@ static char *git_failed(void)
 	return xstrfmt("git failed: 'git %s': %s", git_cmd, git_error);
 }
 
+/*
+ * A cleanup chain must terminate, not return to an ignored disposition with
+ * its locks removed. Preserve SIG_IGN, and prevent another signal from
+ * reentering cleanup while a publishing child is being reaped.
+ */
+void sigchain_push_common(sigchain_fun f)
+{
+	static const int cleanup_signals[] = { SIGINT, SIGHUP, SIGTERM, SIGQUIT, SIGPIPE };
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(cleanup_signals); i++) {
+		struct sigaction action;
+		int sig = cleanup_signals[i];
+
+		if (sigaction(sig, NULL, &action))
+			die_errno("sigaction");
+		if (action.sa_handler == SIG_IGN)
+			continue;
+		if (sigchain_push(sig, f) || sigaction(sig, NULL, &action) ||
+		    sigfillset(&action.sa_mask) || sigaction(sig, &action, NULL))
+			die_errno("cannot install cleanup signal handler");
+	}
+}
+
+static int git_children_guarded;
+
+void guard_git_children(void)
+{
+	prepare_child_cleanup();
+	git_children_guarded = 1;
+}
+
 /* git with ARGS; IN feeds stdin, INDEX sets GIT_INDEX_FILE; without RC a failure is fatal (4.7) */
 static char *git_args_n(struct strvec *args, const char *in, size_t in_len, const char *index, int *rc)
 {
@@ -129,6 +162,7 @@ static char *git_args_n(struct strvec *args, const char *in, size_t in_len, cons
 		strvec_pushf(&cmd.env, "GIT_INDEX_FILE=%s", index);
 	/* git's messages untranslated: ait's are English (v14 5.6) */
 	strvec_push(&cmd.env, "LANGUAGE=C");
+	cmd.clean_on_exit = cmd.wait_after_clean = git_children_guarded;
 	code = pipe_command(&cmd, in, in_len, &out, 0, &err, 0);
 	free(git_error);
 	git_error = xstrndup(err.buf, strcspn(err.buf, "\n"));
@@ -140,7 +174,7 @@ static char *git_args_n(struct strvec *args, const char *in, size_t in_len, cons
 	git_cmd = xstrdup(args->v[i] ? args->v[i] : "");
 	if (rc)
 		*rc = code;
-	else if (code)
+	if (code < 0 || (!rc && code))
 		reject(128, NULL, "%s", git_failed());
 	strbuf_release(&err);
 	return strbuf_detach(&out, &git_out_len);
@@ -163,7 +197,7 @@ static void words_of(struct strvec *args, const char *fmt, va_list ap)
 }
 
 /* git_run() fed the bytes of IN, NULs too (the -z inputs of update-index) */
-char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...)
+static char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...)
 {
 	struct strvec args = STRVEC_INIT;
 	va_list ap;
@@ -967,6 +1001,8 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
  */
 void checkin_run(struct checkin *c, judge_fn decide)
 {
+	/* Register after a caller's stage lock so children are reaped before it is released. */
+	guard_git_children();
 	if (!*c->rid)
 		newid(c->rid, 'R');
 	checkin_tip(c);
@@ -989,8 +1025,9 @@ void checkin_run(struct checkin *c, judge_fn decide)
 			 line1(git_run(checkin_message(c), NULL, NULL, xstrfmt("commit-tree %s%%s", parents.buf), tree));
 		/* 4.4-3: (a) no worktree uses the branch, judged by git; (b) the CAS */
 		refuse_used(c->branch, commit);
-		git_run(NULL, NULL, &rc, "update-ref -m %s %s %s %s", c->msg, xstrfmt("refs/heads/%s", c->branch), commit,
-			*c->tip ? c->tip : NULL_OID);
+		/* pipe_command sends input only after Git has registered the child for cleanup. */
+		git_run(xstrfmt("update refs/heads/%s %s %s\n", c->branch, commit, *c->tip ? c->tip : NULL_OID),
+			NULL, &rc, "update-ref -m %s --stdin", c->msg);
 		if (!rc && c->ff)
 			printf("Fast-forward %.7s..%.7s\n", c->tip, commit);
 		else if (!rc && !c->no_trailers)
