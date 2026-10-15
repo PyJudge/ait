@@ -1164,7 +1164,7 @@ static int contract_checkout(int argc, const char **argv)
 static char *stage_index(void)
 {
 	mkdir(xstrfmt("%s/ait", gitdir), 0777);
-	return xstrfmt("%s/ait/index", gitdir);
+	return git_path("ait/index");
 }
 
 /*
