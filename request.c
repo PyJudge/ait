@@ -216,8 +216,7 @@ static struct contract *contract_arg(struct request_result *r, const char *k, co
 /* spec 3.1: a condition file's path is a repository path, and may be under .ait/ */
 static int condition_path_ok(const char *p)
 {
-	skip_prefix(p, ".ait/", &p);
-	return path_ok(p);
+	return worktree_path_ok(p, 1);
 }
 
 /*
@@ -661,10 +660,14 @@ static void write_check_files(struct request_input *q, struct request_result *r)
 			printf("task %s\n", task);
 			tasks++;
 			strbuf_addf(&req, "- task: \"%s\"\n  contract: \"%s\"\n  kind: \"%s\"\n", task, task_id(r, c->id), c->kind);
-			if (!strcmp(c->kind, "demand"))
-				strbuf_addf(&req, "  consumer: \"%s\"\n", scopes_display(&c->consumer, q->x));
-			strbuf_addf(&req, "  provider: \"%s\"\n  engine: \"%s\"\n  body: ", scopes_display(&c->provider, q->x),
-				    s->engine ? "exec" : "prompt");
+			if (!strcmp(c->kind, "demand")) {
+				strbuf_addstr(&req, "  consumer: ");
+				yaml_out_scalar(&req, scopes_display(&c->consumer, q->x));
+				strbuf_addch(&req, '\n');
+			}
+			strbuf_addstr(&req, "  provider: ");
+			yaml_out_scalar(&req, scopes_display(&c->provider, q->x));
+			strbuf_addf(&req, "\n  engine: \"%s\"\n  body: ", s->engine ? "exec" : "prompt");
 			yaml_out_body(&req, s->body, "    ");
 			if (s->engine)
 				spec_lists(&req, s, 1);
@@ -680,8 +683,8 @@ static void write_check_files(struct request_input *q, struct request_result *r)
 	if (strbuf_read_file(&old, rs, 0) < 0 || strcmp(template_key(old.buf), template_key(res.buf)))
 		write_state(rs, res.buf);
 	printf("request %s\nresult %s\n", rq, rs);
-	reject(1, xstrfmt("check each task, fill '%s', and rerun with -r '%s'\n"
-			  "if it is trivial, add --force instead (recorded as forced)", rs, rs),
+	reject(1, xstrfmt("check each task, fill '%s', and rerun with -r %s\n"
+			  "if it is trivial, add --force instead (recorded as forced)", rs, quoted(rs)),
 	       "check results required: %d task(s)", tasks);
 }
 
@@ -1121,12 +1124,27 @@ static char *draft_path(struct contract *c)
 static void write_new_file(const char *rel, const char *text)
 {
 	char *full = xstrfmt("%s/%s", top, rel);
-	struct stat st;
+	int fd, failed, saved;
 
-	if (!lstat(full, &st))
-		reject(1, NULL, "not allowed: '%s' already exists", rel);
 	leading_dirs(full);
-	write_state(full, text);
+	/* Git's entry.c:create_file reserves a new worktree path atomically. */
+	fd = open(full, O_WRONLY | O_CREAT | O_EXCL, 0666);
+	if (fd < 0) {
+		if (errno == EEXIST)
+			reject(1, NULL, "not allowed: '%s' already exists", rel);
+		write_error(full);
+	}
+	failed = write_in_full(fd, text, strlen(text)) < 0;
+	saved = errno;
+	if (close(fd) && !failed) {
+		failed = 1;
+		saved = errno;
+	}
+	if (failed) {
+		unlink(full);
+		errno = saved;
+		write_error(full);
+	}
 	printf("path %s\n", rel);
 }
 
@@ -1372,7 +1390,6 @@ static int contract_commit(int argc, const char **argv)
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct tempfile *lock;
 	const char *index;
-	char *list;
 
 	request_init(&st.q, argv - 1);
 	string_list_init_dup(&st.drafts);
@@ -1384,8 +1401,7 @@ static int contract_commit(int argc, const char **argv)
 	st.q.input.rid = ck.rid;
 	index = stage_index();
 	lock = lock_stage(index);
-	list = access(index, F_OK) ? xstrdup("") : git_run(NULL, index, NULL, "ls-files -s");
-	string_list_split(&lines, list, "\n", -1);
+	git_records(&lines, index, NULL, "ls-files -s -z");
 	for_each_string_list_item(item, &lines) {
 		char mode[8], oid[48];
 
@@ -1456,7 +1472,7 @@ static void pull_judge(struct checkin *ck)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct strbuf paths = STRBUF_INIT;
-	char u[48], *out;
+	char u[48];
 	size_t i;
 	int rc;
 
@@ -1470,11 +1486,14 @@ static void pull_judge(struct checkin *ck)
 		return;
 	}
 	ck->second_parent = xstrdup(u);
-	out = git_run(NULL, NULL, &rc, "merge-tree --write-tree --name-only %s %s", ck->tip, u);
-	ck->tree = line1(out);
+	git_records(&lines, NULL, &rc, "merge-tree --write-tree --name-only -z %s %s", ck->tip, u);
+	if (rc != 0 && rc != 1)
+		reject(128, NULL, "git failed: 'git merge-tree': %s", git_error);
+	if (!lines.nr)
+		reject(128, NULL, "git failed: 'git merge-tree': no tree returned");
+	ck->tree = xstrdup(lines.items[0].string);
 	if (!rc)
 		return;
-	string_list_split(&lines, out, "\n", -1);
 	for (i = 1; i < lines.nr && *lines.items[i].string; i++)
 		strbuf_addf(&paths, "%s%s", paths.len ? "', '" : "", lines.items[i].string);
 	reject(1, pull_hint(ck, NULL), "contract branches conflict in '%s'", paths.buf);

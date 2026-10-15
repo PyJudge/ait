@@ -8,6 +8,7 @@
 #include "precompose.h"
 #include "setup.h"
 #include "sigchain.h"
+#include "abspath.h"
 #include <dirent.h>
 #include <sys/file.h>
 
@@ -17,6 +18,7 @@ char *not_recorded, *retry_command;
 size_t git_out_len;
 char agent[72], sid[16];
 static char *git_cmd;
+static const char *code_index;
 
 /* "AIT_SESSION=SID " when the session in use is not this worktree's default (set by session()) */
 static char *cmd_prefix;
@@ -97,14 +99,22 @@ void reject(int code, const char *hint, const char *fmt, ...)
 }
 
 /* git runs on the repository and worktree ait settled at start (v14 5.12) */
-static void at_repository(struct strvec *args)
+static void at_repository(struct child_process *cmd, const char *index, int caller_paths)
 {
 	if (gitdir)
-		strvec_pushf(args, "--git-dir=%s", gitdir);
+		strvec_pushf(&cmd->args, "--git-dir=%s", gitdir);
 	if (top) {
-		strvec_pushf(args, "--work-tree=%s", top);
-		strvec_pushl(args, "-C", top, NULL);
+		strvec_pushf(&cmd->args, "--work-tree=%s", top);
+		if (!caller_paths)
+			strvec_pushl(&cmd->args, "-C", top, NULL);
 	}
+	if (commondir)
+		strvec_pushf(&cmd->env, "GIT_COMMON_DIR=%s", commondir);
+	if (index || code_index)
+		strvec_pushf(&cmd->env, "GIT_INDEX_FILE=%s", index ? index : code_index);
+	if (!caller_paths)
+		strvec_pushl(&cmd->env, "GIT_LITERAL_PATHSPECS=1", "GIT_GLOB_PATHSPECS",
+			     "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS", NULL);
 }
 
 static char *git_failed(void)
@@ -156,10 +166,8 @@ static char *git_args_n(struct strvec *args, const char *in, size_t in_len, cons
 	/* git's output as ait parses it, whatever the user's config adds to it */
 	strvec_pushl(&cmd.args, "git", "-c", "core.quotePath=false", "-c", "log.showSignature=false",
 		     "-c", "i18n.logOutputEncoding=UTF-8", "-c", "trailer.separators=:", NULL);
-	at_repository(&cmd.args);
+	at_repository(&cmd, index, 0);
 	strvec_pushv(&cmd.args, args->v);
-	if (index)
-		strvec_pushf(&cmd.env, "GIT_INDEX_FILE=%s", index);
 	/* git's messages untranslated: ait's are English (v14 5.6) */
 	strvec_push(&cmd.env, "LANGUAGE=C");
 	cmd.clean_on_exit = cmd.wait_after_clean = git_children_guarded;
@@ -196,6 +204,21 @@ static void words_of(struct strvec *args, const char *fmt, va_list ap)
 	string_list_clear(&words, 0);
 }
 
+/* Git's -z records preserve path bytes; no caller decodes display quoting. */
+void git_records(struct string_list *out, const char *index, int *rc, const char *fmt, ...)
+{
+	struct strvec args = STRVEC_INIT;
+	va_list ap;
+	char *p, *end;
+
+	va_start(ap, fmt);
+	words_of(&args, fmt, ap);
+	va_end(ap);
+	p = git_args(&args, NULL, index, rc);
+	for (end = p + git_out_len; p < end; p += strlen(p) + 1)
+		string_list_append(out, p);
+}
+
 /* git_run() fed the bytes of IN, NULs too (the -z inputs of update-index) */
 static char *git_feed(const struct strbuf *in, const char *index, int *rc, const char *fmt, ...)
 {
@@ -221,17 +244,22 @@ char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...)
 }
 
 /* git with ARGS on ait's own stdout and stderr: what git says is what the user sees (spec 4.7) */
-int git_pass(struct strvec *args)
+static int pass_git(struct strvec *args, int caller_paths)
 {
 	struct child_process cmd = CHILD_PROCESS_INIT;
 
 	strvec_push(&cmd.args, "git");
-	at_repository(&cmd.args);
+	at_repository(&cmd, NULL, caller_paths);
 	strvec_pushv(&cmd.args, args->v);
 	fflush(stdout);
 	if (start_command(&cmd))
 		return -1;
 	return finish_command(&cmd);
+}
+
+int git_pass(struct strvec *args)
+{
+	return pass_git(args, 0);
 }
 
 char *line1(char *s)
@@ -260,7 +288,7 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 
 	if (!out) {
 		strvec_push(&cat.args, "git");
-		at_repository(&cat.args);
+		at_repository(&cat, NULL, 0);
 		strvec_pushl(&cat.args, "cat-file", "--batch-command", NULL);
 		cat.in = cat.out = -1;
 		cat.no_stderr = 1;
@@ -321,6 +349,16 @@ int agent_ok(const char *name)
 	       !name[strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")];
 }
 
+/* Git prints one scalar path followed by a newline; embedded newlines are path bytes. */
+char *git_path(const char *name)
+{
+	char *path = git("rev-parse --path-format=absolute --git-path %s", name);
+
+	if (git_out_len && path[git_out_len - 1] == '\n')
+		path[git_out_len - 1] = 0;
+	return path;
+}
+
 /* the repository, its worktree and HEAD (v14 5.12); a bare repository has no contract commands (2.6.5) */
 static void setup(void)
 {
@@ -348,9 +386,9 @@ static void setup(void)
 	if (strcmp(lines.items[2].string, "sha1"))
 		reject(128, NULL, "not supported: object format '%s'", lines.items[2].string);
 	top = lines.items[3].string;
+	code_index = git_path("index");
 	for (i = 0; clear[i]; i++)
 		unsetenv(clear[i]);
-	setenv("GIT_LITERAL_PATHSPECS", "1", 1);
 	if (object("HEAD^{commit}", 0, oid, NULL))
 		head = xstrdup(oid);
 }
@@ -465,12 +503,15 @@ static int hold_lock(const char *wt)
 static struct string_list *worktrees(void)
 {
 	static struct string_list list = STRING_LIST_INIT_DUP;
-	const char *p, *end, *path;
+	struct string_list records = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	const char *path;
 
 	if (list.nr)
 		return &list;
-	for (p = git("worktree list --porcelain -z"), end = p + git_out_len; p < end; p += strlen(p) + 1)
-		if (skip_prefix(p, "worktree ", &path))
+	git_records(&records, NULL, NULL, "worktree list --porcelain -z");
+	for_each_string_list_item(item, &records)
+		if (skip_prefix(item->string, "worktree ", &path))
 			string_list_insert(&list, path);
 	return &list;
 }
@@ -734,12 +775,6 @@ static const char *init_source(struct names *n, const char *name)
 	return NULL;
 }
 
-/* the absolute path git gives NAME in this worktree's git directory (it honours core.hooksPath and the like) */
-char *git_path(const char *name)
-{
-	return line1(git("rev-parse --path-format=absolute --git-path %s", name));
-}
-
 /* A is B or an ancestor of it (git merge-base --is-ancestor) */
 int is_ancestor(const char *a, const char *b)
 {
@@ -914,6 +949,7 @@ char *tree_with(const char *treeish, const struct strbuf *info)
 
 	if (!mkdtemp(dir))
 		write_error(dir);
+	dir = xstrdup(absolute_path(dir));
 	index = xstrfmt("%s/index", dir);
 	git_run(NULL, index, NULL, "read-tree %s", treeish);
 	git_feed(info, index, NULL, "update-index -z --index-info");
@@ -1075,8 +1111,9 @@ static char *hook_file(void)
 int hook_installed(void)
 {
 	struct strbuf now = STRBUF_INIT;
+	char *path = hook_file();
 
-	return strbuf_read_file(&now, hook_file(), 0) >= 0 && !strcmp(now.buf, hook_text);
+	return !access(path, X_OK) && strbuf_read_file(&now, path, 0) >= 0 && !strcmp(now.buf, hook_text);
 }
 
 static void install_hook(void)
@@ -1178,7 +1215,7 @@ static int pass_to_git(const char *cmd, const char **argv)
 
 	strvec_push(&args, cmd);
 	strvec_pushv(&args, argv + 1);
-	return git_pass(&args);
+	return pass_git(&args, 1);
 }
 
 static void local_or_refuse(struct names *n, const char *name)

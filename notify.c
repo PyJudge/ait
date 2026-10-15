@@ -13,9 +13,7 @@ static char *pathspec_of(const char *arg)
 {
 	if (!strcmp(arg, "/"))
 		return xstrdup(":/");
-	if (ends_with(arg, "/"))
-		return xstrdup(arg);
-	return scope_path(arg);
+	return xstrfmt(":(top,literal)%s", scope_path(arg));
 }
 
 static void block(struct branch *b, struct contract *c, struct tree *x, struct tree *h, const char *me)
@@ -91,7 +89,8 @@ static int violates(struct string_list *bad, const char *id)
 int cmd_status(int argc, const char **argv)
 {
 	struct strvec args = STRVEC_INIT;
-	struct string_list wanted = STRING_LIST_INIT_DUP, pins = STRING_LIST_INIT_DUP, bad = STRING_LIST_INIT_DUP;
+	struct string_list wanted = STRING_LIST_INIT_DUP, pins = STRING_LIST_INIT_DUP, bad = STRING_LIST_INIT_DUP,
+			   scopes = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct branch *b;
 	struct tree *x, *h;
@@ -100,7 +99,7 @@ int cmd_status(int argc, const char **argv)
 	int i, rc;
 
 	for (i = 1; i < argc; i++)
-		if (*argv[i] == '-' || (!scope_ok(argv[i], 1, 1) && range_of(argv[i], &rc, &rc) != 1))
+		if (!scope_arg_ok(argv[i], 1, 1))
 			reject(129, NULL, "status takes scopes only: '%s'", argv[i]);
 	name = start(START_WARNS);
 	names_load(&n);
@@ -108,12 +107,20 @@ int cmd_status(int argc, const char **argv)
 	       n.local.nr == 1 && !access(checkout_file(), F_OK) ? "" : n.local.nr == 1 ? " (the only one)" : "");
 	x = index_tree();
 	h = head ? tree_load(head) : NULL;
-	strvec_push(&args, "status");
+	strvec_pushl(&args, "--no-literal-pathspecs", "status", NULL);
 	if (argc > 1)
 		strvec_push(&args, "--");
-	for (i = 1; i < argc; i++)
+	for (i = 1; i < argc; i++) {
+		char *err;
+		const char *q = argv[i];
+		int first, last;
+
+		if (range_of(q, &first, &last) == 1 && !(q = scope_pin(q, x, &err)))
+			reject(128, NULL, "bad scope: %s", err);
+		string_list_append(&scopes, q);
 		if (!unsorted_string_list_has_string(&pins, pathspec_of(argv[i])))
 			string_list_append(&pins, pathspec_of(argv[i]));
+	}
 	for_each_string_list_item(item, &pins)
 		strvec_push(&args, item->string);
 	if ((rc = git_pass(&args)))
@@ -127,14 +134,13 @@ int cmd_status(int argc, const char **argv)
 	for_each_string_list_item(item, &b->contracts) {
 		struct contract *c = item->util;
 		enum verdict v = judge(b, c, x);
-		int pick = 0, j;
+		int pick = 0;
 
 		if (argc > 1) {
-			for (j = 1; j < argc; j++) {
-				char *err, *q = range_of(argv[j], &rc, &rc) == 1 ? scope_pin(argv[j], x, &err) : NULL;
+			struct string_list_item *q;
 
-				pick |= contract_overlaps(c, q ? q : argv[j], x);
-			}
+			for_each_string_list_item(q, &scopes)
+				pick |= contract_overlaps(c, q->string, x, 0);
 		} else {
 			pick = (me && !strcmp(c->creator, me) && promise(c, v)) ||
 			       (me && !strcmp(c->creator, me) && !strcmp(c->kind, "demand") && v == V_CURRENT) ||
@@ -243,14 +249,31 @@ static char *sub_line(const char *arg)
 			reject(128, NULL, "no such contract: '%s'", arg);
 		return xstrfmt("sub id %s", arg);
 	}
+	if (!scope_arg_ok(arg, 1, 1))
+		reject(128, NULL, "bad scope: '%s' is not a scope", arg);
 	if (range_of(arg, &(int){ 0 }, &(int){ 0 }) == 1) {
 		if (!(pinned = scope_pin(arg, index_tree(), &err)))
 			reject(128, NULL, "bad scope: %s", err);
 		return xstrfmt("sub scope %s", pinned);
 	}
-	if (!scope_ok(arg, 1, 1))
-		reject(128, NULL, "bad scope: '%s' is not a scope", arg);
 	return xstrfmt("sub scope %s", arg);
+}
+
+static char *sub_display(const char *line, struct tree *x)
+{
+	const char *scope;
+
+	if (!skip_prefix(line, "sub scope ", &scope))
+		return xstrdup(line);
+	if (!x) {
+		/* A new range is already pinned; other scopes use the HEAD display. */
+		if (scope_blob(scope))
+			return xstrfmt("sub scope %.*s", (int)strcspn(scope, " "), scope);
+		if (ends_with(scope, "/"))
+			return xstrdup(line);
+		x = tree_load(head ? head : EMPTY_TREE);
+	}
+	return xstrfmt("sub scope %s", scope_display(scope, x));
 }
 
 static void subscribe(int argc, const char **argv, FILE *out)
@@ -268,7 +291,7 @@ static void subscribe(int argc, const char **argv, FILE *out)
 		if (unsorted_string_list_has_string(&lines, line))
 			continue;
 		string_list_append(&lines, line);
-		fprintf(out, "%s\n", line);
+		fprintf(out, "%s\n", sub_display(line, NULL));
 	}
 	session_write(sid, &lines);
 	close(fd);
@@ -285,20 +308,21 @@ int cmd_unsub(int argc, const char **argv)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP, keep = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
+	struct tree *h = tree_load(head ? head : EMPTY_TREE);
 	int fd, i;
 
 	session(1);
 	fd = lock_session(sid);
 	session_lines(sid, &lines);
 	for_each_string_list_item(item, &lines) {
+		char *display = sub_display(item->string, h);
 		int drop = 0;
 
 		for (i = 1; i < argc; i++)
 			drop |= !strcmp(item->string, xstrfmt("sub id %s", argv[i])) ||
-				(starts_with(item->string, "sub scope ") &&
-				 !strcmp(xstrndup(item->string + 10, strcspn(item->string + 10, " ")), argv[i]));
+				(starts_with(display, "sub scope ") && !strcmp(display + 10, argv[i]));
 		if (starts_with(item->string, "sub ") && (argc == 1 || drop))
-			printf("un%s\n", item->string);
+			printf("un%s\n", display);
 		else
 			string_list_append(&keep, item->string);
 	}
@@ -341,8 +365,8 @@ static void reasons(struct branch *mine, struct tree *h, struct contract *c, str
 		if (skip_prefix(s->string, "sub id ", &rest) && !strcmp(rest, k->id))
 			strbuf_addf(out, "reason sub id %s\n", k->id);
 		if (skip_prefix(s->string, "sub scope ", &rest) &&
-		    (contract_overlaps(c, rest, h) || (old && contract_overlaps(old, rest, h))))
-			strbuf_addf(out, "reason sub scope %s\n", xstrndup(rest, strcspn(rest, " ")));
+		    (contract_overlaps(c, rest, h, 1) || (old && contract_overlaps(old, rest, h, 1))))
+			strbuf_addf(out, "reason sub scope %s\n", scope_display(rest, h));
 	}
 }
 
@@ -397,8 +421,7 @@ static void event(const char *name, const char *e, struct string_list *watched, 
 	parent = line1(git_run(NULL, NULL, &rc, "rev-parse -q --verify %s", xstrfmt("%s^1", e)));
 	if (!rc)
 		before = branch_load(name, parent, parent);
-	string_list_split(&files, git("diff-tree -r --root --name-only --no-commit-id --diff-merges=first-parent %s", e),
-			  "\n", -1);
+	git_records(&files, NULL, NULL, "diff-tree -r -z --root --name-only --no-commit-id --diff-merges=first-parent %s", e);
 	for_each_string_list_item(f, &files) {
 		const char *blob = blob_at(at->tree, f->string), *base = strrchr(f->string, '/');
 		struct string_list_item *ful = string_list_lookup(&at->fulfils, f->string);

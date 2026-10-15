@@ -34,9 +34,11 @@ struct tree *tree_load(const char *treeish)
 {
 	static struct string_list listed = STRING_LIST_INIT_DUP;
 	struct string_list_item *hit;
+	struct string_list records = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
 	struct tree *t;
 	size_t alloc = 0;
-	char oid[48], *p, *end;
+	char oid[48];
 
 	if (!object(xstrfmt("%s^{tree}", treeish), 0, oid, NULL))
 		reject(128, NULL, "git failed: 'git cat-file': not a tree: '%s'", treeish);
@@ -45,10 +47,11 @@ struct tree *tree_load(const char *treeish)
 	t = xcalloc(1, sizeof(*t));
 	snprintf(t->oid, sizeof(t->oid), "%s", oid);
 	string_list_insert(&listed, oid)->util = t;
-	for (p = git("ls-tree -r -t -z --full-tree %s", oid); *p; p = end + 1) {
+	git_records(&records, NULL, NULL, "ls-tree -r -t -z --full-tree %s", oid);
+	for_each_string_list_item(item, &records) {
 		struct entry *e;
+		const char *p = item->string;
 
-		end = p + strlen(p);
 		ALLOC_GROW(t->e, t->nr + 1, alloc);
 		e = &t->e[t->nr++];
 		if (sscanf(p, "%7s %7s %47s", e->mode, e->type, e->oid) != 3)
@@ -81,13 +84,16 @@ struct tree *index_tree(void)
 {
 	static struct tree *x;
 	struct strbuf info = STRBUF_INIT;
+	struct string_list records = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
 	const char *last = "";
-	char *p, *end;
+	char *p;
 
 	if (x)
 		return x;
-	for (p = git("ls-files -u -z"), end = p + git_out_len; p < end; p += strlen(p) + 1) {
-		const char *path = strchr(p, '\t') + 1;
+	git_records(&records, NULL, NULL, "ls-files -u -z");
+	for_each_string_list_item(item, &records) {
+		const char *path = strchr(item->string, '\t') + 1;
 		struct entry *e = head ? tree_get(tree_load(head), path) : NULL;
 
 		/* the stages of a path come one after another */
@@ -347,7 +353,7 @@ static int yaml_out(void *sb, unsigned char *buf, size_t n)
 }
 
 /* S as one "..." scalar into SB, written by libyaml's emitter (v14 8.2) */
-static void yaml_out_scalar(struct strbuf *sb, const char *s)
+void yaml_out_scalar(struct strbuf *sb, const char *s)
 {
 	yaml_emitter_t y;
 	yaml_event_t e;
@@ -405,13 +411,14 @@ void yaml_out_body(struct strbuf *sb, const char *s, const char *indent)
 		strbuf_addch(sb, '\n');
 }
 
-/* v14 3.1: a repository path */
-int path_ok(const char *p)
+/* v14 3.1: repository-root path pieces; spec 3.1 permits .ait for condition files */
+int worktree_path_ok(const char *p, int allow_ait)
 {
 	struct string_list parts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	const char *q;
-	int ok = *p && *p != '/' && *p != '-' && strcmp(p, ".ait") && !starts_with(p, ".ait/") && !p[strcspn(p, " :,")];
+	int ok = *p && *p != '/' && *p != '-' && strcmp(p, ".ait") && !p[strcspn(p, " :,")] &&
+		 (allow_ait || !starts_with(p, ".ait/"));
 
 	for (q = p; *q; q++)
 		ok &= (unsigned char)*q >= 0x20 && *q != 0x7f;
@@ -420,6 +427,11 @@ int path_ok(const char *p)
 		ok &= *item->string && strcmp(item->string, ".") && strcmp(item->string, "..");
 	string_list_clear(&parts, 0);
 	return ok;
+}
+
+int path_ok(const char *p)
+{
+	return worktree_path_ok(p, 0);
 }
 
 /* spec 2.1.3: a group is path pieces, none of them "fulfill"; "" is the root */
@@ -470,7 +482,7 @@ const char *scope_blob(const char *v)
 }
 
 /* spec 2.3.2, 3: a stored scope; a line range carries its base blob, nothing else does */
-int scope_ok(const char *v, int allow_new, int allow_abs)
+static int scope_valid(const char *v, int allow_new, int allow_abs, int stored)
 {
 	char *path = scope_path(v);
 	const char *blob = scope_blob(v);
@@ -479,7 +491,7 @@ int scope_ok(const char *v, int allow_new, int allow_abs)
 	if (range < 0 || (range && starts_with(v, "new:")))
 		return 0;
 	if (range)
-		return path_ok(path) && blob && strlen(blob) == 40 && !blob[strspn(blob, "0123456789abcdef")];
+		return path_ok(path) && (blob ? strlen(blob) == 40 && !blob[strspn(blob, "0123456789abcdef")] : !stored);
 	if (blob)
 		return 0;
 	if (starts_with(v, "new:"))
@@ -489,6 +501,16 @@ int scope_ok(const char *v, int allow_new, int allow_abs)
 	if (ends_with(v, "/"))
 		return allow_abs && path_ok(xstrndup(v, strlen(v) - 1));
 	return path_ok(v);
+}
+
+int scope_ok(const char *v, int allow_new, int allow_abs)
+{
+	return scope_valid(v, allow_new, allow_abs, 1);
+}
+
+int scope_arg_ok(const char *v, int allow_new, int allow_abs)
+{
+	return !scope_blob(v) && scope_valid(v, allow_new, allow_abs, 0);
 }
 
 static void scopes_split(const char *list, struct string_list *out)
@@ -693,8 +715,7 @@ struct contract *contract_parse(const char *text, const char *path, int draft, c
 	/* a draft's line ranges are written without their base blob; contract commit fixes them at HEAD (v14 3.3) */
 	for (i = 0; i < 2; i++)
 		for_each_string_list_item(item, i ? &c->provider : &c->consumer)
-			if (!scope_ok(item->string, 1, i) &&
-			    !(draft && !scope_blob(item->string) && range_of(item->string, &(int){ 0 }, &(int){ 0 }) == 1))
+			if (!scope_valid(item->string, 1, i, !draft))
 				return bad(err, "'%s': bad scope '%s' in '%s'", path, item->string, i ? "provider" : "consumer");
 	if (!drop && (!c->provider.nr || (demand && !c->consumer.nr)))
 		return bad(err, "'%s': a scope list is empty", path);
@@ -932,9 +953,11 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 		const char *text;
 		char *err = NULL;
 
-		if (strcmp(e->type, "blob"))
+		if (!strcmp(e->type, "tree"))
 			continue;
-		if (!(text = blob_text(e->oid)))
+		if (strcmp(e->type, "blob"))
+			err = xstrfmt("'%s': not a blob", e->path);
+		else if (!(text = blob_text(e->oid)))
 			err = xstrfmt("'%s': a NUL character", e->path);
 		else if (ends_with(e->path, ".md") && (starts_with(e->path, "fulfill/") || strstr(e->path, "/fulfill/"))) {
 			struct fulfilment *f = fulfil_parse(text, e->path, &err);
@@ -1092,7 +1115,7 @@ char *scope_pin(const char *arg, struct tree *t, char **err)
 	int start, end;
 
 	*err = NULL;
-	if (!scope_ok(arg, 1, 1) && !(range_of(arg, &start, &end) == 1 && !scope_blob(arg)))
+	if (!scope_arg_ok(arg, 1, 1))
 		return bad(err, "'%s' is not a scope", arg);
 	if (starts_with(arg, "new:")) {
 		if (tree_get(t, path))
@@ -1182,7 +1205,7 @@ static int recorded_same(struct fulfilment *f, const char *scope, struct tree *x
 }
 
 /* v14 3.8: the scope as shown, located in X */
-static char *scope_display(const char *scope, struct tree *x)
+char *scope_display(const char *scope, struct tree *x)
 {
 	static const char *const marks[] = { [NOBASE] = "?nobase", [MISSING] = "?missing", [DELETED] = "?deleted" };
 	char *where;
@@ -1241,7 +1264,7 @@ static int scope_overlap(const char *q, const char *r, struct tree *t)
 }
 
 /* v14 3.9a: the scope Q overlaps C's consumer or provider in T */
-int contract_overlaps(struct contract *c, const char *q, struct tree *t)
+int contract_overlaps(struct contract *c, const char *q, struct tree *t, int depending)
 {
 	struct string_list_item *s;
 
@@ -1249,7 +1272,7 @@ int contract_overlaps(struct contract *c, const char *q, struct tree *t)
 		if (scope_overlap(q, s->string, t))
 			return 1;
 	for_each_string_list_item(s, &c->provider)
-		if (scope_overlap(q, s->string, t))
+		if ((!depending || !ends_with(s->string, "/") || ends_with(q, "/")) && scope_overlap(q, s->string, t))
 			return 1;
 	return 0;
 }

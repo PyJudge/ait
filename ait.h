@@ -16,6 +16,7 @@ extern char *git_error;
 extern char *not_recorded, *retry_command;
 extern size_t git_out_len;
 char *git_args(struct strvec *args, const char *in, const char *index, int *rc);
+void git_records(struct string_list *out, const char *index, int *rc, const char *fmt, ...);
 void guard_git_children(void);
 char *git_run(const char *in, const char *index, int *rc, const char *fmt, ...);
 #define git(...) git_run(NULL, NULL, NULL, __VA_ARGS__)
@@ -143,8 +144,10 @@ char *contract_text(struct contract *c);
 struct contract *contract_new(const char *kind, const char *group, const char *id);
 char *fulfil_text(struct fulfilment *f);
 int group_ok(const char *group);
+int worktree_path_ok(const char *p, int allow_ait);
 int path_ok(const char *p);
 int scope_ok(const char *v, int allow_new, int allow_abs);
+int scope_arg_ok(const char *v, int allow_new, int allow_abs);
 char *scope_path(const char *v);
 const char *scope_blob(const char *v);
 int range_of(const char *v, int *start, int *end);
@@ -157,9 +160,10 @@ int holds(struct contract *o, const char *id);
 enum verdict judge(struct branch *b, struct contract *c, struct tree *x);
 const char *verdict_word(enum verdict v);
 int promise(struct contract *c, enum verdict v);
-int contract_overlaps(struct contract *c, const char *q, struct tree *t);
+int contract_overlaps(struct contract *c, const char *q, struct tree *t, int depending);
 char *scopes_bare(struct string_list *l);
 char *scopes_display(struct string_list *l, struct tree *x);
+char *scope_display(const char *scope, struct tree *x);
 char *provider_display(struct branch *b, struct contract *c, struct tree *x);
 char *violation_words(struct violation *v);
 void invariants(struct branch *b, struct branch *was, struct string_list *out);
@@ -177,6 +181,7 @@ char *code_entry(const char *scope, struct tree *t);
 int touched(struct branch *b, struct contract *c, struct tree *h, struct tree *x);
 
 /* contract.c: the YAML subset (v14 2.5.1) and its writing (v14 8.2) */
+void yaml_out_scalar(struct strbuf *sb, const char *s);
 int yaml_parse(const char *text, struct string_list *kv, const char *what, char **err);
 const char *yget(struct string_list *kv, const char *key);
 struct spec *spec_from(struct string_list *kv, const char *prefix, char **err);
