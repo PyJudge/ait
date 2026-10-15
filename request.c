@@ -17,68 +17,100 @@ struct clause {
 	const char *as;
 };
 
-/* a request: what it changes on the branch, and what it fulfils */
-struct request {
+/* Inputs and values fixed once, kept across every judgment (4.4, 6.7.5). */
+struct request_input {
 	struct clause *clauses;		/* the clauses, read once from the words (6.4) */
 	size_t nclauses;
-	struct branch *b;		/* the branch at T */
 	struct tree *x;			/* the index's tree (5.1) */
-	struct string_list changed;	/* ID -> struct contract: new and changed contracts */
-	struct string_list order;	/* the new contracts in the order made: "+1", "+2", ... (7.1) */
-	struct string_list alias;	/* alias -> ID */
 	struct string_list given;	/* the contracts ait fulfill names */
-	struct string_list fulfil;	/* IDs to fulfil: the given ones and those of the clauses */
 	struct string_list made;	/* the IDs the new contracts took the first time, kept across judgments */
-	struct string_list trivial;	/* the contracts changed trivially: future amend --force, contract commit --force */
 	struct string_list fixed;	/* step 0's covered set: ID -> its condition-id (6.7.2) */
 	struct strvec words;		/* the command as given, for the hints that repeat it */
 	struct string_list scopes;	/* ID -> "=SCOPES" of ait fulfill */
-	struct string_list files;	/* FILES -> the contract its specs were read into, once */
+	struct string_list files;	/* FILES -> struct condition_set, read once */
 	struct strbuf msg;
-	const char *result, *group;
-	int force, future_force;
-	char rid[16];
+	const char *result;
+	const char *group;
+	int force;
+	int future_force;
+	const char *rid;			/* borrowed from the checkin */
 	/* fulfilling: the code commit and its tree (6.7.5) */
 	char commit[48];
 	struct tree *code;
 	struct string_list results;	/* task -> its result block */
+};
+
+/* One judgment on T, retained through its CAS, failure hints and output. */
+struct request_result {
+	struct branch *at;
+	struct string_list changed;	/* ID -> struct contract: new and changed contracts */
+	struct string_list order;	/* the new contracts in order: "+1", "+2", ... (7.1) */
+	struct string_list alias;	/* alias -> ID */
+	struct string_list fulfil;	/* the given contracts and those of the clauses */
+	struct string_list trivial;	/* future amend --force, contract commit --force */
 	struct string_list covered;	/* the covered set (6.7.2) */
 };
 
-static void request_init(struct request *q, const char **argv)
+struct request {
+	struct request_input input;
+	struct request_result result;
+};
+
+/* Contracts borrow this immutable condition list for the request's lifetime. */
+struct condition_set {
+	struct spec *specs;
+	size_t nr;
+};
+
+/* Like merge-ort's merge_start(), start each calculation with fresh work state. */
+static void request_result_reset(struct request_result *r, struct branch *at)
 {
-	memset(q, 0, sizeof(*q));
+	string_list_clear(&r->changed, 0);
+	string_list_clear(&r->order, 0);
+	string_list_clear(&r->alias, 1);
+	string_list_clear(&r->fulfil, 0);
+	string_list_clear(&r->trivial, 0);
+	string_list_clear(&r->covered, 0);
+	r->at = at;
+}
+
+static void request_init(struct request *req, const char **argv)
+{
+	struct request_input *q = &req->input;
+	struct request_result *r = &req->result;
+
+	memset(req, 0, sizeof(*req));
 	strvec_init(&q->words);
 	strvec_pushv(&q->words, argv);
 	string_list_init_dup(&q->given);
 	string_list_init_dup(&q->made);
-	string_list_init_dup(&q->trivial);
 	string_list_init_dup(&q->fixed);
-	string_list_init_dup(&q->changed);
-	string_list_init_dup(&q->order);
-	string_list_init_dup(&q->alias);
-	string_list_init_dup(&q->fulfil);
 	string_list_init_dup(&q->scopes);
 	string_list_init_dup(&q->files);
 	string_list_init_dup(&q->results);
-	string_list_init_dup(&q->covered);
 	strbuf_init(&q->msg, 0);
+	string_list_init_dup(&r->changed);
+	string_list_init_dup(&r->order);
+	string_list_init_dup(&r->alias);
+	string_list_init_dup(&r->fulfil);
+	string_list_init_dup(&r->trivial);
+	string_list_init_dup(&r->covered);
 }
 
 /* spec 7.2, 7.3: the condition-id of ID at T, which results are made for ("" for a new contract) */
-static const char *condition_at_t(struct request *q, const char *id)
+static const char *condition_at_t(struct branch *at, const char *id)
 {
-	struct contract *c = contract_get(q->b, id);
+	struct contract *c = contract_get(at, id);
 
 	return c ? c->condition_id : "";
 }
 
 /* the contract ID as it stands after this request's changes so far */
-static struct contract *now(struct request *q, const char *id)
+static struct contract *contract_after(struct request_result *r, const char *id)
 {
-	struct string_list_item *item = string_list_lookup(&q->changed, id);
+	struct string_list_item *item = string_list_lookup(&r->changed, id);
 
-	return item ? item->util : contract_get(q->b, id);
+	return item ? item->util : contract_get(r->at, id);
 }
 
 /*
@@ -86,7 +118,7 @@ static struct contract *now(struct request *q, const char *id)
  * (or goes, when TO is NULL), EXTRA is added, and a message is asked for
  * when none was given
  */
-static char *command_again(struct request *q, const char *from, const char *to, const char *extra)
+static char *command_again(struct request_input *q, const char *from, const char *to, const char *extra)
 {
 	struct strbuf sb = STRBUF_INIT;
 	size_t i;
@@ -122,7 +154,7 @@ enum refusal {
 	FORCE_PROVIDER
 };
 
-static NORETURN void refuse(struct request *q, enum refusal why, struct contract *c, struct contract *old)
+static NORETURN void refuse(struct request_input *q, enum refusal why, struct contract *c, struct contract *old)
 {
 	switch (why) {
 	case ENDED:
@@ -151,9 +183,9 @@ static int ended(struct contract *c)
 }
 
 /* a contract this request changes: its copy, made once; it must not have ended as it stands (2.4) */
-static struct contract *changing(struct request *q, const char *id)
+static struct contract *changing(struct request_input *q, struct request_result *r, const char *id)
 {
-	struct string_list_item *item = string_list_lookup(&q->changed, id);
+	struct string_list_item *item = string_list_lookup(&r->changed, id);
 	struct contract *c;
 	char *err;
 
@@ -161,20 +193,20 @@ static struct contract *changing(struct request *q, const char *id)
 		refuse(q, ENDED, item->util, NULL);
 	if (item)
 		return item->util;
-	c = contract_get(q->b, id);
+	c = contract_get(r->at, id);
 	if (ended(c))
 		refuse(q, ENDED, c, NULL);
 	c = contract_parse(contract_text(c), c->path, 0, &err);
-	string_list_insert(&q->changed, id)->util = c;
+	string_list_insert(&r->changed, id)->util = c;
 	return c;
 }
 
 /* K, an ID or an alias of this request, of a kind in KINDS ("DOX") */
-static struct contract *contract_arg(struct request *q, const char *k, const char *kinds)
+static struct contract *contract_arg(struct request_result *r, const char *k, const char *kinds)
 {
-	struct string_list_item *a = string_list_lookup(&q->alias, k);
+	struct string_list_item *a = string_list_lookup(&r->alias, k);
 	const char *id = a ? a->util : k;
-	struct contract *c = now(q, id);
+	struct contract *c = contract_after(r, id);
 
 	if (!c || !strchr(kinds, *c->id))
 		reject(128, NULL, "no such contract: '%s'", k);
@@ -192,19 +224,16 @@ static int condition_path_ok(const char *p)
  * v14 2.5.2 without inputs: the condition files of FILES, read from the work
  * tree once (6.4.2): a judgment made again uses what step 0 read (6.7.5)
  */
-static void specs_from_files(struct request *q, struct contract *c, const char *files)
+static struct condition_set *conditions_from_files(struct request_input *q, const char *files)
 {
 	struct string_list paths = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *read = string_list_lookup(&q->files, files);
+	struct condition_set *set;
 
-	if (read) {
-		c->specs = ((struct contract *)read->util)->specs;
-		c->nspecs = ((struct contract *)read->util)->nspecs;
-		return;
-	}
+	if (read)
+		return read->util;
+	set = xcalloc(1, sizeof(*set));
 	string_list_split(&paths, files, ",", -1);
-	c->specs = NULL;
-	c->nspecs = 0;
 	for_each_string_list_item(item, &paths) {
 		struct strbuf sb = STRBUF_INIT;
 		struct string_list kv = STRING_LIST_INIT_DUP;
@@ -221,10 +250,22 @@ static void specs_from_files(struct request *q, struct contract *c, const char *
 			reject(128, NULL, "bad format: %s", err);
 		if (!(s = spec_from(&kv, "", &err)))
 			reject(128, NULL, "bad format: '%s': %s", p, err);
-		REALLOC_ARRAY(c->specs, c->nspecs + 1);
-		c->specs[c->nspecs++] = *s;
+		REALLOC_ARRAY(set->specs, set->nr + 1);
+		set->specs[set->nr++] = *s;
+		free(s);
+		strbuf_release(&sb);
 	}
-	string_list_insert(&q->files, files)->util = xmemdupz(c, sizeof(*c));
+	string_list_clear(&paths, 0);
+	string_list_insert(&q->files, files)->util = set;
+	return set;
+}
+
+static void specs_from_files(struct request_input *q, struct contract *c, const char *files)
+{
+	struct condition_set *set = conditions_from_files(q, files);
+
+	c->specs = set->specs;
+	c->nspecs = set->nr;
 }
 
 /* scope arguments fixed at T (spec 3.2); "-" keeps what is there */
@@ -276,7 +317,7 @@ static char *rows(struct contract *c)
  * spec 2.3.3: the IDs a change of C from OLD takes: the condition-id when
  * its conditions changed (unless trivial), the change-id when a row did
  */
-static void stamp(struct request *q, struct contract *c, struct contract *old, int trivial)
+static void stamp(struct request_input *q, struct contract *c, struct contract *old, int trivial)
 {
 	if ((!old || strcmp(conditions(c), conditions(old))) && (!trivial || !old))
 		c->condition_id = xstrdup(q->rid);
@@ -285,33 +326,33 @@ static void stamp(struct request *q, struct contract *c, struct contract *old, i
 }
 
 
-static struct contract *make(struct request *q, const char *kind)
+static struct contract *make(struct request_input *q, struct request_result *r, const char *kind)
 {
 	char id[16];
 	struct contract *c;
 
 	/* a judgment made again takes the same IDs, so the step-0 results and the record agree (6.7.5) */
-	if (q->order.nr < q->made.nr)
-		snprintf(id, sizeof(id), "%s", q->made.items[q->order.nr].string);
+	if (r->order.nr < q->made.nr)
+		snprintf(id, sizeof(id), "%s", q->made.items[r->order.nr].string);
 	else
 		do
 			newid(id, kind_letter(kind));
-		while (now(q, id));
-	if (q->order.nr == q->made.nr)
+		while (contract_after(r, id));
+	if (r->order.nr == q->made.nr)
 		string_list_append(&q->made, id);
 	c = contract_new(kind, q->group ? q->group : "", id);
 	c->creator = xstrdup(agent);
-	string_list_insert(&q->changed, id)->util = c;
-	string_list_append(&q->order, id);
+	string_list_insert(&r->changed, id)->util = c;
+	string_list_append(&r->order, id);
 	return c;
 }
 
 /* spec 2.4: the drop X targets a D or O judged current */
-static int target_current(struct request *q, struct contract *x)
+static int target_current(struct request_result *r, struct tree *x, struct contract *drop)
 {
-	struct contract *t = now(q, x->target);
+	struct contract *t = contract_after(r, drop->target);
 
-	return t && judge(q->b, t, q->x) == V_CURRENT;
+	return t && judge(r->at, t, x) == V_CURRENT;
 }
 
 /* spec 6.4: the clause verbs, the one list the grammar and the reserved words come from */
@@ -372,7 +413,7 @@ static const char *word(int argc, const char **argv, int *i)
  * whether the request fulfils is known before it is judged (4.3-5);
  * how many words amend takes is checked against its contract's kind later
  */
-static int read_clauses(struct request *q, int argc, const char **argv)
+static int read_clauses(struct request_input *q, int argc, const char **argv)
 {
 	struct string_list aliases = STRING_LIST_INIT_DUP;
 	int i = 0, fulfils = 0;
@@ -425,7 +466,7 @@ static void remove_id(struct string_list *l, const char *id)
 }
 
 /* spec 6.4.1: the clauses applied in order to the branch at T */
-static void apply_clauses(struct request *q)
+static void apply_clauses(struct request_input *q, struct request_result *r)
 {
 	struct tree *pin_at = head ? tree_load(head) : tree_load(EMPTY_TREE);
 	size_t n;
@@ -438,31 +479,31 @@ static void apply_clauses(struct request *q)
 		if (!strcmp(cl->verb, "demand") || !strcmp(cl->verb, "offer")) {
 			int demand = !strcmp(cl->verb, "demand");
 
-			c = make(q, cl->verb);
+			c = make(q, r, cl->verb);
 			if (demand)
 				scopes_arg(&c->consumer, a[0], pin_at, 1, 0);
 			scopes_arg(&c->provider, a[demand], pin_at, 1, 1);
 			specs_from_files(q, c, a[demand + 1]);
 			if (cl->as)
-				string_list_insert(&q->alias, cl->as)->util = xstrdup(c->id);
+				string_list_insert(&r->alias, cl->as)->util = xstrdup(c->id);
 		} else if (!strcmp(cl->verb, "drop")) {
-			struct contract *t = contract_arg(q, a[0], "DO");
+			struct contract *t = contract_arg(r, a[0], "DO");
 
-			c = make(q, "drop");
+			c = make(q, r, "drop");
 			c->target = xstrdup(t->id);
 			if (cl->as)
-				string_list_insert(&q->alias, cl->as)->util = xstrdup(c->id);
+				string_list_insert(&r->alias, cl->as)->util = xstrdup(c->id);
 		} else if (!strcmp(cl->verb, "amend")) {
 			int more = cl->nargs - 1;
 
-			c = contract_arg(q, a[0], "DOX");
+			c = contract_arg(r, a[0], "DOX");
 			/* v14 7.3.1: D takes A B FILES, O takes B FILES, X takes K */
 			if (more && more != (*c->id == 'D' ? 3 : *c->id == 'O' ? 2 : 1))
 				reject(129, NULL, "amend '%s' takes %s", c->id,
 				       *c->id == 'D' ? "A B FILES" : *c->id == 'O' ? "B FILES" : "the target");
-			c = changing(q, c->id);
+			c = changing(q, r, c->id);
 			if (*c->id == 'X' && more) {
-				c->target = xstrdup(contract_arg(q, a[1], "DO")->id);
+				c->target = xstrdup(contract_arg(r, a[1], "DO")->id);
 			} else if (more) {
 				if (*c->id == 'D')
 					scopes_arg(&c->consumer, a[1], pin_at, 1, 0);
@@ -471,23 +512,23 @@ static void apply_clauses(struct request *q)
 					specs_from_files(q, c, a[more]);
 			}
 			if (cl->future && q->future_force)
-				string_list_insert(&q->trivial, c->id);
+				string_list_insert(&r->trivial, c->id);
 			/* an empty amend reopens: both IDs move (6.4.1) */
 			if (!more) {
 				c->condition_id = xstrdup(q->rid);
 				c->change_id = xstrdup(q->rid);
 			}
 		} else if (!strcmp(cl->verb, "cancel")) {
-			c = contract_arg(q, a[0], "DOX");
+			c = contract_arg(r, a[0], "DOX");
 			if (strcmp(c->state, "cancelled"))
-				changing(q, c->id)->state = xstrdup("cancelled");
+				changing(q, r, c->id)->state = xstrdup("cancelled");
 			continue;
 		} else {
-			d = contract_arg(q, a[0], "D");
-			o = contract_arg(q, a[1], "O");
+			d = contract_arg(r, a[0], "D");
+			o = contract_arg(r, a[1], "O");
 			if (!strcmp(cl->verb, "undertake") && ended(d))
 				refuse(q, ENDED, d, NULL);
-			o = changing(q, o->id);
+			o = changing(q, r, o->id);
 			remove_id(&o->undertakes, d->id);
 			remove_id(&o->partially, d->id);
 			if (!strcmp(cl->verb, "undertake"))
@@ -495,7 +536,7 @@ static void apply_clauses(struct request *q)
 			continue;
 		}
 		if (!cl->future)
-			string_list_insert(&q->fulfil, c->id);
+			string_list_insert(&r->fulfil, c->id);
 	}
 }
 
@@ -503,7 +544,9 @@ static void apply_clauses(struct request *q)
 /* spec 4.10: the hint that extends this request so the violation V it would add goes */
 static char *violation_hint(struct checkin *ck, struct violation *v)
 {
-	struct request *q = ck->data;
+	struct request *req = ck->data;
+	struct request_input *q = &req->input;
+	struct request_result *r = &req->result;
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
 
@@ -511,34 +554,34 @@ static char *violation_hint(struct checkin *ck, struct violation *v)
 	if (v->kind == PAIR)
 		strbuf_addf(&sb, " future amend %s", v->a);
 	else
-		for_each_string_list_item(item, &q->b->contracts)
-			if (live(item->util) && holds(item->util, v->a) && !string_list_lookup(&q->changed, item->string))
+		for_each_string_list_item(item, &r->at->contracts)
+			if (live(item->util) && holds(item->util, v->a) && !string_list_lookup(&r->changed, item->string))
 				strbuf_addf(&sb, " release %s %s", v->a, item->string);
 	return command_again(q, NULL, NULL, sb.buf);
 }
 
 /* spec 6.7.2: the covered set of K, judged in X */
-static void cover(struct request *q, struct contract *k, struct string_list *out)
+static void cover(struct request_result *r, struct tree *x, struct contract *k, struct string_list *out)
 {
 	struct string_list_item *item;
 
 	string_list_insert(out, k->id);
 	if (!strcmp(k->kind, "offer")) {
 		for_each_string_list_item(item, &k->undertakes)
-			if (live(now(q, item->string)))
+			if (live(contract_after(r, item->string)))
 				string_list_insert(out, item->string);
 	} else if (!strcmp(k->kind, "demand")) {
 		/* the offers at T and those this request makes */
 		struct string_list ids = STRING_LIST_INIT_DUP;
 
-		for_each_string_list_item(item, &q->b->contracts)
+		for_each_string_list_item(item, &r->at->contracts)
 			string_list_insert(&ids, item->string);
-		for_each_string_list_item(item, &q->order)
+		for_each_string_list_item(item, &r->order)
 			string_list_insert(&ids, item->string);
 		for_each_string_list_item(item, &ids) {
-			struct contract *o = now(q, item->string);
+			struct contract *o = contract_after(r, item->string);
 
-			if (live(o) && holds(o, k->id) == 'p' && judge(q->b, o, q->x) != V_CURRENT)
+			if (live(o) && holds(o, k->id) == 'p' && judge(r->at, o, x) != V_CURRENT)
 				string_list_insert(out, o->id);
 		}
 	}
@@ -550,12 +593,12 @@ static char *task_of(const char *id, size_t n)
 }
 
 /* the name a contract has in the tasks: "+N" for one this request makes (7.1) */
-static const char *task_id(struct request *q, const char *id)
+static const char *task_id(struct request_result *r, const char *id)
 {
 	size_t i;
 
-	for (i = 0; i < q->order.nr; i++)
-		if (!strcmp(q->order.items[i].string, id))
+	for (i = 0; i < r->order.nr; i++)
+		if (!strcmp(r->order.items[i].string, id))
 			return xstrfmt("+%d", (int)i + 1);
 	return id;
 }
@@ -593,7 +636,7 @@ static char *template_key(const char *text)
 }
 
 /* spec 7.2: the check request and the result template, unless the template is already this one */
-static void write_check_files(struct request *q)
+static void write_check_files(struct request_input *q, struct request_result *r)
 {
 	struct strbuf req = STRBUF_INIT, res = STRBUF_INIT, ids = STRBUF_INIT, old = STRBUF_INIT;
 	struct string_list_item *item;
@@ -603,21 +646,21 @@ static void write_check_files(struct request *q)
 	int tasks = 0;
 
 	mkdir(dir, 0777);
-	for_each_string_list_item(item, &q->covered)
-		if (!strcmp(task_id(q, item->string), item->string))
-			strbuf_addf(&ids, "  %s: \"%s\"\n", item->string, condition_at_t(q, item->string));
+	for_each_string_list_item(item, &r->covered)
+		if (!strcmp(task_id(r, item->string), item->string))
+			strbuf_addf(&ids, "  %s: \"%s\"\n", item->string, condition_at_t(r->at, item->string));
 	strbuf_addf(&req, "condition-ids:%s\n%stree: \"%s\"\ntasks:\n", ids.len ? "" : " {}", ids.buf, q->x->oid);
 	strbuf_addf(&res, "condition-ids:%s\n%sresults:\n", ids.len ? "" : " {}", ids.buf);
-	for_each_string_list_item(item, &q->covered) {
-		struct contract *c = now(q, item->string);
+	for_each_string_list_item(item, &r->covered) {
+		struct contract *c = contract_after(r, item->string);
 
 		for (n = 0; n < c->nspecs; n++) {
 			struct spec *s = &c->specs[n];
-			char *task = task_of(task_id(q, c->id), n);
+			char *task = task_of(task_id(r, c->id), n);
 
 			printf("task %s\n", task);
 			tasks++;
-			strbuf_addf(&req, "- task: \"%s\"\n  contract: \"%s\"\n  kind: \"%s\"\n", task, task_id(q, c->id), c->kind);
+			strbuf_addf(&req, "- task: \"%s\"\n  contract: \"%s\"\n  kind: \"%s\"\n", task, task_id(r, c->id), c->kind);
 			if (!strcmp(c->kind, "demand"))
 				strbuf_addf(&req, "  consumer: \"%s\"\n", scopes_display(&c->consumer, q->x));
 			strbuf_addf(&req, "  provider: \"%s\"\n  engine: \"%s\"\n  body: ", scopes_display(&c->provider, q->x),
@@ -643,7 +686,7 @@ static void write_check_files(struct request *q)
 }
 
 /* spec 7.3: the result file against the covered set; each task's block kept for its fulfilment */
-static void read_results(struct request *q)
+static void read_results(struct request_input *q, struct request_result *r)
 {
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list kv = STRING_LIST_INIT_DUP, want = STRING_LIST_INIT_DUP, failed = STRING_LIST_INIT_DUP;
@@ -662,17 +705,17 @@ static void read_results(struct request *q)
 		const char *id;
 
 		if (skip_prefix(item->string, "condition-ids.", &id) &&
-		    (!string_list_has_string(&q->covered, id) || strcmp(task_id(q, id), id)))
-			write_check_files(q);
+		    (!string_list_has_string(&r->covered, id) || strcmp(task_id(r, id), id)))
+			write_check_files(q, r);
 	}
-	for_each_string_list_item(item, &q->covered) {
-		struct contract *c = now(q, item->string);
+	for_each_string_list_item(item, &r->covered) {
+		struct contract *c = contract_after(r, item->string);
 		const char *got = yget(&kv, xstrfmt("condition-ids.%s", item->string));
 
-		if (!strcmp(task_id(q, c->id), c->id) && (!got || strcmp(got, condition_at_t(q, c->id))))
-			write_check_files(q);
+		if (!strcmp(task_id(r, c->id), c->id) && (!got || strcmp(got, condition_at_t(r->at, c->id))))
+			write_check_files(q, r);
 		for (n = 0; n < c->nspecs; n++)
-			string_list_insert(&want, task_of(task_id(q, c->id), n));
+			string_list_insert(&want, task_of(task_id(r, c->id), n));
 	}
 	for (i = 0; yget(&kv, xstrfmt("results.%d", i)); i++) {
 		const char *task = yget(&kv, xstrfmt("results.%d.task", i)),
@@ -708,7 +751,7 @@ static void read_results(struct request *q)
 }
 
 /* spec 6.7.4: every provider scope of C is found in T; the refusal names what is not */
-static void locate_all(struct request *q, struct contract *c, struct tree *t)
+static void locate_all(struct request_input *q, struct contract *c, struct tree *t)
 {
 	struct string_list_item *item;
 	char *where;
@@ -743,12 +786,12 @@ static char *names(struct string_list *ids)
 }
 
 /* the fulfilments of the covered set (spec 6.7.5-2) into C's files, from the code commit */
-static void record(struct request *q, struct checkin *ck)
+static void record(struct request_input *q, struct request_result *r, struct checkin *ck)
 {
 	struct string_list_item *item;
 
-	for_each_string_list_item(item, &q->covered) {
-		struct contract *c = changing(q, item->string);
+	for_each_string_list_item(item, &r->covered) {
+		struct contract *c = changing(q, r, item->string);
 		struct fulfilment f = { 0 };
 		struct string_list_item *s;
 		struct strbuf body = STRBUF_INIT;
@@ -767,12 +810,12 @@ static void record(struct request *q, struct checkin *ck)
 		for_each_string_list_item(s, &c->provider)
 			string_list_insert(&f.code, s->string)->util = code_entry(s->string, q->code);
 		for (n = 0; n < c->nspecs && !q->force; n++) {
-			struct string_list_item *r = string_list_lookup(&q->results, task_of(task_id(q, c->id), n));
+			struct string_list_item *result = string_list_lookup(&q->results, task_of(task_id(r, c->id), n));
 
 			/* v14 8.4: a new contract's "+n" becomes its ID */
-			if (r)
+			if (result)
 				strbuf_addf(&body, "- task: %s:%d%s", c->id, (int)n + 1,
-					    strchr((char *)r->util, '\n'));
+					    strchr((char *)result->util, '\n'));
 		}
 		if (q->force || !body.len)
 			strbuf_add(&body, q->msg.buf, q->msg.len);
@@ -780,7 +823,7 @@ static void record(struct request *q, struct checkin *ck)
 		string_list_append(&c->fulfilled, f.path);
 		string_list_insert(&ck->put, f.path)->util = fulfil_text(&f);
 		if (!strcmp(c->kind, "drop"))
-			changing(q, c->target)->state = xstrdup("withdrawn");
+			changing(q, r, c->target)->state = xstrdup("withdrawn");
 	}
 }
 
@@ -790,50 +833,50 @@ static void record(struct request *q, struct checkin *ck)
  * change; the drafts of contract commit change anything, so every write
  * path asks here.
  */
-static enum refusal change_refusal(struct request *q, struct contract *old, struct contract *c)
+static enum refusal change_refusal(struct request_input *q, struct request_result *r, struct contract *old, struct contract *c)
 {
 	struct string_list_item *item;
 	int withdrawn = 0;
 	size_t k;
 
-	if (*c->id == 'X' && (!old || strcmp(c->target, old->target)) && !target_current(q, c))
+	if (*c->id == 'X' && (!old || strcmp(c->target, old->target)) && !target_current(r, q->x, c))
 		return TARGET;
 	for (k = 0; old && k < old->fulfilled.nr; k++)
 		if (k >= c->fulfilled.nr || strcmp(c->fulfilled.items[k].string, old->fulfilled.items[k].string))
 			return FULFILMENT;
-	if (c->fulfilled.nr > (old ? old->fulfilled.nr : 0) && !(q->code && string_list_has_string(&q->covered, c->id)))
+	if (c->fulfilled.nr > (old ? old->fulfilled.nr : 0) && !(q->code && string_list_has_string(&r->covered, c->id)))
 		return FULFILMENT;
 	if (!old)
 		return CHANGE_OK;
 	if (strcmp(c->path, old->path) || strcmp(c->kind, old->kind) || strcmp(c->creator, old->creator))
 		return IDENTITY;
-	for_each_string_list_item(item, &q->covered)
-		withdrawn |= *item->string == 'X' && q->code && !strcmp(now(q, item->string)->target, c->id);
+	for_each_string_list_item(item, &r->covered)
+		withdrawn |= *item->string == 'X' && q->code && !strcmp(contract_after(r, item->string)->target, c->id);
 	if (strcmp(c->state, old->state) && strcmp(c->state, "cancelled") && !(withdrawn && !strcmp(c->state, "withdrawn")))
 		return STATE;
 	/* a trivial change keeps the fulfilments, which checked the old provider */
-	if (string_list_has_string(&q->trivial, c->id) && strcmp(scopes_join(&c->provider), scopes_join(&old->provider)))
+	if (string_list_has_string(&r->trivial, c->id) && strcmp(scopes_join(&c->provider), scopes_join(&old->provider)))
 		return FORCE_PROVIDER;
 	return CHANGE_OK;
 }
 
 /* spec 2.3.3: the IDs of every contract the request changed, from T */
-static void stamp_all(struct request *q)
+static void stamp_all(struct request_input *q, struct request_result *r)
 {
 	struct string_list_item *item;
 
-	for_each_string_list_item(item, &q->changed)
-		stamp(q, item->util, contract_get(q->b, item->string), string_list_has_string(&q->trivial, item->string));
+	for_each_string_list_item(item, &r->changed)
+		stamp(q, item->util, contract_get(r->at, item->string), string_list_has_string(&r->trivial, item->string));
 }
 
 /* every contract the request changed takes its transition (2.4) and goes in as its file */
-static void settle(struct request *q, struct checkin *ck)
+static void settle(struct request_input *q, struct request_result *r, struct checkin *ck)
 {
 	struct string_list_item *item;
 
-	for_each_string_list_item(item, &q->changed) {
-		struct contract *old = contract_get(q->b, item->string);
-		enum refusal why = change_refusal(q, old, item->util);
+	for_each_string_list_item(item, &r->changed) {
+		struct contract *old = contract_get(r->at, item->string);
+		enum refusal why = change_refusal(q, r, old, item->util);
 
 		if (why)
 			refuse(q, why, item->util, old);
@@ -844,54 +887,51 @@ static void settle(struct request *q, struct checkin *ck)
 /* the judge of a request's checkin: everything again on the tip (spec 4.4-1) */
 static void request_judge(struct checkin *ck)
 {
-	struct request *q = ck->data;
+	struct request *req = ck->data;
+	struct request_input *q = &req->input;
+	struct request_result *r = &req->result;
 	struct string_list_item *item;
 
-	q->b = ck->at;
-	string_list_clear(&q->changed, 0);
-	string_list_clear(&q->order, 0);
-	string_list_clear(&q->alias, 0);
-	string_list_clear(&q->covered, 0);
-	string_list_clear(&q->fulfil, 0);
-	string_list_clear(&q->trivial, 0);
+	request_result_reset(r, ck->at);
 	/* the contracts fulfill names exist before anything is done to them */
 	for_each_string_list_item(item, &q->given) {
-		if (!now(q, item->string))
+		if (!contract_after(r, item->string))
 			reject(128, NULL, "no such contract: '%s'", item->string);
-		string_list_insert(&q->fulfil, item->string);
+		string_list_insert(&r->fulfil, item->string);
 	}
-	snprintf(q->rid, sizeof(q->rid), "%s", ck->rid);
-	apply_clauses(q);
+	apply_clauses(q, r);
 	for_each_string_list_item(item, &q->scopes)
-		scopes_arg(&changing(q, item->string)->provider, item->util, q->x, 0, 0);
-	for_each_string_list_item(item, &q->fulfil) {
-		struct contract *c = now(q, item->string);
+		scopes_arg(&changing(q, r, item->string)->provider, item->util, q->x, 0, 0);
+	for_each_string_list_item(item, &r->fulfil) {
+		struct contract *c = contract_after(r, item->string);
 
 		if (ended(c))
 			refuse(q, ENDED, c, NULL);
 		/* 2.4: a drop is fulfilled while its target is current */
-		if (*c->id == 'X' && !target_current(q, c))
+		if (*c->id == 'X' && !target_current(r, q->x, c))
 			refuse(q, TARGET, c, NULL);
-		cover(q, c, &q->covered);
+		cover(r, q->x, c, &r->covered);
 	}
 	/* the IDs first: a fulfilment records its contract's new condition-id */
-	stamp_all(q);
+	stamp_all(q, r);
 	/* 6.7.2: the covered set fixed at step 0, with the condition-ids its results are for, holds to the end */
-	for_each_string_list_item(item, &q->covered)
+	for_each_string_list_item(item, &r->covered)
 		if (q->fixed.nr && (!string_list_lookup(&q->fixed, item->string) ||
-				    strcmp(string_list_lookup(&q->fixed, item->string)->util, condition_at_t(q, item->string))))
+				    strcmp(string_list_lookup(&q->fixed, item->string)->util, condition_at_t(r->at, item->string))))
 			checkin_moved(ck);
-	if (q->fixed.nr && q->fixed.nr != q->covered.nr)
+	if (q->fixed.nr && q->fixed.nr != r->covered.nr)
 		checkin_moved(ck);
 	if (q->code)
-		record(q, ck);
-	settle(q, ck);
+		record(q, r, ck);
+	settle(q, r, ck);
 }
 
 /* spec 6.7.5-3: ait fulfill as given, when the covered contracts are as they were at OLD */
 static char *retry(struct checkin *ck, const char *old)
 {
-	struct request *q = ck->data;
+	struct request *req = ck->data;
+	struct request_input *q = &req->input;
+	struct request_result *r = &req->result;
 	struct strvec args = STRVEC_INIT;
 	struct string_list_item *item;
 	int rc;
@@ -900,16 +940,18 @@ static char *retry(struct checkin *ck, const char *old)
 	if (strcmp(q->words.v[0], "fulfill"))
 		return NULL;
 	strvec_pushl(&args, "diff-tree", "--quiet", old, ck->tip, "--", NULL);
-	for_each_string_list_item(item, &q->covered)
-		strvec_push(&args, contract_get(q->b, item->string)->path);
+	for_each_string_list_item(item, &r->covered)
+		strvec_push(&args, contract_get(r->at, item->string)->path);
 	git_args(&args, NULL, NULL, &rc);
 	return rc ? NULL : command_again(q, NULL, NULL, NULL);
 }
 
 /* spec 6.7.5: judge first, commit the staged code, then check in */
-static void run_request(struct request *q, int fulfilling)
+static void run_request(struct request *req, int fulfilling)
 {
 	struct checkin ck = { .msg = NULL };
+	struct request_input *q = &req->input;
+	struct request_result *r = &req->result;
 	struct string_list_item *item;
 	int rc;
 
@@ -918,21 +960,22 @@ static void run_request(struct request *q, int fulfilling)
 	string_list_init_dup(&ck.put);
 	ck.violation_hint = violation_hint;
 	ck.retry_hint = retry;
-	ck.data = q;
+	ck.data = req;
 	newid(ck.rid, 'R');
+	q->rid = ck.rid;
 	if (fulfilling) {
 		/* step 0: everything judged on T as a checkin judges it (4.10 too), nothing changed */
 		checkin_tip(&ck);
 		checkin_judge(&ck, request_judge);
-		for_each_string_list_item(item, &q->covered)
-			if (strcmp(now(q, item->string)->kind, "drop"))
-				locate_all(q, now(q, item->string), q->x);
+		for_each_string_list_item(item, &r->covered)
+			if (strcmp(contract_after(r, item->string)->kind, "drop"))
+				locate_all(q, contract_after(r, item->string), q->x);
 		if (!q->result && !q->force)
-			write_check_files(q);
+			write_check_files(q, r);
 		if (q->result)
-			read_results(q);
-		for_each_string_list_item(item, &q->covered)
-			string_list_insert(&q->fixed, item->string)->util = xstrdup(condition_at_t(q, item->string));
+			read_results(q, r);
+		for_each_string_list_item(item, &r->covered)
+			string_list_insert(&q->fixed, item->string)->util = xstrdup(condition_at_t(r->at, item->string));
 		/* step 1: the staged code, committed by git */
 		git_run(NULL, NULL, &rc, "diff --cached --quiet");
 		if (rc) {
@@ -941,13 +984,13 @@ static void run_request(struct request *q, int fulfilling)
 			/* git's summary line, hooks and errors reach the user as they are (6.7.5-1, 6.7.8) */
 			strvec_pushl(&args, "commit", "-m", q->msg.buf, NULL);
 			if (git_pass(&args))
-				reject(1, NULL, "commit failed; %s not fulfilled", names(&q->covered));
+				reject(1, NULL, "commit failed; %s not fulfilled", names(&r->covered));
 			not_recorded = xstrfmt("committed '%s' but %s not fulfilled",
-					       line1(git("rev-parse --short HEAD")), names(&q->covered));
+					       line1(git("rev-parse --short HEAD")), names(&r->covered));
 		} else {
 			warning("nothing to commit; recording the code at HEAD ('%s') for %s",
-				line1(git("rev-parse --short HEAD")), names(&q->covered));
-			not_recorded = xstrfmt("%s not fulfilled", names(&q->covered));
+				line1(git("rev-parse --short HEAD")), names(&r->covered));
+			not_recorded = xstrfmt("%s not fulfilled", names(&r->covered));
 		}
 		snprintf(q->commit, sizeof(q->commit), "%s", line1(git("rev-parse HEAD")));
 		q->code = tree_load(q->commit);
@@ -955,24 +998,25 @@ static void run_request(struct request *q, int fulfilling)
 	ck.msg = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", q->msg.buf);
 	checkin_run(&ck, request_judge);
 	not_recorded = NULL;
-	for_each_string_list_item(item, &q->order) {
+	for_each_string_list_item(item, &r->order) {
 		struct string_list_item *a;
 		const char *name = "";
 
-		for_each_string_list_item(a, &q->alias)
+		for_each_string_list_item(a, &r->alias)
 			if (!strcmp(a->util, item->string))
 				name = a->string;
 		printf("new %s%s%s\n", item->string, *name ? " " : "", name);
 	}
-	for_each_string_list_item(item, &q->covered) {
+	for_each_string_list_item(item, &r->covered) {
 		printf("fulfilled %s\n", item->string);
 		if (*item->string == 'X')
-			printf("withdrawn %s\n", now(q, item->string)->target);
+			printf("withdrawn %s\n", contract_after(r, item->string)->target);
 	}
+	request_result_reset(r, NULL);
 }
 
 /* the options of a request, taken out of ARGV (spec 6.4) */
-static void options(struct request *q, int argc, const char **argv, struct strvec *rest)
+static void options(struct request_input *q, int argc, const char **argv, struct strvec *rest)
 {
 	int i, m = 0, f = 0;
 
@@ -1033,12 +1077,12 @@ int cmd_request(int argc, const char **argv)
 	int fulfilling;
 
 	request_init(&q, argv);
-	options(&q, argc, argv, &rest);
-	fulfilling = read_clauses(&q, rest.nr, rest.v);
+	options(&q.input, argc, argv, &rest);
+	fulfilling = read_clauses(&q.input, rest.nr, rest.v);
 	/* a --force with no clause that fulfils is the trivial change of 6.4.1 */
-	if (q.force && !fulfilling) {
-		q.future_force = 1;
-		q.force = 0;
+	if (q.input.force && !fulfilling) {
+		q.input.future_force = 1;
+		q.input.force = 0;
 	}
 	run_request(&q, fulfilling);
 	return 0;
@@ -1052,16 +1096,16 @@ int cmd_fulfill(int argc, const char **argv)
 	size_t i;
 
 	request_init(&q, argv);
-	options(&q, argc - 1, argv + 1, &rest);
-	if (!rest.nr || q.group)
+	options(&q.input, argc - 1, argv + 1, &rest);
+	if (!rest.nr || q.input.group)
 		reject(129, NULL, "fulfill takes K[=SCOPES]..., -r, --force, -m and -F");
 	for (i = 0; i < rest.nr; i++) {
 		const char *eq = strchr(rest.v[i], '=');
 		char *id = eq ? xstrndup(rest.v[i], eq - rest.v[i]) : xstrdup(rest.v[i]);
 
-		string_list_insert(&q.given, id);
+		string_list_insert(&q.input.given, id);
 		if (eq)
-			string_list_insert(&q.scopes, id)->util = xstrdup(eq + 1);
+			string_list_insert(&q.input.scopes, id)->util = xstrdup(eq + 1);
 	}
 	run_request(&q, 1);
 	return 0;
@@ -1280,16 +1324,14 @@ static void pin_drafted(struct string_list *scopes, struct string_list *was)
 static void commit_judge(struct checkin *ck)
 {
 	struct staged *st = ck->data;
-	struct request *q = &st->q;
+	struct request_input *q = &st->q.input;
+	struct request_result *r = &st->q.result;
 	struct string_list_item *item;
 
-	q->b = ck->at;
-	snprintf(q->rid, sizeof(q->rid), "%s", ck->rid);
-	string_list_clear(&q->changed, 0);
-	string_list_clear(&q->order, 0);
+	request_result_reset(r, ck->at);
 	for_each_string_list_item(item, &st->drafts) {
 		char *err;
-		struct contract *d = contract_parse(item->util, item->string, 1, &err), *old = contract_get(q->b, d->id);
+		struct contract *d = contract_parse(item->util, item->string, 1, &err), *old = contract_get(r->at, d->id);
 		size_t k;
 
 		pin_drafted(&d->consumer, old ? &old->consumer : NULL);
@@ -1297,7 +1339,7 @@ static void commit_judge(struct checkin *ck)
 		if (!old) {
 			d->creator = xstrdup(agent);
 			d->state = xstrdup("future");
-			string_list_append(&q->order, d->id);
+			string_list_append(&r->order, d->id);
 		} else {
 			if (strcmp(d->change_id, old->change_id))
 				reject(1, xstrfmt("ait contract checkout %s", d->id), "'%s' changed at '%s' since '.ait/%s' was written",
@@ -1312,12 +1354,12 @@ static void commit_judge(struct checkin *ck)
 			if (strcmp(contract_text(d), contract_text(old)) && ended(old))
 				refuse(q, ENDED, old, NULL);
 		}
-		string_list_insert(&q->changed, d->id)->util = d;
+		string_list_insert(&r->changed, d->id)->util = d;
 		if (q->force)
-			string_list_insert(&q->trivial, d->id);
+			string_list_insert(&r->trivial, d->id);
 	}
-	stamp_all(q);
-	settle(q, ck);
+	stamp_all(q, r);
+	settle(q, r, ck);
 }
 
 /* spec 6.5.4 */
@@ -1334,11 +1376,12 @@ static int contract_commit(int argc, const char **argv)
 
 	request_init(&st.q, argv - 1);
 	string_list_init_dup(&st.drafts);
-	options(&st.q, argc - 1, argv + 1, &rest);
-	if (rest.nr || st.q.result || st.q.group)
+	options(&st.q.input, argc - 1, argv + 1, &rest);
+	if (rest.nr || st.q.input.result || st.q.input.group)
 		reject(129, NULL, "contract commit takes -m, -F and --force");
 	ck.branch = start(START_SESSION | START_WRITES);
-	st.q.x = index_tree();
+	st.q.input.x = index_tree();
+	st.q.input.rid = ck.rid;
 	index = stage_index();
 	lock = lock_stage(index);
 	list = access(index, F_OK) ? xstrdup("") : git_run(NULL, index, NULL, "ls-files -s");
@@ -1354,7 +1397,7 @@ static int contract_commit(int argc, const char **argv)
 	if (!st.drafts.nr)
 		reject(1, "ait contract add <path>...", "nothing staged");
 	string_list_init_dup(&ck.put);
-	ck.msg = xstrfmt("[CONTRACT] %s", st.q.msg.buf);
+	ck.msg = xstrfmt("[CONTRACT] %s", st.q.input.msg.buf);
 	ck.data = &st;
 	checkin_run(&ck, commit_judge);
 	if (unlink(index))
@@ -1363,8 +1406,9 @@ static int contract_commit(int argc, const char **argv)
 	for_each_string_list_item(item, &st.drafts) {
 		char *id = contract_path_id(item->string);
 
-		printf("%s %s\n", unsorted_string_list_has_string(&st.q.order, id) ? "new" : "change", id);
+		printf("%s %s\n", unsorted_string_list_has_string(&st.q.result.order, id) ? "new" : "change", id);
 	}
+	request_result_reset(&st.q.result, NULL);
 	return 0;
 }
 

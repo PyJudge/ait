@@ -514,11 +514,15 @@ static int cmp_scope(const void *pa, const void *pb)
 char *scopes_join(struct string_list *l)
 {
 	struct strbuf sb = STRBUF_INIT;
+	struct string_list sorted = STRING_LIST_INIT_NODUP;
 	struct string_list_item *item;
 
-	QSORT(l->items, l->nr, cmp_scope);
 	for_each_string_list_item(item, l)
+		string_list_append(&sorted, item->string);
+	QSORT(sorted.items, sorted.nr, cmp_scope);
+	for_each_string_list_item(item, &sorted)
 		strbuf_addf(&sb, "%s%s", sb.len ? "," : "", item->string);
+	string_list_clear(&sorted, 0);
 	return strbuf_detach(&sb, NULL);
 }
 
