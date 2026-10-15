@@ -1,4 +1,4 @@
-/* Pause scheduling before real exclusive creation or the old final rename. */
+/* Pause destination writes independently of the exclusive-creation guard. */
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -11,6 +11,21 @@
 #include <dlfcn.h>
 #endif
 
+static int is_target_file(const char *path, const char *prefix)
+{
+	size_t len = strlen(prefix);
+	const char *leaf;
+
+	if (!len || strncmp(path, prefix, len))
+		return 0;
+	if (prefix[len - 1] != '/')
+		return !path[len];
+	/* A draft directory selects a final YAML leaf, never its temporary file. */
+	leaf = path + len;
+	len = strlen(leaf);
+	return len > 5 && !strchr(leaf, '/') && !strcmp(leaf + len - 5, ".yaml");
+}
+
 static void before_new_file(const char *path)
 {
 	static volatile sig_atomic_t paused;
@@ -19,7 +34,7 @@ static void before_new_file(const char *path)
 	const char *proceed = getenv("AIT_TEST_NEW_PROCEED");
 	int fd, i, saved = errno;
 
-	if (paused || !prefix || !ready || !proceed || strncmp(path, prefix, strlen(prefix)))
+	if (paused || !prefix || !ready || !proceed || !is_target_file(path, prefix))
 		return;
 	paused = 1;
 	fd = open(ready, O_CREAT | O_WRONLY | O_EXCL, 0666);
@@ -43,7 +58,7 @@ static int pause_new_open(const char *path, int flags, ...)
 		mode = va_arg(ap, int);
 		va_end(ap);
 	}
-	if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL))
+	if ((flags & O_ACCMODE) != O_RDONLY)
 		before_new_file(path);
 	return open(path, flags, mode);
 }
@@ -77,7 +92,7 @@ int open(const char *path, int flags, ...)
 		mode = va_arg(ap, int);
 		va_end(ap);
 	}
-	if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL))
+	if ((flags & O_ACCMODE) != O_RDONLY)
 		before_new_file(path);
 	return real_open(path, flags, mode);
 }

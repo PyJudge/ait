@@ -65,6 +65,11 @@ do
 	if test -s "$T/new-ready"
 	then
 		target=$(cat "$T/new-ready")
+		case "$kind:$target" in
+		spec:"$prefix"|checkout:"$prefix"|draft:"$prefix"D????????????.yaml)
+			say_ok "$kind scheduler stops at the final destination" ;;
+		*) say_fail "$kind scheduler stops at the final destination" ;;
+		esac
 		printf 'another writer\n' > "$target"
 		cp "$target" "$T/competing"
 		touch "$T/new-proceed"
