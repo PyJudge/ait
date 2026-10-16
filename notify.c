@@ -276,109 +276,55 @@ void session_tips(const char *s, const char *as_of, struct string_list *tips, co
 	string_list_clear(&keep, 0);
 }
 
-struct subscription {
-	char *id;
-	struct scope scope;
-};
-struct subscription_list {
-	struct subscription *items;
-	size_t nr;
-	size_t alloc;
-};
-
-static void subscription_clear(struct subscription *sub)
-{
-	free(sub->id);
-	scope_clear(&sub->scope);
-}
-
-/* Session lines cross the same stored-scope boundary once per operation/round. */
-static int subscription_read(struct subscription *sub, const char *line)
+/* spec 6.8: a "sub scope" line's scope, as stored with its base */
+static int sub_scope(const char *line, struct scope *s)
 {
 	const char *value;
 	char *err;
 
-	memset(sub, 0, sizeof(*sub));
-	if (skip_prefix(line, "sub id ", &value)) {
-		sub->id = xstrdup(value);
-		return 1;
-	}
 	if (!skip_prefix(line, "sub scope ", &value))
 		return 0;
-	err = scope_parse(&sub->scope, value, 1, 1, SCOPE_STORED);
-	if (!err)
+	if (!(err = scope_parse(s, value, 1, 1, SCOPE_STORED)))
 		return 1;
 	free(err);
 	return 0;
 }
 
-static void subscriptions_read(struct subscription_list *out, const struct string_list *lines)
+/* spec 9.5: a session's subscriptions for a round, its scopes found in H */
+struct subscriptions {
+	struct string_list ids;
+	struct scope_list scopes;
+	struct scope_result *at;
+};
+
+static void subscriptions_read(struct subscriptions *subs, const struct string_list *lines, struct tree *h)
 {
 	const struct string_list_item *item;
-
-	for_each_string_list_item(item, lines) {
-		struct subscription sub;
-
-		if (!subscription_read(&sub, item->string))
-			continue;
-		ALLOC_GROW(out->items, out->nr + 1, out->alloc);
-		out->items[out->nr++] = sub;
-	}
-}
-
-static void subscriptions_clear(struct subscription_list *subs)
-{
+	const char *id;
 	size_t i;
 
-	for (i = 0; i < subs->nr; i++)
-		subscription_clear(&subs->items[i]);
-	free(subs->items);
+	string_list_init_dup(&subs->ids);
+	memset(&subs->scopes, 0, sizeof(subs->scopes));
+	for_each_string_list_item(item, lines) {
+		struct scope s;
+
+		if (skip_prefix(item->string, "sub id ", &id))
+			string_list_insert(&subs->ids, id);
+		else if (sub_scope(item->string, &s)) {
+			ALLOC_GROW(subs->scopes.items, subs->scopes.nr + 1, subs->scopes.alloc);
+			subs->scopes.items[subs->scopes.nr++] = s;
+		}
+	}
+	subs->at = xcalloc(subs->scopes.nr, sizeof(*subs->at));
+	for (i = 0; i < subs->scopes.nr; i++)
+		scope_result_at(&subs->scopes.items[i], h, &subs->at[i]);
 }
 
-static char *sub_line(struct branch *b, const char *arg, struct subscription *sub, struct tree **index)
+static void subscriptions_clear(struct subscriptions *subs)
 {
-	char *err, *text, *line;
-
-	memset(sub, 0, sizeof(*sub));
-	if (id_ok(arg, "DOX")) {
-		if (!contract_get(b, arg))
-			no_contract(arg);
-		sub->id = xstrdup(arg);
-		return xstrfmt("sub id %s", arg);
-	}
-	if ((err = scope_parse(&sub->scope, arg, 1, 1, SCOPE_ARGUMENT)))
-		reject(128, NULL, "bad scope: %s", err);
-	if (sub->scope.kind == SCOPE_RANGE) {
-		if (!*index)
-			*index = index_tree();
-		if (scope_pin(&sub->scope, *index, &err))
-			reject(128, NULL, "bad scope: %s", err);
-	}
-	text = scope_text(&sub->scope, 1);
-	line = xstrfmt("sub scope %s", text);
-	free(text);
-	return line;
-}
-
-static char *sub_display(const struct subscription *sub, struct tree *x)
-{
-	char *text, *line;
-
-	if (sub->id)
-		return xstrfmt("sub id %s", sub->id);
-	if (!x && (sub->scope.kind == SCOPE_RANGE || sub->scope.kind == SCOPE_DIR || sub->scope.kind == SCOPE_ROOT))
-		text = scope_text(&sub->scope, 0);
-	else if (!x) {
-		struct tree *h = tree_load(head ? head : EMPTY_TREE);
-
-		text = scope_display(&sub->scope, h);
-		tree_free(h);
-	} else {
-		text = scope_display(&sub->scope, x);
-	}
-	line = xstrfmt("sub scope %s", text);
-	free(text);
-	return line;
+	string_list_clear(&subs->ids, 0);
+	scopes_clear(&subs->scopes);
+	free(subs->at);
 }
 
 static void save_subscriptions(struct string_list *lines, struct strbuf *changes, FILE *out, int fd)
@@ -389,32 +335,56 @@ static void save_subscriptions(struct string_list *lines, struct strbuf *changes
 	strbuf_release(changes);
 }
 
+/*
+ * v14 7.2.4: ARGV's IDs and scopes added to the session's lines; a line range
+ * is fixed in the index (6.8) and shown as given, the rest as it is at HEAD
+ */
 static void subscribe(struct branch *b, int argc, const char **argv, FILE *out)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct strbuf added = STRBUF_INIT;
-	struct tree *index = NULL;
+	struct tree *index = NULL, *h = NULL;
 	int i, fd;
 
 	fd = lock_session(sid);
 	session_lines(sid, &lines);
 	for (i = 1; i < argc; i++) {
-		struct subscription sub;
-		char *line = sub_line(b, argv[i], &sub, &index);
+		struct scope s;
+		char *line, *display, *text, *err;
 
+		if (id_ok(argv[i], "DOX")) {
+			if (!contract_get(b, argv[i]))
+				no_contract(argv[i]);
+			line = xstrfmt("sub id %s", argv[i]);
+			display = xstrdup(line);
+		} else {
+			if ((err = scope_parse(&s, argv[i], 1, 1, SCOPE_ARGUMENT)))
+				reject(128, NULL, "bad scope: %s", err);
+			if (s.kind == SCOPE_RANGE && !index)
+				index = index_tree();
+			if (s.kind == SCOPE_RANGE && scope_pin(&s, index, &err))
+				reject(128, NULL, "bad scope: %s", err);
+			if (!h)
+				h = tree_load(head ? head : EMPTY_TREE);
+			text = scope_text(&s, 1);
+			line = xstrfmt("sub scope %s", text);
+			free(text);
+			text = s.kind == SCOPE_RANGE ? scope_text(&s, 0) : scope_display(&s, h);
+			display = xstrfmt("sub scope %s", text);
+			free(text);
+			scope_clear(&s);
+		}
 		if (!unsorted_string_list_has_string(&lines, line)) {
-			char *display = sub_display(&sub, NULL);
-
 			string_list_append(&lines, line);
 			strbuf_addf(&added, "%s\n", display);
-			free(display);
 		}
 		free(line);
-		subscription_clear(&sub);
+		free(display);
 	}
 	save_subscriptions(&lines, &added, out, fd);
 	string_list_clear(&lines, 0);
 	tree_free(index);
+	tree_free(h);
 }
 
 int cmd_sub(int argc, const char **argv)
@@ -429,6 +399,7 @@ int cmd_sub(int argc, const char **argv)
 	return 0;
 }
 
+/* v14 7.2.4: an ID, or a scope as unsub shows it at HEAD, names the lines to remove */
 int cmd_unsub(int argc, const char **argv)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP, keep = STRING_LIST_INIT_DUP;
@@ -441,21 +412,28 @@ int cmd_unsub(int argc, const char **argv)
 	fd = lock_session(sid);
 	session_lines(sid, &lines);
 	for_each_string_list_item(item, &lines) {
-		struct subscription sub;
-		int parsed = subscription_read(&sub, item->string);
-		char *display = parsed ? sub_display(&sub, h) : xstrdup(item->string);
-		int drop = 0;
+		struct scope s;
+		char *display, *text;
+		const char *named;
+		int drop = argc == 1;
 
+		/* a scope shows as it is at HEAD; any other line as it is written */
+		if (sub_scope(item->string, &s)) {
+			text = scope_display(&s, h);
+			display = xstrfmt("sub scope %s", text);
+			free(text);
+			scope_clear(&s);
+		} else {
+			display = xstrdup(item->string);
+		}
 		for (i = 1; i < argc; i++)
-			drop |= (parsed && sub.id && !strcmp(sub.id, argv[i])) ||
-				(starts_with(display, "sub scope ") && !strcmp(display + 10, argv[i]));
-		if (starts_with(item->string, "sub ") && (argc == 1 || drop))
+			drop |= (skip_prefix(display, "sub id ", &named) || skip_prefix(display, "sub scope ", &named)) &&
+				!strcmp(named, argv[i]);
+		if (starts_with(item->string, "sub ") && drop)
 			strbuf_addf(&removed, "un%s\n", display);
 		else
 			string_list_append(&keep, item->string);
 		free(display);
-		if (parsed)
-			subscription_clear(&sub);
 	}
 	save_subscriptions(&keep, &removed, stdout, fd);
 	string_list_clear(&lines, 0);
@@ -523,7 +501,7 @@ static void reason_lines(struct event_reasons *reasons, struct strbuf *out)
 
 /* spec 9.5: why the session's agent receives C (OLD at the first parent): relations at MINE and HEAD H */
 static void reasons(struct judgment *judgments, struct contract *c, struct contract *old,
-		    struct subscription_list *subs, const struct scope_result *positions, struct event_reasons *out)
+		    struct subscriptions *subs, struct event_reasons *out)
 {
 	struct branch *mine = judgments->view.at;
 	struct string_list related = STRING_LIST_INIT_DUP;
@@ -552,18 +530,15 @@ static void reasons(struct judgment *judgments, struct contract *c, struct contr
 	string_list_clear(&related, 0);
 	if (k && !strcmp(k->kind, "demand") && !strcmp(k->creator, agent) && v == V_CURRENT)
 		add_reason(out, REASON_DEMAND, k->id);
-	for (i = 0; i < subs->nr; i++) {
-		const struct subscription *sub = &subs->items[i];
+	if (string_list_has_string(&subs->ids, c->id))
+		add_reason(out, REASON_SUB_ID, c->id);
+	/* E and its parent may have the same ID as MINE, but are different values. */
+	for (i = 0; i < subs->scopes.nr; i++) {
+		const struct scope *q = &subs->scopes.items[i];
 
-		if (sub->id) {
-			if (!strcmp(sub->id, c->id))
-				add_reason(out, REASON_SUB_ID, c->id);
-			continue;
-		}
-		/* E and its parent may have the same ID as MINE, but are different values. */
-		if (contract_overlaps(c, judgments->tree, &sub->scope, &positions[i], 1) ||
-		    (old && contract_overlaps(old, judgments->tree, &sub->scope, &positions[i], 1))) {
-			char *display = scope_result_text(&sub->scope, &positions[i]);
+		if (contract_overlaps(c, judgments->tree, q, &subs->at[i], 1) ||
+		    (old && contract_overlaps(old, judgments->tree, q, &subs->at[i], 1))) {
+			char *display = scope_result_text(q, &subs->at[i]);
 
 			add_reason(out, REASON_SUB_SCOPE, display);
 			free(display);
@@ -592,8 +567,8 @@ static void actions(struct contract *c, struct contract *old, struct strbuf *out
  * spec 9.4-9.7 for commit E on the branch NAME: its keys (each "KEY PATH
  * BLOB" line), and the event the session receives, if any
  */
-static void event(struct judgment *judgments, const char *e, struct string_list *watched, struct subscription_list *subs,
-		  const struct scope_result *positions, struct string_list *seen, struct strbuf *keys, struct strbuf *payload)
+static void event(struct judgment *judgments, const char *e, struct string_list *watched, struct subscriptions *subs,
+		  struct string_list *seen, struct strbuf *keys, struct strbuf *payload)
 {
 	struct branch *mine = judgments->view.at;
 	const char *name = mine->name;
@@ -642,11 +617,11 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 		if (ful)
 			continue;
 		old = before ? contract_get(before, c->id) : NULL;
-		reasons(judgments, c, old, subs, positions, &why);
+		reasons(judgments, c, old, subs, &why);
 		actions(c, old, &acts);
 		if (!strcmp(c->kind, "drop") && contract_get(at, c->target))
 			reasons(judgments, contract_get(at, c->target), before ? contract_get(before, c->target) : NULL,
-				subs, positions, &why);
+				subs, &why);
 	}
 	reason_lines(&why, &reason_text);
 	if (!reason_text.len)
@@ -702,9 +677,7 @@ static void deliver(int *warned)
 	struct branch *mine = NULL;
 	struct tree *h = NULL;
 	struct judgment judgments = { 0 };
-	struct scope_result *positions = NULL;
-	size_t i;
-	struct subscription_list subs = { 0 };
+	struct subscriptions subs = { 0 };
 	struct string_list seen = STRING_LIST_INIT_DUP, watched = STRING_LIST_INIT_DUP,
 			   candidates = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
@@ -736,12 +709,8 @@ static void deliver(int *warned)
 		watch_ref(&n, &watched, up);
 	mine = branch_load(name, tip, tip);
 	h = tree_load(*v.head_oid ? v.head_oid : EMPTY_TREE);
-	subscriptions_read(&subs, &v.lines);
+	subscriptions_read(&subs, &v.lines, h);
 	judgment_init(&judgments, &(struct contract_view){ mine, NULL, NULL }, h);
-	positions = xcalloc(subs.nr, sizeof(*positions));
-	for (i = 0; i < subs.nr; i++)
-		if (!subs.items[i].id)
-			scope_result_at(&subs.items[i].scope, h, &positions[i]);
 	for_each_string_list_item(item, &v.lines) {
 		if (starts_with(item->string, "tip "))
 			strbuf_addf(&in, "^%.40s\n", item->string + 4);
@@ -756,30 +725,29 @@ static void deliver(int *warned)
 	string_list_sort(&seen);
 	for_each_string_list_item(item, &watched)
 		strbuf_addf(&in, "%s\n", (char *)item->util);
+	/* 9.2, 9.4: each candidate with the session its trailers name (two values name none, v14 5.4) */
 	string_list_split(&candidates, git_run(in.buf, NULL, NULL, "rev-list", "--reverse", "--topo-order",
-		"--ignore-missing", "--stdin"), "\n", -1);
+		"--ignore-missing", "--stdin", "--no-commit-header",
+		"--format=%H %(trailers:key=Ait-Session,valueonly,separator=%x2C)"), "\n", -1);
 	for_each_string_list_item(item, &candidates) {
-		const char *revision = item->string;
+		char *revision = item->string, *sender = strchr(revision, ' ');
 		struct strbuf keys = STRBUF_INIT, payload = STRBUF_INIT;
 		struct string_list new_keys = STRING_LIST_INIT_DUP;
 		struct string_list_item *key;
 		struct receiving_state now;
 		int stale = 0;
-		char *sender;
 
-		if (!*revision)
+		if (!sender)
 			continue;
-		event(&judgments, revision, &watched, &subs, positions, &seen, &keys, &payload);
+		*sender++ = 0;
+		event(&judgments, revision, &watched, &subs, &seen, &keys, &payload);
 		/* a key goes out once, in this round too */
 		string_list_split(&new_keys, keys.buf, "\n", -1);
 		for_each_string_list_item(key, &new_keys)
 			if (*key->string)
 				string_list_insert(&seen, key->string);
 		/* 9.4: the session's own request is skipped, its keys kept like any skipped event's (v14 9.5-3) */
-		sender = payload.len ? git("log", "-1", "--format=%(trailers:key=Ait-Session,valueonly)", revision) : NULL;
-		rc = sender && !strcmp(line1(sender), sid);
-		free(sender);
-		if (!payload.len || rc) {
+		if (!payload.len || !strcmp(sender, sid)) {
 			strbuf_add(&skipped, keys.buf, keys.len);
 			goto event_done;
 		}
@@ -814,7 +782,6 @@ out:
 	judgment_clear(&judgments);
 	/* a round's blob pairs are not kept for the next (9.6) */
 	blob_pairs_clear();
-	free(positions);
 	string_list_clear(&candidates, 0);
 	branch_free(mine);
 	tree_free(h);
