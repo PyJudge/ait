@@ -78,17 +78,18 @@ char *scope_parse(struct scope *s, const char *text, int allow_new, int allow_ab
 		s->kind = is_new ? SCOPE_NEW : !strcmp(s->path, "/") ? SCOPE_ROOT :
 			  ends_with(s->path, "/") ? SCOPE_DIR : SCOPE_FILE;
 		valid = !base;
-		if (s->kind == SCOPE_NEW)
+		if (s->kind == SCOPE_NEW) {
 			valid &= allow_new && path_ok(s->path);
-		else if (s->kind == SCOPE_ROOT)
+		} else if (s->kind == SCOPE_ROOT) {
 			valid &= allow_abs;
-		else if (s->kind == SCOPE_DIR) {
+		} else if (s->kind == SCOPE_DIR) {
 			char *dir = xstrndup(s->path, strlen(s->path) - 1);
 
 			valid &= allow_abs && path_ok(dir);
 			free(dir);
-		} else
+		} else {
 			valid &= path_ok(s->path);
+		}
 	}
 	if (valid)
 		return NULL;

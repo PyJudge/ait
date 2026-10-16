@@ -5,7 +5,6 @@
 #include "ait.h"
 #include <yaml.h>
 
-
 static int cmp_entry(const void *a, const void *b)
 {
 	return strcmp(((const struct entry *)a)->path, ((const struct entry *)b)->path);
@@ -343,19 +342,21 @@ char *yaml_refusal(struct ynode *n, const char *fmt, ...)
 	return why;
 }
 
-/* the strings of the list N, named NAME, into OUT (when given); NONEMPTY wants one at least */
+/*
+ * the strings of the list N, named NAME, into OUT (when given); NONEMPTY
+ * wants one at least. OUT is filled only when the whole list is valid.
+ */
 char *yaml_list(struct ynode *n, const char *name, struct string_list *out, int nonempty)
 {
 	size_t i;
 
 	if (!n || n->kind != 'l' || (nonempty && !n->nr))
 		return yaml_refusal(n, "'%s' is not a %slist of strings", name, nonempty ? "nonempty " : "");
-	for (i = 0; i < n->nr; i++) {
+	for (i = 0; i < n->nr; i++)
 		if (!ystr(n->kids[i]))
 			return yaml_refusal(n->kids[i], "an item of '%s' is not a string", name);
-		if (out)
-			string_list_append(out, n->kids[i]->value);
-	}
+	for (i = 0; out && i < n->nr; i++)
+		string_list_append(out, n->kids[i]->value);
 	return NULL;
 }
 
@@ -1102,26 +1103,27 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 
 		if (!strcmp(e->type, "tree"))
 			continue;
-		if (strcmp(e->type, "blob"))
+		if (strcmp(e->type, "blob")) {
 			err = yaml_refusal_at(1, "not a blob");
-		else if (!(text = object(e->oid, 1, NULL, &len)))
+		} else if (!(text = object(e->oid, 1, NULL, &len))) {
 			err = yaml_refusal_at(1, "could not read blob '%s'", e->oid);
-		else if ((nul = memchr(text, 0, len)))
+		} else if ((nul = memchr(text, 0, len))) {
 			err = yaml_refusal_at((int)line_at(text, nul - text) + 1, "a NUL character");
-		else if (ends_with(e->path, ".md") && (starts_with(e->path, "fulfill/") || strstr(e->path, "/fulfill/"))) {
+		} else if (ends_with(e->path, ".md") && (starts_with(e->path, "fulfill/") || strstr(e->path, "/fulfill/"))) {
 			struct fulfilment *f = fulfil_parse(text, e->path, &err);
 
 			if (f)
 				string_list_insert(&b->fulfils, e->path)->util = f;
 		} else {
 			struct contract *c = contract_parse(text, len, e->path, 0, &err);
+			struct contract *had = c ? contract_get(b, c->id) : NULL;
 
-			if (c && string_list_lookup(&b->contracts, c->id)) {
-				err = yaml_refusal_at(1, "'%s' is also at '%s'", c->id,
-						      ((struct contract *)string_list_lookup(&b->contracts, c->id)->util)->path);
+			if (had) {
+				err = yaml_refusal_at(1, "'%s' is also at '%s'", c->id, had->path);
 				contract_free(c);
-			} else if (c)
+			} else if (c) {
 				string_list_insert(&b->contracts, c->id)->util = c;
+			}
 		}
 		free(text);
 		if (err)
@@ -1134,7 +1136,8 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 		for_each_string_list_item(f, &c->fulfilled) {
 			struct string_list_item *got = string_list_lookup(&b->fulfils, f->string);
 
-			if (!got || strcmp(((struct fulfilment *)got->util)->contract, c->id)) {
+			/* the path names the contract (contract_read) and its file the same (fulfil_read) */
+			if (!got) {
 				branch_error(b, c->path,
 					yaml_refusal_at(*(int *)f->util, "'%s' is not a fulfilment of '%s'", f->string, c->id));
 				string_list_insert(&invalid, c->id);
@@ -1337,16 +1340,13 @@ static enum scope_status map_blobs(const char *base, const char *now, int a, int
 	return *first > *end ? DELETED : FOUND;
 }
 
+/* the lines of TEXT, the last one counted even without its LF */
 static int line_count(const char *text, size_t n)
 {
-	size_t i, lf = 0;
-
-	for (i = 0; i < n; i++)
-		lf += text[i] == '\n';
-	return lf + (n && text[n - 1] != '\n');
+	return line_at(text, n) + (n && text[n - 1] != '\n');
 }
 
-/* spec 3.2 (v14 3.3): a scope argument fixed at T, a line range taking T's blob; NULL with ERR */
+/* spec 3.2 (v14 3.3): a scope argument fixed at T, a line range taking T's blob; -1 with ERR */
 int scope_pin(struct scope *s, struct tree *t, char **err)
 {
 	struct entry *e;

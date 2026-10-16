@@ -15,7 +15,6 @@ extern char *git_error;
 /* set after fulfill committed code: every refusal then says what was not recorded (spec 6.7.5-3) */
 extern char *not_recorded;
 extern size_t git_out_len;
-char *git_args(struct strvec *args, const char *in, const char *index, int *rc);
 void git_records_argv(struct string_list *out, const char *index, int *rc, const char **argv);
 #define git_records(out, index, rc, ...) \
 	git_records_argv(out, index, rc, (const char *[]){ __VA_ARGS__, NULL })
@@ -42,7 +41,6 @@ void write_state(const char *path, const char *text);
 int create_file(const char *path, const char *text, mode_t mode);
 NORETURN void write_error(const char *path);
 NORETURN void listen_write_error(const char *path);
-NORETURN void stdout_write_error(void);
 char *worktree_state_dir(void);
 NORETURN void no_contract(const char *id);
 char *state_path(const char *name);

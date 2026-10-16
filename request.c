@@ -53,8 +53,7 @@ struct request_input {
 
 /* One judgment on T, retained through its CAS, failure hints and output. */
 struct request_result {
-	struct branch *at;
-	struct contract_view view;	/* T with this calculation's changed contracts and new fulfilments */
+	struct contract_view view;	/* T (view.at) with this calculation's changed contracts */
 	struct string_list records; /* path -> owned typed fulfilment */
 	struct string_list changed;	/* ID -> struct contract: new and changed contracts */
 	struct string_list order;	/* the new contracts in order: "+1", "+2", ... (7.1) */
@@ -89,7 +88,6 @@ static void request_result_reset(struct request_result *r, struct branch *at)
 	string_list_clear(&r->normal_specs, 0);
 	string_list_clear(&r->provider_words, 0);
 	string_list_clear(&r->covered, 0);
-	r->at = at;
 	r->view = (struct contract_view){ at, &r->changed };
 }
 
@@ -172,8 +170,8 @@ static struct contract *contract_after(struct request_result *r, const char *id)
 }
 
 /*
- * the command as it was given, for a hint (4.9): the word FROM becomes TO
- * (or goes, when TO is NULL), EXTRA is added, and a message is asked for
+ * the command as it was given, for a hint (4.9): the word REPLACE_WORD becomes
+ * TO (or goes, when TO is NULL), EXTRA is added, and a message is asked for
  * when none was given
  */
 static char *command_again(struct request_input *q, int replace_word, const char *to, const char *extra)
@@ -209,9 +207,9 @@ static NORETURN void refuse(struct request_input *q, enum refusal why, struct co
 {
 	const char *b = NULL, *detail = NULL, *hint = NULL;
 
-	if (why == TARGET)
+	if (why == TARGET) {
 		b = c->target;
-	else if (why == STATE) {
+	} else if (why == STATE) {
 		b = old ? old->state : "absent";
 		detail = c->state;
 	} else if (why == FORCE_PROVIDER) {
@@ -434,7 +432,7 @@ static void publish_change(struct request_input *q, struct request_result *r,
 			   struct contract *old, struct contract *c,
 			   enum change_action action, int trivial)
 {
-	struct contract *at = contract_get(r->at, c->id);
+	struct contract *at = contract_get(r->view.at, c->id);
 	struct string_list_item *slot;
 	int reopened, trivial_conditions;
 
@@ -733,7 +731,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 				}
 				string_list_insert(&fixes, xstrfmt("release %s %s", request_name(r, v->a),
 							 request_name(r, o->string)));
-				if (v->kind == MIX_WHOLLY && (has_valid_fulfilment(r->at, c) ||
+				if (v->kind == MIX_WHOLLY && (has_valid_fulfilment(r->view.at, c) ||
 				    string_list_has_string(&r->covered, c->id)))
 					strvec_push(&pending, c->id);
 			}
@@ -753,7 +751,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 		string_list_insert(&fixes, xstrfmt("future amend %s", request_name(r, c->id)));
 		undertakings(&r->view, c, !strcmp(c->kind, "demand") ? 'w' : 'p', &dependants);
 		for_each_string_list_item(o, &dependants)
-			if (has_valid_fulfilment(r->at, o->util) || string_list_has_string(&r->covered, o->string))
+			if (has_valid_fulfilment(r->view.at, o->util) || string_list_has_string(&r->covered, o->string))
 				strvec_push(&pending, o->string);
 		string_list_clear(&dependants, 0);
 	}
@@ -904,7 +902,7 @@ static int conditions_changed(struct request_result *r, struct ynode *ids)
 		const char *got = ystr(yget(ids, item->string));
 
 		if (!strcmp(task_id(r, item->string), item->string) &&
-		    (!got || strcmp(got, condition_at_t(r->at, item->string))))
+		    (!got || strcmp(got, condition_at_t(r->view.at, item->string))))
 			return 1;
 	}
 	return 0;
@@ -949,7 +947,7 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 
 	for_each_string_list_item(item, &r->covered)
 		if (!strcmp(task_id(r, item->string), item->string))
-			strbuf_addf(&ids, "  %s: \"%s\"\n", item->string, condition_at_t(r->at, item->string));
+			strbuf_addf(&ids, "  %s: \"%s\"\n", item->string, condition_at_t(r->view.at, item->string));
 	strbuf_addf(&req, "condition-ids:%s\n%stree: \"%s\"\ntasks:\n", ids.len ? "" : " {}", ids.buf, q->x->oid);
 	strbuf_addf(&res, "condition-ids:%s\n%sresults:\n", ids.len ? "" : " {}", ids.buf);
 	for_each_string_list_item(item, &r->covered) {
@@ -1108,7 +1106,7 @@ static char *concrete_hint(struct request_input *q, struct request_result *r, co
 	at = string_list_lookup(&r->provider_words, c->id);
 	if (at)
 		return command_again(q, *(int *)at->util, "<scope>", NULL);
-	if (contract_get(r->at, c->id))
+	if (contract_get(r->view.at, c->id))
 		return command_again(q, -1, NULL, xstrfmt(" amend %s %s%s -", c->id,
 				     *c->id == 'D' ? "- " : "", quoted("<scope>")));
 	return NULL;
@@ -1229,7 +1227,7 @@ static void request_judge(struct checkin *ck)
 	request_result_reset(r, ck->at);
 	/* 2.1.3, 6.7.2: a retry keeps its new IDs, but cannot take an ID another checkin made. */
 	for_each_string_list_item(item, &q->made)
-		if (contract_get(r->at, item->string))
+		if (contract_get(r->view.at, item->string))
 			checkin_moved(ck);
 	/* the contracts fulfill names exist before anything is done to them */
 	for_each_string_list_item(item, &q->given) {
@@ -1257,7 +1255,7 @@ static void request_judge(struct checkin *ck)
 	/* 6.7.2: the covered set fixed at step 0, with the condition-ids its results are for, holds to the end */
 	for_each_string_list_item(item, &r->covered)
 		if (q->fixed.nr && (!string_list_lookup(&q->fixed, item->string) ||
-				    strcmp(string_list_lookup(&q->fixed, item->string)->util, condition_at_t(r->at, item->string))))
+				    strcmp(string_list_lookup(&q->fixed, item->string)->util, condition_at_t(r->view.at, item->string))))
 			checkin_moved(ck);
 	if (q->fixed.nr && q->fixed.nr != r->covered.nr)
 		checkin_moved(ck);
@@ -1296,8 +1294,8 @@ static char *retry(struct checkin *ck, const char *old)
 		return NULL;
 	strvec_pushl(&args, "diff-tree", "--quiet", old, ck->tip, "--", NULL);
 	for_each_string_list_item(item, &r->covered)
-		strvec_push(&args, contract_get(r->at, item->string)->path);
-	git_args(&args, NULL, NULL, &rc);
+		strvec_push(&args, contract_get(r->view.at, item->string)->path);
+	free(git_argv(NULL, NULL, &rc, args.v));
 	return rc ? NULL : command_again(q, -1, NULL, NULL);
 }
 
@@ -1360,7 +1358,7 @@ static void run_request(struct request *req, int fulfilling)
 		if (q->result)
 			check_results(q, r, result_input);
 		for_each_string_list_item(item, &r->covered)
-			string_list_insert(&q->fixed, item->string)->util = xstrdup(condition_at_t(r->at, item->string));
+			string_list_insert(&q->fixed, item->string)->util = xstrdup(condition_at_t(r->view.at, item->string));
 		/* step 1: the staged code, committed by git */
 		git_run(NULL, NULL, &rc, "diff", "--cached", "--quiet");
 		if (rc) {
@@ -1726,7 +1724,7 @@ static int contract_add(int argc, const char **argv)
 		strbuf_release(&sb);
 	}
 	/* --index-info silently skips invalid paths; --cacheinfo refuses the transaction. */
-	git_args(&args, NULL, index, NULL);
+	free(git_argv(NULL, index, NULL, args.v));
 	for_each_string_list_item(item, &paths)
 		printf("add %s\n", item->string);
 	return 0;
@@ -1759,7 +1757,7 @@ static void commit_judge(struct checkin *ck)
 		struct contract *d = contract_copy(item->util), *old;
 		struct string_list_item *prior;
 
-		old = contract_get(r->at, d->id);
+		old = contract_get(r->view.at, d->id);
 		prior = string_list_lookup(&r->changed, d->id);
 		if (prior)
 			reject(128, NULL, "bad format: '%s': %s", d->path,
@@ -1784,7 +1782,7 @@ static void commit_judge(struct checkin *ck)
 	}
 	/* 6.5.4 is a staged batch: every target is judged in the same final view. */
 	for_each_string_list_item(item, &r->changed)
-		validate_change(q, r, contract_get(r->at, item->string), item->util, DRAFT, q->force);
+		validate_change(q, r, contract_get(r->view.at, item->string), item->util, DRAFT, q->force);
 	settle(r, ck);
 }
 

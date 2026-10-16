@@ -238,11 +238,6 @@ static char *git_argv_n(const char *in, size_t in_len, const char *index, int *r
 	return strbuf_detach(&out, &git_out_len);
 }
 
-char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
-{
-	return git_argv_n(in, in ? strlen(in) : 0, index, rc, args->v, NULL);
-}
-
 char *git_argv(const char *in, const char *index, int *rc, const char **argv)
 {
 	return git_argv_n(in, in ? strlen(in) : 0, index, rc, argv, NULL);
@@ -502,11 +497,6 @@ NORETURN void write_error(const char *path)
 NORETURN void listen_write_error(const char *path)
 {
 	write_failure(path, 1);
-}
-
-NORETURN void stdout_write_error(void)
-{
-	write_failure(NULL, 0);
 }
 
 /* Worktree-local ait files use Git's directory choice at one boundary (2.6). */
@@ -1185,11 +1175,6 @@ static void refuse_used(const char *branch, const char *commit)
 		reject(128, NULL, "%s", git_error);
 }
 
-/*
- * spec 4.3, then 4.6: what every contract command does first, in one place
- * (git refuses a broken state at each command's start with one function);
- * the contract branch it works with
- */
 /* spec 4.3-3: a tip with a malformed file is refused (or, for status, warned of), wherever it is met */
 static void refuse_malformed(struct branch *b, int warn)
 {
@@ -1399,6 +1384,11 @@ static void refuse_hidden_trailers(void)
 	       settings.len ? " (" : "", settings.buf, settings.len ? ")" : "");
 }
 
+/*
+ * spec 4.3, then 4.6: what every contract command does first, in one place
+ * (git refuses a broken state at each command's start with one function);
+ * the contract branch it works with
+ */
 struct branch *start(int how)
 {
 	struct branch *b = branch_load(branch_name(), NULL, NULL);
@@ -1419,7 +1409,6 @@ struct branch *start(int how)
 		refuse_hidden_trailers();
 	return b;
 }
-
 
 /*
  * the tree of TREEISH with the entries INFO ("update-index -z --index-info"
@@ -1459,9 +1448,9 @@ static char *checkin_tree(struct checkin *c)
  * spec 4.10: a new tree may not add violations of the structural
  * invariants; those of T stay as they were (a git merge made them)
  */
-static void checkin_invariants(struct checkin *c, struct branch *now, const char *tree)
+static void checkin_invariants(struct checkin *c, struct branch *now)
 {
-	struct branch *after = branch_load(c->branch, NULL, tree);
+	struct branch *after = branch_load(c->branch, NULL, c->tree);
 	struct string_list before = STRING_LIST_INIT_DUP, then = STRING_LIST_INIT_DUP, added = STRING_LIST_INIT_DUP;
 	struct string_list_item *v;
 
@@ -1524,7 +1513,7 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
 		return NULL;
 	if (!c->tree)
 		c->tree = checkin_tree(c);
-	checkin_invariants(c, now, c->tree);
+	checkin_invariants(c, now);
 	return c->tree;
 }
 
@@ -1572,7 +1561,7 @@ char *checkin_run(struct checkin *c, judge_fn decide)
 				strvec_pushl(&args, "-p", c->tip, NULL);
 			if (c->second_parent)
 				strvec_pushl(&args, "-p", c->second_parent, NULL);
-			commit = line1(git_args(&args, c->record, NULL, NULL));
+			commit = line1(git_argv(c->record, NULL, NULL, args.v));
 			strvec_clear(&args);
 		}
 		/* 4.4-3: (a) no worktree uses the branch, judged by git; (b) the CAS */
@@ -1598,7 +1587,7 @@ char *checkin_run(struct checkin *c, judge_fn decide)
 		strvec_pushl(&args, "diff-tree", "--quiet", *old ? old : EMPTY_TREE, c->tip, "--", NULL);
 		for_each_string_list_item(item, &c->put)
 			strvec_push(&args, item->string);
-		git_args(&args, NULL, NULL, &rc);
+		free(git_argv(NULL, NULL, &rc, args.v));
 		if (rc && c->retry_hint)
 			retry_command = c->retry_hint(c, old);
 		if (rc)
@@ -1828,7 +1817,7 @@ int main(int argc, const char **argv)
 		precompose_argv_prefix(argc, argv, NULL);
 		status = commands[i].fn(argc - 1, argv + 1);
 		if (fflush(stdout) || ferror(stdout))
-			stdout_write_error();
+			write_error(NULL);
 		return status;
 	}
 	reject(129, NULL, "'%s' is not an ait command", argv[1]);

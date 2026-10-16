@@ -140,7 +140,8 @@ int cmd_status(int argc, const char **argv)
 	if ((rc = git_pass(&args)))
 		goto out;
 	putchar('\n');
-	me = session(0) ? agent : NULL;
+	/* start() took the session */
+	me = *sid ? agent : NULL;
 	invariants(b, b, NULL, &bad);
 	for_each_string_list_item(item, &bad)
 		warning("%s", violation_words(item->util));
@@ -308,9 +309,9 @@ static void subscriptions_read(struct subscriptions *subs, const struct string_l
 	for_each_string_list_item(item, lines) {
 		struct scope s;
 
-		if (skip_prefix(item->string, "sub id ", &id))
+		if (skip_prefix(item->string, "sub id ", &id)) {
 			string_list_insert(&subs->ids, id);
-		else if (sub_scope(item->string, &s)) {
+		} else if (sub_scope(item->string, &s)) {
 			ALLOC_GROW(subs->scopes.items, subs->scopes.nr + 1, subs->scopes.alloc);
 			subs->scopes.items[subs->scopes.nr++] = s;
 		}
@@ -348,7 +349,7 @@ static void subscribe(struct branch *b, int argc, const char **argv, FILE *out)
 
 	fd = lock_session(sid);
 	session_lines(sid, &lines);
-	for (i = 1; i < argc; i++) {
+	for (i = 0; i < argc; i++) {
 		struct scope s;
 		char *line, *display, *text, *err;
 
@@ -394,7 +395,7 @@ int cmd_sub(int argc, const char **argv)
 	if (argc < 2)
 		reject(129, NULL, "sub names what to subscribe to");
 	b = start(START_SESSION);
-	subscribe(b, argc, argv, stdout);
+	subscribe(b, argc - 1, argv + 1, stdout);
 	branch_free(b);
 	return 0;
 }
@@ -499,7 +500,7 @@ static void reason_lines(struct event_reasons *reasons, struct strbuf *out)
 	}
 }
 
-/* spec 9.5: why the session's agent receives C (OLD at the first parent): relations at MINE and HEAD H */
+/* spec 9.5: why the session's agent receives C (OLD at the first parent): relations in JUDGMENTS (MINE at the receiver's HEAD) */
 static void reasons(struct judgment *judgments, struct contract *c, struct contract *old,
 		    struct subscriptions *subs, struct event_reasons *out)
 {
@@ -756,7 +757,7 @@ static void deliver(int *warned)
 				signal(SIGPIPE, SIG_DFL);
 				raise(SIGPIPE);
 			}
-			stdout_write_error();
+			write_error(NULL);
 		}
 		append_seen(sid, keys.buf);
 	event_done:
@@ -857,13 +858,8 @@ int cmd_listen(int argc, const char **argv)
 		}
 	}
 	b = start(START_SESSION);
-	if (args.nr) {
-		struct strvec sub = STRVEC_INIT;
-
-		strvec_push(&sub, "sub");
-		strvec_pushv(&sub, args.v);
-		subscribe(b, sub.nr, sub.v, stderr);
-	}
+	if (args.nr)
+		subscribe(b, args.nr, args.v, stderr);
 	branch_free(b);
 	strvec_clear(&args);
 	/* v14 4.5: the listener's lock, taken and stamped with the pid under the session's lock */
