@@ -14,16 +14,19 @@ struct scope_input {
 	int keep;
 };
 
-/* one clause of a request as given (6.4): its verb and its words */
+/* one clause of a request as given (6.4), its words placed once by read_clauses() */
 struct clause {
-	const char *verb;		/* demand, offer, drop, amend, cancel, undertake, release */
+	const struct verb *verb;
 	int future;
 	int partial;			/* undertake -p */
 	const char *args[4];		/* its words after the verb: scopes and files, IDs */
 	int arg_words[4];		/* their positions in the original command */
 	int nargs;
 	const char *as;
-	struct scope_input scopes[2];
+	struct scope_input scopes[2];	/* consumer and provider; "-" when not given */
+	const int *provider_word;	/* the word of a provider given, for hints */
+	const char *files;		/* condition files given, or NULL */
+	const char *target;		/* amend of a drop: the new target, or NULL */
 };
 
 /* Inputs and values fixed once, kept across every judgment (4.4, 6.7.5). */
@@ -564,8 +567,9 @@ static int read_clauses(struct request_input *q, int argc, const char **argv)
 		REALLOC_ARRAY(q->clauses, q->nclauses + 1);
 		cl = &q->clauses[q->nclauses++];
 		memset(cl, 0, sizeof(*cl));
-		cl->verb = v->verb;
+		cl->verb = v;
 		cl->future = future;
+		cl->scopes[0].keep = cl->scopes[1].keep = 1;
 		if (!strcmp(w, "undertake") && i < argc && (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--partial"))) {
 			cl->partial = 1;
 			i++;
@@ -598,15 +602,21 @@ static int read_clauses(struct request_input *q, int argc, const char **argv)
 			string_list_lookup(&aliases, cl->as)->util = (void *)v;
 			i += 2;
 		}
-		if (!strcmp(w, "demand")) {
+		/* A B FILES, B FILES, amend K [A] B FILES, amend X K: the words placed once */
+		if (!strcmp(w, "demand"))
 			prepare_scopes(&cl->scopes[0], cl->args[0], 1, 0);
-			prepare_scopes(&cl->scopes[1], cl->args[1], 1, 1);
-		} else if (!strcmp(w, "offer")) {
-			prepare_scopes(&cl->scopes[1], cl->args[0], 1, 1);
-		} else if (!strcmp(w, "amend") && cl->nargs > 2) {
+		if (!strcmp(w, "demand") || !strcmp(w, "offer") || (!strcmp(w, "amend") && cl->nargs > 2)) {
+			int provider = !strcmp(w, "demand") ? 1 : !strcmp(w, "offer") ? 0 : cl->nargs - 2;
+
 			if (cl->nargs == 4)
 				prepare_scopes(&cl->scopes[0], cl->args[1], 1, 0);
-			prepare_scopes(&cl->scopes[1], cl->args[cl->nargs - 2], 1, 1);
+			prepare_scopes(&cl->scopes[1], cl->args[provider], 1, 1);
+			if (strcmp(cl->args[provider], "-"))
+				cl->provider_word = &cl->arg_words[provider];
+			if (strcmp(cl->args[provider + 1], "-"))
+				cl->files = cl->args[provider + 1];
+		} else if (!strcmp(w, "amend") && cl->nargs == 2 && strcmp(cl->args[1], "-")) {
+			cl->target = cl->args[1];
 		}
 		fulfils |= v->fulfils && !future;
 	}
@@ -627,71 +637,60 @@ static void remove_id(struct string_list *l, const char *id)
 /* spec 6.4.1: the clauses applied in order to the branch at T */
 static void apply_clauses(struct request_input *q, struct request_result *r)
 {
-	struct tree *h = q->h;
 	size_t n;
 
 	for (n = 0; n < q->nclauses; n++) {
 		struct clause *cl = &q->clauses[n];
-		struct tree *pin_at = cl->future ? h : q->x;
-		const char **a = cl->args;
+		const char *verb = cl->verb->verb, **a = cl->args;
+		struct tree *pin_at = cl->future ? q->h : q->x;
 		struct contract *c, *old = NULL, *d;
 		enum change_action action = EDIT;
 		int trivial = 0;
 
-		if (!strcmp(cl->verb, "demand") || !strcmp(cl->verb, "offer")) {
-			int demand = !strcmp(cl->verb, "demand");
-
-			c = make(q, r, cl->verb);
-			if (demand)
-				scopes_arg(&c->consumer, &cl->scopes[0], pin_at);
-			scopes_arg(&c->provider, &cl->scopes[1], pin_at);
-			string_list_insert(&r->provider_words, c->id)->util = &cl->arg_words[demand];
-			specs_from_files(q, c, a[demand + 1]);
-		} else if (!strcmp(cl->verb, "drop")) {
+		if (!strcmp(verb, "demand") || !strcmp(verb, "offer")) {
+			c = make(q, r, verb);
+		} else if (!strcmp(verb, "drop")) {
 			d = contract_arg(r, a[0], "DO");
 			c = make(q, r, "drop");
 			c->target = xstrdup(d->id);
-		} else if (!strcmp(cl->verb, "amend")) {
-			int more = cl->nargs - 1;
-
+		} else if (!strcmp(verb, "amend") || !strcmp(verb, "cancel")) {
 			old = contract_arg(r, a[0], "DOX");
 			c = contract_copy(old);
-			if (*c->id == 'X' && more) {
-				if (strcmp(a[1], "-"))
-					replace_text(&c->target, contract_arg(r, a[1], "DO")->id);
-			} else if (more) {
-				if (*c->id == 'D')
-					scopes_arg(&c->consumer, &cl->scopes[0], pin_at);
-				scopes_arg(&c->provider, &cl->scopes[1], pin_at);
-				if (strcmp(a[more - 1], "-"))
-					string_list_insert(&r->provider_words, c->id)->util = &cl->arg_words[more - 1];
-				if (strcmp(a[more], "-"))
-					specs_from_files(q, c, a[more]);
-			}
-			trivial = cl->future && q->force;
-			/* an empty amend explicitly reopens, even if later rows return to T */
-			if (!more)
-				string_list_insert(&r->reopened, c->id);
-		} else if (!strcmp(cl->verb, "cancel")) {
-			old = contract_arg(r, a[0], "DOX");
-			c = contract_copy(old);
-			replace_text(&c->state, "cancelled");
-			action = CANCEL;
 		} else {
 			d = contract_arg(r, a[0], "D");
 			old = contract_arg(r, a[1], "O");
-			if (!strcmp(cl->verb, "undertake"))
+			if (!strcmp(verb, "undertake"))
 				validate_change(q, r, d, d, EDIT, 0);
 			c = contract_copy(old);
 			remove_id(&c->undertakes, d->id);
 			remove_id(&c->partially, d->id);
-			if (!strcmp(cl->verb, "undertake"))
+			if (!strcmp(verb, "undertake"))
 				string_list_append(cl->partial ? &c->partially : &c->undertakes, d->id);
+		}
+		/* the words read_clauses() placed: "-" and words not given keep what is there */
+		if (!strcmp(c->kind, "demand"))
+			scopes_arg(&c->consumer, &cl->scopes[0], pin_at);
+		if (strcmp(c->kind, "drop"))
+			scopes_arg(&c->provider, &cl->scopes[1], pin_at);
+		if (cl->provider_word)
+			string_list_insert(&r->provider_words, c->id)->util = (void *)cl->provider_word;
+		if (cl->files)
+			specs_from_files(q, c, cl->files);
+		if (cl->target)
+			replace_text(&c->target, contract_arg(r, cl->target, "DO")->id);
+		if (!strcmp(verb, "amend")) {
+			trivial = cl->future && q->force;
+			/* an empty amend explicitly reopens, even if later rows return to T */
+			if (cl->nargs == 1)
+				string_list_insert(&r->reopened, c->id);
+		} else if (!strcmp(verb, "cancel")) {
+			replace_text(&c->state, "cancelled");
+			action = CANCEL;
 		}
 		accept_change(q, r, old, c, action, trivial);
 		if (cl->as)
 			string_list_insert(&r->alias, cl->as)->util = xstrdup(c->id);
-		if (!cl->future && (!strcmp(cl->verb, "demand") || !strcmp(cl->verb, "offer") || !strcmp(cl->verb, "amend")))
+		if (!cl->future && cl->verb->fulfils)
 			string_list_insert(&r->fulfil, c->id);
 	}
 }
