@@ -66,7 +66,6 @@ void contract_free(struct contract *c)
 	free(c->group);
 	free(c->condition_id);
 	free(c->change_id);
-	free(c->kind);
 	free(c->creator);
 	free(c->state);
 	free(c->target);
@@ -89,7 +88,7 @@ struct contract *contract_copy(const struct contract *c)
 	copy->group = xstrdup(c->group);
 	copy->condition_id = xstrdup(c->condition_id);
 	copy->change_id = xstrdup(c->change_id);
-	copy->kind = xstrdup(c->kind);
+	copy->kind = c->kind;
 	copy->creator = xstrdup(c->creator);
 	copy->state = xstrdup(c->state);
 	copy->target = xstrdup_null(c->target);
@@ -175,7 +174,7 @@ static int specs_same(const struct contract *a, const struct contract *b)
 /* Source lines and storage order are not contract semantics. */
 int contract_same(const struct contract *a, const struct contract *b, unsigned parts)
 {
-	if (!text_same(a->kind, b->kind))
+	if (a->kind != b->kind)
 		return 0;
 	if ((parts & CONTRACT_SPECS) && !specs_same(a, b))
 		return 0;

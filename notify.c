@@ -22,9 +22,9 @@ static void block(struct branch *b, struct judgment *j, struct contract *c, cons
 	enum verdict v = result->verdict;
 	struct string_list_item *item;
 	size_t i;
-	int demand = !strcmp(c->kind, "demand"), held = 0;
+	int demand = c->kind == DEMAND, held = 0;
 
-	printf("id %s\nkind %s\ngroup %s\nstate %s\ncreator %s\n", c->id, c->kind, *c->group ? c->group : "-",
+	printf("id %s\nkind %s\ngroup %s\nstate %s\ncreator %s\n", c->id, kind_word(c->kind), *c->group ? c->group : "-",
 	       verdict_word(v), c->creator);
 	if (demand) {
 		char *display = geometry_text(g, 0, NULL);
@@ -32,7 +32,7 @@ static void block(struct branch *b, struct judgment *j, struct contract *c, cons
 		printf("consumer %s\n", display);
 		free(display);
 	}
-	if (!strcmp(c->kind, "drop")) {
+	if (c->kind == DROP) {
 		printf("target %s\n", c->target);
 	} else {
 		char *display = geometry_text(g, 1, result->matches_any);
@@ -68,7 +68,7 @@ static void block(struct branch *b, struct judgment *j, struct contract *c, cons
 	if (touch)
 		puts("touch");
 	putchar('\n');
-	if (me && !strcmp(c->creator, me) && promise(c, v) && strcmp(c->kind, "drop"))
+	if (me && !strcmp(c->creator, me) && promise(c, v) && c->kind != DROP)
 		suggest("%s", hint_command("ait fulfill %s -m <why>", c->id));
 	if (demand && live(c) && !held)
 		suggest("%s", hint_command("ait future offer %s <files> as o undertake %s o -m <why>",
@@ -162,7 +162,7 @@ int cmd_status(int argc, const char **argv)
 			int mine = me && !strcmp(c->creator, me);
 
 			touch = h && judgment_touched(&original, c, x);
-			pick = (mine && promise(c, v)) || (mine && !strcmp(c->kind, "demand") && v == V_CURRENT) ||
+			pick = (mine && promise(c, v)) || (mine && c->kind == DEMAND && v == V_CURRENT) ||
 			       v == V_UNVERIFIED || touch || violates(&bad, c->id);
 		}
 		if (!pick)
@@ -481,9 +481,9 @@ static void add_reason(struct event_reasons *reasons, enum reason_kind kind, con
 
 static enum reason_kind future_reason(const struct contract *c)
 {
-	if (!strcmp(c->kind, "demand"))
+	if (c->kind == DEMAND)
 		return REASON_FUTURE_DEMAND;
-	if (!strcmp(c->kind, "offer"))
+	if (c->kind == OFFER)
 		return REASON_FUTURE_OFFER;
 	return REASON_FUTURE_DROP;
 }
@@ -524,12 +524,12 @@ static void reasons(struct judgment *judgments, struct contract *c, struct contr
 		if (!k || strcmp(m->creator, agent))
 			continue;
 		counterpart = string_list_has_string(&related, m->id) ||
-			      (!strcmp(m->kind, "drop") && !strcmp(m->target, k->id));
+			      (m->kind == DROP && !strcmp(m->target, k->id));
 		if (counterpart && promise(m, judgment_get(judgments, m)->verdict))
 			add_reason(out, future_reason(m), m->id);
 	}
 	string_list_clear(&related, 0);
-	if (k && !strcmp(k->kind, "demand") && !strcmp(k->creator, agent) && v == V_CURRENT)
+	if (k && k->kind == DEMAND && !strcmp(k->creator, agent) && v == V_CURRENT)
 		add_reason(out, REASON_DEMAND, k->id);
 	if (string_list_has_string(&subs->ids, c->id))
 		add_reason(out, REASON_SUB_ID, c->id);
@@ -616,7 +616,7 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 		old = before ? contract_get(before, c->id) : NULL;
 		reasons(judgments, c, old, subs, &why);
 		actions(c, old, &acts);
-		if (!strcmp(c->kind, "drop") && contract_get(at, c->target))
+		if (c->kind == DROP && contract_get(at, c->target))
 			reasons(judgments, contract_get(at, c->target), before ? contract_get(before, c->target) : NULL,
 				subs, &why);
 	}

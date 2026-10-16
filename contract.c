@@ -588,16 +588,36 @@ static const char *const offer_keys[] = { "condition-id", "change-id", "kind", "
 static const char *const drop_keys[] = { "condition-id", "change-id", "kind", "creator", "target", "state",
 					"fulfilled", NULL };
 
-static const char *const *keys_of(const char *kind)
+static const struct {
+	const char *word;
+	int letter;
+	const char *const *keys;
+} kinds[] = {
+	[DEMAND] = { "demand", 'D', demand_keys },
+	[OFFER] = { "offer", 'O', offer_keys },
+	[DROP] = { "drop", 'X', drop_keys },
+};
+
+const char *kind_word(enum kind kind)
 {
-	return !strcmp(kind, "demand") ? demand_keys : !strcmp(kind, "offer") ? offer_keys :
-	       !strcmp(kind, "drop") ? drop_keys : NULL;
+	return kinds[kind].word;
 }
 
 /* spec 1.11: the letter of an ID of KIND */
-int kind_letter(const char *kind)
+int kind_letter(enum kind kind)
 {
-	return !strcmp(kind, "demand") ? 'D' : !strcmp(kind, "offer") ? 'O' : 'X';
+	return kinds[kind].letter;
+}
+
+/* the kind WORD names, or -1 */
+int kind_of(const char *word)
+{
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(kinds); i++)
+		if (!strcmp(word, kinds[i].word))
+			return i;
+	return -1;
 }
 
 /*
@@ -659,14 +679,14 @@ char *contract_path_id(const char *path)
 }
 
 /* a new contract of KIND in GROUP with ID, its fields empty (spec 6.4, 6.5.2) */
-struct contract *contract_new(const char *kind, const char *group, const char *id)
+struct contract *contract_new(enum kind kind, const char *group, const char *id)
 {
 	struct contract *c = xcalloc(1, sizeof(*c));
 
 	snprintf(c->id, sizeof(c->id), "%s", id);
 	c->group = xstrdup(group);
 	c->path = xstrfmt("%s%s%s.yaml", group, *group ? "/" : "", id);
-	c->kind = xstrdup(kind);
+	c->kind = kind;
 	c->condition_id = xstrdup("");
 	c->change_id = xstrdup("");
 	c->creator = xstrdup("");
@@ -706,10 +726,10 @@ static char *contract_read(struct ynode *map, struct contract *c, int draft)
 	struct string_list_item *item;
 	struct ynode *n;
 	char *why, **fields[] = { &c->condition_id, &c->change_id, &c->creator };
-	int demand = !strcmp(c->kind, "demand"), drop = !strcmp(c->kind, "drop");
+	int demand = c->kind == DEMAND, drop = c->kind == DROP;
 	size_t i;
 
-	if ((why = keys_refusal(map, keys_of(c->kind), 1)))
+	if ((why = keys_refusal(map, kinds[c->kind].keys, 1)))
 		return why;
 	/* the IDs and the creator: plain values, empty only in a draft */
 	for (i = 0; i < ARRAY_SIZE(ids); i++) {
@@ -751,7 +771,7 @@ static char *contract_read(struct ynode *map, struct contract *c, int draft)
 		return yaml_refusal(n, "bad 'target'");
 	if (drop)
 		c->target = xstrdup(n->value);
-	if (!strcmp(c->kind, "offer") &&
+	if (c->kind == OFFER &&
 	    ((why = yaml_list(yget(map, "undertakes"), "undertakes", &c->undertakes, 0)) ||
 	     (why = yaml_list(yget(map, "undertakes-partially"), "undertakes-partially", &c->partially, 0))))
 		return why;
@@ -800,10 +820,10 @@ struct contract *contract_parse(const char *text, size_t len, const char *path, 
 
 	if (map && !id)
 		*err = yaml_refusal_at(1, "not a contract path");
-	else if (map && (!ystr(kind) || !keys_of(kind->value) || kind_letter(kind->value) != *id))
+	else if (map && (!ystr(kind) || kind_of(kind->value) < 0 || kind_letter(kind_of(kind->value)) != *id))
 		*err = yaml_refusal(kind ? kind : map, "'kind' is missing or does not match the ID");
 	else if (map)
-		c = contract_new(kind->value, group, id);
+		c = contract_new(kind_of(kind->value), group, id);
 	if (c && (*err = contract_read(map, c, draft))) {
 		contract_free(c);
 		c = NULL;
@@ -867,16 +887,16 @@ char *contract_text(struct contract *c)
 	size_t i;
 
 	strbuf_addf(&sb, "condition-id: %s\nchange-id: %s\nkind: %s\ncreator: %s\n",
-		    *c->condition_id ? c->condition_id : "\"\"", *c->change_id ? c->change_id : "\"\"", c->kind,
+		    *c->condition_id ? c->condition_id : "\"\"", *c->change_id ? c->change_id : "\"\"", kind_word(c->kind),
 		    *c->creator ? c->creator : "\"\"");
-	if (!strcmp(c->kind, "demand"))
+	if (c->kind == DEMAND)
 		scope_line(&sb, "consumer", &c->consumer);
-	if (!strcmp(c->kind, "drop"))
+	if (c->kind == DROP)
 		strbuf_addf(&sb, "target: %s\n", c->target);
 	else
 		scope_line(&sb, "provider", &c->provider);
 	strbuf_addf(&sb, "state: %s\n", c->state);
-	if (strcmp(c->kind, "drop")) {
+	if (c->kind != DROP) {
 		strbuf_addstr(&sb, "specs:\n");
 		for (i = 0; i < c->nspecs; i++) {
 			struct spec *s = &c->specs[i];
@@ -894,7 +914,7 @@ char *contract_text(struct contract *c)
 			}
 		}
 	}
-	if (!strcmp(c->kind, "offer")) {
+	if (c->kind == OFFER) {
 		ids_out(&sb, "undertakes", &c->undertakes);
 		ids_out(&sb, "undertakes-partially", &c->partially);
 	}
@@ -1568,7 +1588,7 @@ int contract_overlaps(const struct contract *c, struct tree *t, const struct sco
 /* spec 1.7: how the offer O holds the demand ID: 'w' wholly, 'p' partially, 0 not (or O is no offer) */
 static int holds(struct contract *o, const char *id)
 {
-	if (strcmp(o->kind, "offer"))
+	if (o->kind != OFFER)
 		return 0;
 	return unsorted_string_list_has_string(&o->undertakes, id) ? 'w' :
 	       unsorted_string_list_has_string(&o->partially, id) ? 'p' : 0;
@@ -1598,14 +1618,14 @@ void undertakings(const struct contract_view *v, struct contract *c, int how, st
 
 	if (!live(c))
 		return;
-	if (!strcmp(c->kind, "offer")) {
+	if (c->kind == OFFER) {
 		for_each_string_list_item(item, how == 'w' ? &c->undertakes : &c->partially) {
 			struct contract *d = contract_lookup(v, item->string);
 
-			if (live(d) && !strcmp(d->kind, "demand"))
+			if (live(d) && d->kind == DEMAND)
 				string_list_insert(out, d->id)->util = d;
 		}
-	} else if (!strcmp(c->kind, "demand")) {
+	} else if (c->kind == DEMAND) {
 		for_each_string_list_item(item, &v->at->contracts)
 			undertaking(v, c, item->string, how, out);
 		if (v->changed)
@@ -1617,7 +1637,7 @@ void undertakings(const struct contract_view *v, struct contract *c, int how, st
 /* spec 1.8: whole offers lean on demands; partially held demands lean on offers. */
 void dependencies(const struct contract_view *v, struct contract *c, struct string_list *out)
 {
-	undertakings(v, c, !strcmp(c->kind, "offer") ? 'w' : 'p', out);
+	undertakings(v, c, c->kind == OFFER ? 'w' : 'p', out);
 }
 
 /* One completed result per contract; a back edge is never a completed result. */
@@ -1651,7 +1671,7 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 		r->verdict = V_WITHDRAWN;
 		goto done;
 	}
-	if (!strcmp(c->kind, "drop")) {
+	if (c->kind == DROP) {
 		r->verdict = c->fulfilled.nr ? V_FULFILLED : V_FUTURE;
 		goto done;
 	}
@@ -1817,7 +1837,7 @@ void invariants(struct branch *b, struct branch *was, const struct string_list *
 		struct contract *d = item->util;
 		struct string_list whole = STRING_LIST_INIT_DUP, part = STRING_LIST_INIT_DUP, before = STRING_LIST_INIT_DUP;
 
-		if (!live(d) || strcmp(d->kind, "demand"))
+		if (!live(d) || d->kind != DEMAND)
 			continue;
 		undertakings(v, d, 'w', &whole);
 		undertakings(v, d, 'p', &part);

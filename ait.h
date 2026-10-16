@@ -187,13 +187,18 @@ struct spec {
 	struct string_list success;
 	char *environment;
 };
+/* spec 1.1: the kinds of contract; their words, ID letters and keys are in one table (contract.c) */
+enum kind { DEMAND, OFFER, DROP };
+const char *kind_word(enum kind kind);
+int kind_letter(enum kind kind);
+int kind_of(const char *word);
 struct contract {
 	char id[16];
 	char *path;			/* <group>/<ID>.yaml */
 	char *group;			/* "" for the root */
 	char *condition_id;
 	char *change_id;
-	char *kind;
+	enum kind kind;
 	char *creator;
 	char *state;
 	char *target;
@@ -246,11 +251,10 @@ struct branch {
 struct branch *branch_load(const char *name, const char *tip, const char *treeish);
 void branch_free(struct branch *b);
 struct contract *contract_get(struct branch *b, const char *id);
-int kind_letter(const char *kind);
 char *contract_path_id(const char *path);
 struct contract *contract_parse(const char *text, size_t len, const char *path, int draft, char **err);
 char *contract_text(struct contract *c);
-struct contract *contract_new(const char *kind, const char *group, const char *id);
+struct contract *contract_new(enum kind kind, const char *group, const char *id);
 enum contract_part {
 	CONTRACT_SPECS = 1, CONTRACT_REQUIREMENTS = 2, CONTRACT_DETAILS = 4,
 	CONTRACT_IDS = 8, CONTRACT_STATE = 16, CONTRACT_FULFILLED = 32,

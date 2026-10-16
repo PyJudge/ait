@@ -224,7 +224,7 @@ static NORETURN void refuse(struct request_input *q, enum refusal why, struct co
 /* spec 1.4, 2.4: cancelled, withdrawn, or a fulfilled drop: it changes no more */
 static int ended(struct contract *c)
 {
-	return !live(c) || (*c->id == 'X' && c->fulfilled.nr);
+	return !live(c) || (c->kind == DROP && c->fulfilled.nr);
 }
 
 /* K, an ID or an alias of this request, of a kind in KINDS ("DOX") */
@@ -337,7 +337,7 @@ static void made(struct request_result *r, const char *id)
 	item->util = xstrfmt("+%d", (int)r->order.nr);
 }
 
-static struct contract *make(struct request_input *q, struct request_result *r, const char *kind)
+static struct contract *make(struct request_input *q, struct request_result *r, enum kind kind)
 {
 	char id[16];
 	struct contract *c;
@@ -403,7 +403,7 @@ static enum refusal change_refusal(struct request_input *q, struct request_resul
 	if (old && ended(old) && !(action == CANCEL && !strcmp(old->state, "cancelled")) &&
 	    !(action == DRAFT && contract_same(old, c, CONTRACT_ALL)))
 		return ENDED;
-	if (old && (strcmp(c->path, old->path) || strcmp(c->kind, old->kind) || strcmp(c->creator, old->creator)))
+	if (old && (strcmp(c->path, old->path) || c->kind != old->kind || strcmp(c->creator, old->creator)))
 		return IDENTITY;
 	if (old && !list_is_prefix(&old->fulfilled, &c->fulfilled))
 		return FULFILMENT;
@@ -413,9 +413,9 @@ static enum refusal change_refusal(struct request_input *q, struct request_resul
 	if ((!old && strcmp(c->state, "future")) ||
 	    (old && strcmp(c->state, old->state) &&
 	     !((action == CANCEL || action == DRAFT) && !strcmp(c->state, "cancelled")) &&
-	     !(action == WITHDRAW && *c->id != 'X' && !strcmp(c->state, "withdrawn"))))
+	     !(action == WITHDRAW && c->kind != DROP && !strcmp(c->state, "withdrawn"))))
 		return STATE;
-	if (*c->id == 'X' && (!old || strcmp(c->target, old->target) || action == FULFILL) &&
+	if (c->kind == DROP && (!old || strcmp(c->target, old->target) || action == FULFILL) &&
 	    !target_current(r, q->code ? q->code : q->x, c))
 		return TARGET;
 	if (old && trivial && !scopes_same(&c->provider, &old->provider))
@@ -528,7 +528,7 @@ static const struct verb *contract_kind(const char *name, struct string_list *al
 		return alias->util;
 	if (id_ok(name, "DOX"))
 		for (v = 0; v < ARRAY_SIZE(verbs); v++)
-			if (verbs[v].named && kind_letter(verbs[v].verb) == *name)
+			if (verbs[v].named && kind_letter(kind_of(verbs[v].verb)) == *name)
 				return &verbs[v];
 	return NULL;
 }
@@ -648,10 +648,10 @@ static void apply_clauses(struct request_input *q, struct request_result *r)
 		int trivial = 0;
 
 		if (!strcmp(verb, "demand") || !strcmp(verb, "offer")) {
-			c = make(q, r, verb);
+			c = make(q, r, kind_of(verb));
 		} else if (!strcmp(verb, "drop")) {
 			d = contract_arg(r, a[0], "DO");
-			c = make(q, r, "drop");
+			c = make(q, r, DROP);
 			c->target = xstrdup(d->id);
 		} else if (!strcmp(verb, "amend") || !strcmp(verb, "cancel")) {
 			old = contract_arg(r, a[0], "DOX");
@@ -668,9 +668,9 @@ static void apply_clauses(struct request_input *q, struct request_result *r)
 				string_list_append(cl->partial ? &c->partially : &c->undertakes, d->id);
 		}
 		/* the words read_clauses() placed: "-" and words not given keep what is there */
-		if (!strcmp(c->kind, "demand"))
+		if (c->kind == DEMAND)
 			scopes_arg(&c->consumer, &cl->scopes[0], pin_at);
-		if (strcmp(c->kind, "drop"))
+		if (c->kind != DROP)
 			scopes_arg(&c->provider, &cl->scopes[1], pin_at);
 		if (cl->provider_word)
 			string_list_insert(&r->provider_words, c->id)->util = (void *)cl->provider_word;
@@ -756,7 +756,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 			goto done;
 		string_list_insert(&reopened, c->id);
 		string_list_insert(&fixes, xstrfmt("future amend %s", request_name(r, c->id)));
-		undertakings(&r->view, c, !strcmp(c->kind, "demand") ? 'w' : 'p', &dependants);
+		undertakings(&r->view, c, c->kind == DEMAND ? 'w' : 'p', &dependants);
 		for_each_string_list_item(o, &dependants)
 			if (has_valid_fulfilment(r->view.at, o->util) || string_list_has_string(&r->covered, o->string))
 				strvec_push(&pending, o->string);
@@ -771,7 +771,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 			struct contract *c = contract_after(r, item->string);
 
 			strbuf_addf(&sb, " future amend %s%s %s -", c->id,
-				    !strcmp(c->kind, "demand") ? " -" : "", quoted(((struct scope_input *)item->util)->raw));
+				    c->kind == DEMAND ? " -" : "", quoted(((struct scope_input *)item->util)->raw));
 		}
 	}
 	for_each_string_list_item(item, &fixes)
@@ -799,7 +799,7 @@ static void cover(struct request_result *r, struct judgment *j, struct contract 
 	string_list_insert(out, k->id);
 	dependencies(&r->view, k, &needs);
 	for_each_string_list_item(item, &needs)
-		if (!strcmp(k->kind, "offer") || judgment_get(j, item->util)->verdict != V_CURRENT)
+		if (k->kind == OFFER || judgment_get(j, item->util)->verdict != V_CURRENT)
 			string_list_insert(out, item->string);
 	string_list_clear(&needs, 0);
 }
@@ -974,8 +974,9 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 
 			strbuf_addf(&task_lines, "task %s\n", task);
 			tasks++;
-			strbuf_addf(&req, "- task: \"%s\"\n  contract: \"%s\"\n  kind: \"%s\"\n", task, task_id(r, c->id), c->kind);
-			if (!strcmp(c->kind, "demand")) {
+			strbuf_addf(&req, "- task: \"%s\"\n  contract: \"%s\"\n  kind: \"%s\"\n", task, task_id(r, c->id),
+				    kind_word(c->kind));
+			if (c->kind == DEMAND) {
 				strbuf_addstr(&req, "  consumer: ");
 				yaml_out_scalar(&req, consumer);
 				strbuf_addch(&req, '\n');
@@ -1117,7 +1118,7 @@ static char *concrete_hint(struct request_input *q, struct request_result *r, co
 		return command_again(q, *(int *)at->util, "<scope>", NULL);
 	if (contract_get(r->view.at, c->id))
 		return command_again(q, -1, NULL, xstrfmt(" amend %s %s%s -", c->id,
-				     *c->id == 'D' ? "- " : "", quoted("<scope>")));
+				     c->kind == DEMAND ? "- " : "", quoted("<scope>")));
 	return NULL;
 }
 
@@ -1141,7 +1142,7 @@ static char *locate_all(struct request_input *q, struct request_result *r, const
 			return xstrfmt("bad scope: '%s' needs concrete scopes to be fulfilled", c->id);
 		case NOBASE:
 			/* the provider given again at this code takes new base blobs */
-			*hint = hint_command("ait future amend %s %s%s - -m <why>", c->id, strcmp(c->kind, "demand") ? "" : "- ",
+			*hint = hint_command("ait future amend %s %s%s - -m <why>", c->id, c->kind != DEMAND ? "" : "- ",
 					     quoted(scopes_text(&c->provider, 0)));
 			return xstrfmt("repository lacks the base blob of '%s' ('%s')", c->id, item->path);
 		default: {
@@ -1186,7 +1187,7 @@ static void record(struct request_input *q, struct request_result *r)
 		f->by = xstrdup(agent);
 		f->session = xstrdup(sid);
 		f->commit = xstrdup(q->commit);
-		f->outcome = xstrdup(!strcmp(c->kind, "drop") ? "withdrawn" : q->force ? "forced" : "pass");
+		f->outcome = xstrdup(c->kind == DROP ? "withdrawn" : q->force ? "forced" : "pass");
 		geometry_init(&geometry, c, q->code);
 		if ((err = locate_all(q, r, &geometry, &hint)))
 			reject(128, hint, "%s", err);
@@ -1576,7 +1577,7 @@ static int contract_new_spec(const char *path, const char *engine)
 }
 
 /* spec 6.5.2 */
-static int contract_new_draft(const char *kind, const char *group)
+static int contract_new_draft(enum kind kind, const char *group)
 {
 	struct contract *c;
 	char id[16];
@@ -1608,9 +1609,9 @@ static int contract_new_draft(const char *kind, const char *group)
 		branch_free(item->util);
 	string_list_clear(&branches, 0);
 	c = contract_new(kind, group, id);
-	if (strcmp(kind, "drop")) {
+	if (kind != DROP) {
 		scope_append(&c->provider, &(struct scope){ .kind = SCOPE_FILE, .path = (char *)"<scope>" });
-		if (!strcmp(kind, "demand"))
+		if (kind == DEMAND)
 			scope_append(&c->consumer, &(struct scope){ .kind = SCOPE_FILE, .path = (char *)"<scope>" });
 		c->specs = xcalloc(1, sizeof(*c->specs));
 		c->specs->body = xstrdup("<condition>\n");
@@ -1990,7 +1991,7 @@ int cmd_contract(int argc, const char **argv)
 		return contract_new_spec(argv[3], argv[4]);
 	if (argc >= 3 && !strcmp(argv[1], "new") &&
 	    (!strcmp(argv[2], "demand") || !strcmp(argv[2], "offer") || !strcmp(argv[2], "drop")) && argc <= 4)
-		return contract_new_draft(argv[2], argc == 4 ? argv[3] : "");
+		return contract_new_draft(kind_of(argv[2]), argc == 4 ? argv[3] : "");
 	if (argc >= 3 && !strcmp(argv[1], "checkout"))
 		return contract_checkout(argc - 1, argv + 1);
 	if (argc >= 2 && !strcmp(argv[1], "add"))
