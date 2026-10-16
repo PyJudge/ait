@@ -54,9 +54,7 @@ struct request_input {
 /* One judgment on T, retained through its CAS, failure hints and output. */
 struct request_result {
 	struct branch *at;
-	struct contract_view view;
-	struct string_list positions; /* step zero ID -> geometry on the fixed index */
-	struct diff_cache position_diffs;
+	struct contract_view view;	/* T with this calculation's changed contracts and new fulfilments */
 	struct string_list records; /* path -> owned typed fulfilment */
 	struct string_list changed;	/* ID -> struct contract: new and changed contracts */
 	struct string_list order;	/* the new contracts in order: "+1", "+2", ... (7.1) */
@@ -78,12 +76,6 @@ static void request_result_reset(struct request_result *r, struct branch *at)
 {
 	struct string_list_item *item;
 
-	for_each_string_list_item(item, &r->positions) {
-		geometry_clear(item->util);
-		free(item->util);
-	}
-	string_list_clear(&r->positions, 0);
-	diff_cache_clear(&r->position_diffs);
 	for_each_string_list_item(item, &r->changed)
 		contract_free(item->util);
 	for_each_string_list_item(item, &r->records)
@@ -98,6 +90,7 @@ static void request_result_reset(struct request_result *r, struct branch *at)
 	string_list_clear(&r->provider_words, 0);
 	string_list_clear(&r->covered, 0);
 	r->at = at;
+	r->view = (struct contract_view){ at, &r->changed, &r->records };
 }
 
 /* Fixed input outlives retries; none of its values is borrowed by candidates. */
@@ -153,7 +146,6 @@ static void request_init(struct request *req, const char **argv)
 	string_list_init_dup(&q->files);
 	string_list_init_dup(&q->results);
 	strbuf_init(&q->msg, 0);
-	string_list_init_dup(&r->positions);
 	string_list_init_dup(&r->records);
 	string_list_init_dup(&r->changed);
 	string_list_init_dup(&r->order);
@@ -371,10 +363,17 @@ static struct contract *make(struct request_input *q, struct request_result *r, 
 /* spec 2.4: the drop X targets a D or O judged current */
 static int target_current(struct request_result *r, struct tree *x, struct contract *drop)
 {
-	struct contract_view view = { r->at, &r->changed, &r->records };
-	struct contract *t = contract_lookup(&view, drop->target);
+	struct contract *t = contract_lookup(&r->view, drop->target);
+	struct judgment j;
+	int current;
 
-	return t && judge_view(&view, t, x) == V_CURRENT;
+	if (!t)
+		return 0;
+	/* each clause changes the view, so each judges afresh (6.4.1) */
+	judgment_init(&j, &r->view, x);
+	current = judgment_get(&j, t)->verdict == V_CURRENT;
+	judgment_clear(&j);
+	return current;
 }
 
 enum change_action {
@@ -721,7 +720,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 	struct request *req = ck->data;
 	struct request_input *q = &req->input;
 	struct request_result *r = &req->result;
-	struct contract_view view = { r->at, &r->changed, &r->records };
+	struct contract_view at_t = { r->at, NULL, NULL };
 	struct string_list fixes = STRING_LIST_INIT_DUP, reopened = STRING_LIST_INIT_DUP;
 	struct strvec pending = STRVEC_INIT;
 	struct strbuf sb = STRBUF_INIT;
@@ -737,7 +736,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 		} else {
 			struct string_list opposite = STRING_LIST_INIT_DUP;
 
-			undertakings(&view, contract_after(r, v->a), v->kind == MIX_WHOLLY ? 'w' : 'p', &opposite);
+			undertakings(&r->view, contract_after(r, v->a), v->kind == MIX_WHOLLY ? 'w' : 'p', &opposite);
 			for_each_string_list_item(o, &opposite) {
 				struct contract *c = o->util;
 
@@ -748,7 +747,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 				}
 				string_list_insert(&fixes, xstrfmt("release %s %s", request_name(r, v->a),
 							 request_name(r, o->string)));
-				if (v->kind == MIX_WHOLLY && (has_valid_fulfilment(r->at, c) ||
+				if (v->kind == MIX_WHOLLY && (has_valid_fulfilment(&at_t, c) ||
 				    string_list_has_string(&r->covered, c->id)))
 					strvec_push(&pending, c->id);
 			}
@@ -766,9 +765,9 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 			goto done;
 		string_list_insert(&reopened, c->id);
 		string_list_insert(&fixes, xstrfmt("future amend %s", request_name(r, c->id)));
-		undertakings(&view, c, !strcmp(c->kind, "demand") ? 'w' : 'p', &dependants);
+		undertakings(&r->view, c, !strcmp(c->kind, "demand") ? 'w' : 'p', &dependants);
 		for_each_string_list_item(o, &dependants)
-			if (has_valid_fulfilment(r->at, o->util) || string_list_has_string(&r->covered, o->string))
+			if (has_valid_fulfilment(&at_t, o->util) || string_list_has_string(&r->covered, o->string))
 				strvec_push(&pending, o->string);
 		string_list_clear(&dependants, 0);
 	}
@@ -803,15 +802,17 @@ done:
 /* spec 6.7.2: the covered set of K, judged in X */
 static void cover(struct request_result *r, struct tree *x, struct contract *k, struct string_list *out)
 {
-	struct contract_view v = { r->at, &r->changed, &r->records };
 	struct string_list needs = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
+	struct judgment j;
 
 	string_list_insert(out, k->id);
-	dependencies(&v, k, &needs);
+	dependencies(&r->view, k, &needs);
+	judgment_init(&j, &r->view, x);
 	for_each_string_list_item(item, &needs)
-		if (!strcmp(k->kind, "offer") || judge_view(&v, item->util, x) != V_CURRENT)
+		if (!strcmp(k->kind, "offer") || judgment_get(&j, item->util)->verdict != V_CURRENT)
 			string_list_insert(out, item->string);
+	judgment_clear(&j);
 	string_list_clear(&needs, 0);
 }
 
@@ -1007,20 +1008,6 @@ static int template_same(struct request_result *r, struct string_list *kv)
 	return !yget(kv, xstrfmt("results.%d", (int)position));
 }
 
-/* Step zero's immutable candidate/index positions survive through template output. */
-static const struct contract_geometry *request_geometry(struct request_input *q, struct request_result *r, struct contract *c)
-{
-	struct string_list_item *slot = string_list_insert(&r->positions, c->id);
-
-	if (!slot->util) {
-		struct contract_geometry *g = xmalloc(sizeof(*g));
-
-		geometry_init(g, c, q->x, &r->position_diffs);
-		slot->util = g;
-	}
-	return slot->util;
-}
-
 /* spec 7.2: the check request and the result template, unless the template is already this one */
 static char *write_check_files(struct request_input *q, struct request_result *r, struct string_list *input)
 {
@@ -1042,9 +1029,13 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 	strbuf_addf(&res, "condition-ids:%s\n%sresults:\n", ids.len ? "" : " {}", ids.buf);
 	for_each_string_list_item(item, &r->covered) {
 		struct contract *c = contract_after(r, item->string);
-		const struct contract_geometry *g = request_geometry(q, r, c);
-		char *consumer = geometry_scopes(g, 0), *provider = geometry_scopes(g, 1);
+		struct contract_geometry g;
+		char *consumer, *provider;
 
+		geometry_init(&g, c, q->x);
+		consumer = geometry_text(&g, 0, NULL);
+		provider = geometry_text(&g, 1, NULL);
+		geometry_clear(&g);
 		for (n = 0; n < c->nspecs; n++) {
 			struct spec *s = &c->specs[n];
 			char *task = task_of(task_id(r, c->id), n);
@@ -1249,7 +1240,6 @@ static char *contract_names(struct string_list *ids)
 static void record(struct request_input *q, struct request_result *r, struct checkin *ck UNUSED)
 {
 	struct string_list_item *item;
-	struct diff_cache diffs = { 0 };
 
 	for_each_string_list_item(item, &r->covered) {
 		struct contract *old = contract_after(r, item->string), *c = contract_copy(old);
@@ -1266,7 +1256,7 @@ static void record(struct request_input *q, struct request_result *r, struct che
 		f->session = xstrdup(sid);
 		f->commit = xstrdup(q->commit);
 		f->outcome = xstrdup(!strcmp(c->kind, "drop") ? "withdrawn" : q->force ? "forced" : "pass");
-		geometry_init(&geometry, c, q->code, &diffs);
+		geometry_init(&geometry, c, q->code);
 		if ((err = locate_all(q, r, &geometry, &hint)))
 			reject(128, hint, "%s", err);
 		for (n = 0; n < c->provider.nr; n++) {
@@ -1289,7 +1279,6 @@ static void record(struct request_input *q, struct request_result *r, struct che
 		accept_change(q, r, old, c, RECORD, 0);
 		string_list_insert(&r->records, f->path)->util = f;
 	}
-	diff_cache_clear(&diffs);
 }
 
 /* The validated candidates go into the checkin as their contract files. */
@@ -1297,8 +1286,6 @@ static void settle(struct request_result *r, struct checkin *ck)
 {
 	struct string_list_item *item;
 
-	r->view = (struct contract_view){ r->at, &r->changed, &r->records };
-	ck->candidate = &r->view;
 	for_each_string_list_item(item, &r->records)
 		string_list_insert(&ck->put, item->string)->util = fulfil_text(item->util);
 	for_each_string_list_item(item, &r->changed)
@@ -1426,9 +1413,15 @@ static void run_request(struct request *req, int fulfilling)
 		checkin_judge(&ck, request_judge);
 		if (q->result)
 			stale = read_result_input(q, r, &result_input);
-		for_each_string_list_item(item, &r->covered)
-			if ((scope_error = locate_all(q, r, request_geometry(q, r, contract_after(r, item->string)), &scope_hint)))
+		for_each_string_list_item(item, &r->covered) {
+			struct contract_geometry g;
+
+			geometry_init(&g, contract_after(r, item->string), q->x);
+			scope_error = locate_all(q, r, &g, &scope_hint);
+			geometry_clear(&g);
+			if (scope_error)
 				break;
+		}
 		if (stale) {
 			/* 7.3 wins; v14 8.4 only emits a template when its code and environment are available. */
 			if (!scope_error)

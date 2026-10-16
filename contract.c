@@ -1287,18 +1287,14 @@ static void valid_fulfilments(const struct contract_view *v, struct contract *c,
 	}
 }
 
-int has_valid_fulfilment(struct branch *b, struct contract *c)
+int has_valid_fulfilment(const struct contract_view *v, struct contract *c)
 {
-	struct string_list v = STRING_LIST_INIT_DUP;
+	struct string_list valid = STRING_LIST_INIT_DUP;
 	int found;
 
-	{
-		struct contract_view view = { b, NULL, NULL };
-
-		valid_fulfilments(&view, c, &v);
-	}
-	found = v.nr > 0;
-	string_list_clear(&v, 0);
+	valid_fulfilments(v, c, &valid);
+	found = valid.nr > 0;
+	string_list_clear(&valid, 0);
 	return found;
 }
 
@@ -1326,38 +1322,53 @@ struct blob_hunk {
 struct blob_diff {
 	char base[48];
 	char now[48];
+	int nobase;
 	struct blob_hunk *hunks;
 	size_t nr;
 	size_t alloc;
 };
 
-void diff_cache_clear(struct diff_cache *cache)
+/*
+ * Two object names fix their diff, as an object name fixes its content: one
+ * table serves every tree and view, and listen empties it between rounds.
+ */
+static struct blob_diff *blob_pairs;
+static size_t blob_pairs_nr, blob_pairs_alloc;
+
+void blob_pairs_clear(void)
 {
 	size_t i;
 
-	for (i = 0; i < cache->nr; i++)
-		free(cache->items[i].hunks);
-	free(cache->items);
-	memset(cache, 0, sizeof(*cache));
+	for (i = 0; i < blob_pairs_nr; i++)
+		free(blob_pairs[i].hunks);
+	free(blob_pairs);
+	blob_pairs = NULL;
+	blob_pairs_nr = blob_pairs_alloc = 0;
 }
 
-/* A hunk list belongs to this ordered blob pair, independent of scope coordinates. */
-static struct blob_diff *blob_diff_get(struct diff_cache *cache, const char *base, const char *now)
+/* The hunks from BASE to the blob NOW; NULL when BASE is no blob here (5.3, 6.7.4). */
+static struct blob_diff *blob_diff_get(const char *base, const char *now)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct string_list_item *line;
 	struct blob_diff *diff;
-	char *text;
+	char *text, *type;
 	size_t i;
 
-	for (i = 0; i < cache->nr; i++)
-		if (!strcmp(cache->items[i].base, base) && !strcmp(cache->items[i].now, now))
-			return &cache->items[i];
-	ALLOC_GROW(cache->items, cache->nr + 1, cache->alloc);
-	diff = &cache->items[cache->nr++];
+	for (i = 0; i < blob_pairs_nr; i++)
+		if (!strcmp(blob_pairs[i].base, base) && !strcmp(blob_pairs[i].now, now))
+			return blob_pairs[i].nobase ? NULL : &blob_pairs[i];
+	ALLOC_GROW(blob_pairs, blob_pairs_nr + 1, blob_pairs_alloc);
+	diff = &blob_pairs[blob_pairs_nr++];
 	memset(diff, 0, sizeof(*diff));
 	snprintf(diff->base, sizeof(diff->base), "%s", base);
 	snprintf(diff->now, sizeof(diff->now), "%s", now);
+	/* builtin/diff.c:577-602 diffs blobs only after reading the object's type */
+	type = object(base, 0, NULL, NULL);
+	diff->nobase = !type || strcmp(type, "blob");
+	free(type);
+	if (diff->nobase)
+		return NULL;
 	text = diff0(base, now);
 	string_list_split(&lines, text, "\n", -1);
 	free(text);
@@ -1378,28 +1389,25 @@ static struct blob_diff *blob_diff_get(struct diff_cache *cache, const char *bas
 
 /* v14 3.7/3.10: map coordinates through the shared, ordered hunk list. */
 static enum scope_status map_blobs(const char *base, const char *now, int a, int b,
-				   int *first, int *end, int *changed, struct diff_cache *cache)
+				   int *first, int *end, int *changed)
 {
 	struct blob_diff *diff;
 	int ma = -1, mb = -1, offset = 0;
-	char *type;
 	size_t i;
 
 	*changed = 0;
 	if (!now)
 		return MISSING;
-	type = base ? object(base, 0, NULL, NULL) : NULL;
-	if (!type || strcmp(type, "blob")) {
-		free(type);
+	if (!base)
 		return NOBASE;
-	}
-	free(type);
+	/* NOW is a blob of the tree, so the same name is that blob */
 	if (!strcmp(base, now)) {
 		*first = a;
 		*end = b;
 		return FOUND;
 	}
-	diff = blob_diff_get(cache, base, now);
+	if (!(diff = blob_diff_get(base, now)))
+		return NOBASE;
 	for (i = 0; i < diff->nr; i++) {
 		const struct blob_hunk *hunk = &diff->hunks[i];
 		int os = hunk->old_first, ol = hunk->old_length;
@@ -1423,12 +1431,6 @@ static enum scope_status map_blobs(const char *base, const char *now, int a, int
 	*first = ma < 0 ? a + offset : ma;
 	*end = mb < 0 ? b + offset : mb;
 	return *first > *end ? DELETED : FOUND;
-}
-
-static enum scope_status map_range(const struct scope *scope, struct tree *t, int *first, int *end, int *changed, struct diff_cache *cache)
-{
-	return map_blobs(*scope->base ? scope->base : NULL, blob_at(t, scope->path),
-			 scope->first, scope->last, first, end, changed, cache);
 }
 
 static int line_count(const char *text, size_t n)
@@ -1514,34 +1516,21 @@ int scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_lis
  * spec 6.7.4, v14 3.8: where SCOPE is in T, as one judgment its callers word:
  * FOUND with its path and mapped line endpoints, or the reason it is not
  */
-static enum scope_status scope_locate_in(const struct scope *scope, struct tree *t, struct scope_location *where,
-					 struct diff_cache *cache)
+void scope_result_at(const struct scope *s, struct tree *t, struct scope_result *out)
 {
-	struct entry *e = tree_get(t, scope->path);
+	struct entry *e = tree_get(t, s->path);
 	int changed;
 
-	where->path = scope->path;
-	where->first = where->last = 0;
-	if (scope->kind == SCOPE_NEW || scope->kind == SCOPE_DIR || scope->kind == SCOPE_ROOT)
-		return ABSTRACT;
-	if (scope->kind != SCOPE_RANGE)
-		return e && strcmp(e->type, "tree") ? FOUND : MISSING;
-	return map_range(scope, t, &where->first, &where->last, &changed, cache);
-}
-
-enum scope_status scope_locate(const struct scope *scope, struct tree *t, struct scope_location *where)
-{
-	struct diff_cache diffs = { 0 };
-	enum scope_status status = scope_locate_in(scope, t, where, &diffs);
-
-	diff_cache_clear(&diffs);
-	return status;
-}
-
-void scope_result_at(const struct scope *s, struct tree *t, struct diff_cache *diffs, struct scope_result *out)
-{
-	out->status = scope_locate_in(s, t, &out->at, diffs);
-	out->exists = tree_get(t, s->path) != NULL;
+	out->at.path = s->path;
+	out->at.first = out->at.last = 0;
+	out->exists = e != NULL;
+	if (s->kind == SCOPE_NEW || s->kind == SCOPE_DIR || s->kind == SCOPE_ROOT)
+		out->status = ABSTRACT;
+	else if (s->kind != SCOPE_RANGE)
+		out->status = e && strcmp(e->type, "tree") ? FOUND : MISSING;
+	else
+		out->status = map_blobs(*s->base ? s->base : NULL, blob_at(t, s->path),
+					s->first, s->last, &out->at.first, &out->at.last, &changed);
 }
 
 /* spec 2.5: read the entry at a position already validated FOUND in this tree. */
@@ -1559,7 +1548,7 @@ struct recorded_code code_at(struct tree *t, const struct scope_location *where)
 }
 
 /* spec 5.3: the scope is in X as recorded; AT receives that verified entry in X. */
-static int scope_same(const struct scope *scope, const struct recorded_code *code, struct tree *x, struct recorded_code *at, struct diff_cache *cache)
+static int scope_same(const struct scope *scope, const struct recorded_code *code, struct tree *x, struct recorded_code *at)
 {
 	struct entry *e = tree_get(x, scope->path);
 	int first = 0, last = 0, changed;
@@ -1567,7 +1556,7 @@ static int scope_same(const struct scope *scope, const struct recorded_code *cod
 	if (!code || !e || strcmp(e->mode, code->mode) || strcmp(e->type, code->type))
 		return 0;
 	if (code->first) {
-		if (map_blobs(code->oid, e->oid, code->first, code->last, &first, &last, &changed, cache) != FOUND || changed)
+		if (map_blobs(code->oid, e->oid, code->first, code->last, &first, &last, &changed) != FOUND || changed)
 			return 0;
 	} else if (strcmp(e->oid, code->oid)) {
 		return 0;
@@ -1582,11 +1571,11 @@ static int scope_same(const struct scope *scope, const struct recorded_code *cod
 }
 
 /* spec 5.3: the fulfilment F recorded SCOPE as X has it */
-static int recorded_same(struct fulfilment *f, const struct scope *scope, struct tree *x, struct recorded_code *at, struct diff_cache *cache)
+static int recorded_same(struct fulfilment *f, const struct scope *scope, struct tree *x, struct recorded_code *at)
 {
 	const struct recorded_code *code = code_lookup(&f->code, scope);
 
-	return code && scope_same(scope, code, x, at, cache);
+	return code && scope_same(scope, code, x, at);
 }
 
 /* v14 3.8: formatting reads a prepared position and cannot invoke Git. */
@@ -1609,14 +1598,10 @@ char *scope_result_text(const struct scope *scope, const struct scope_result *at
 
 char *scope_display(const struct scope *scope, struct tree *x)
 {
-	struct diff_cache diffs = { 0 };
 	struct scope_result at;
-	char *display;
 
-	scope_result_at(scope, x, &diffs, &at);
-	display = scope_result_text(scope, &at);
-	diff_cache_clear(&diffs);
-	return display;
+	scope_result_at(scope, x, &at);
+	return scope_result_text(scope, &at);
 }
 
 char *scopes_bare(const struct scope_list *l)
@@ -1635,29 +1620,7 @@ char *scopes_bare(const struct scope_list *l)
 	return strbuf_detach(&out, NULL);
 }
 
-char *scopes_display(const struct scope_list *l, struct tree *x)
-{
-	struct strbuf out = STRBUF_INIT;
-	struct diff_cache diffs = { 0 };
-	const struct scope **ordered = scope_order(l);
-	size_t i;
-
-	for (i = 0; i < l->nr; i++) {
-		struct scope_result at;
-		char *text;
-
-		scope_result_at(ordered[i], x, &diffs, &at);
-		text = scope_result_text(ordered[i], &at);
-
-		strbuf_addf(&out, "%s%s", i ? "," : "", text);
-		free(text);
-	}
-	diff_cache_clear(&diffs);
-	free(ordered);
-	return strbuf_detach(&out, NULL);
-}
-
-void geometry_init(struct contract_geometry *g, const struct contract *c, struct tree *t, struct diff_cache *diffs)
+void geometry_init(struct contract_geometry *g, const struct contract *c, struct tree *t)
 {
 	size_t i;
 
@@ -1666,9 +1629,9 @@ void geometry_init(struct contract_geometry *g, const struct contract *c, struct
 	g->consumer = xcalloc(c->consumer.nr, sizeof(*g->consumer));
 	g->provider = xcalloc(c->provider.nr, sizeof(*g->provider));
 	for (i = 0; i < c->consumer.nr; i++)
-		scope_result_at(&c->consumer.items[i], t, diffs, &g->consumer[i]);
+		scope_result_at(&c->consumer.items[i], t, &g->consumer[i]);
 	for (i = 0; i < c->provider.nr; i++)
-		scope_result_at(&c->provider.items[i], t, diffs, &g->provider[i]);
+		scope_result_at(&c->provider.items[i], t, &g->provider[i]);
 }
 
 void geometry_clear(struct contract_geometry *g)
@@ -1678,10 +1641,13 @@ void geometry_clear(struct contract_geometry *g)
 	memset(g, 0, sizeof(*g));
 }
 
-/* Missing/collected/deleted pins overlap their whole file, as v14 3.9 requires. */
-static int positions_overlap(const struct scope *q, const struct scope_result *qa,
-			     const struct scope *s, const struct scope_result *sa)
+/*
+ * v14 3.9: the scope Q (found at QA in T) and S overlap; S is mapped in T only
+ * when the paths meet. A pin not found there overlaps its whole file.
+ */
+static int scope_overlaps(const struct scope *q, const struct scope_result *qa, const struct scope *s, struct tree *t)
 {
+	struct scope_result sa;
 	int a = 0, b = 0, c = 0, d = 0;
 
 	if (q->kind == SCOPE_ROOT || s->kind == SCOPE_ROOT)
@@ -1695,44 +1661,36 @@ static int positions_overlap(const struct scope *q, const struct scope_result *q
 		a = *q->base ? qa->at.first : q->first;
 		b = *q->base ? qa->at.last : q->last;
 	}
-	if (s->kind == SCOPE_RANGE && (!*s->base || sa->status == FOUND)) {
-		c = *s->base ? sa->at.first : s->first;
-		d = *s->base ? sa->at.last : s->last;
+	if (s->kind == SCOPE_RANGE && *s->base) {
+		scope_result_at(s, t, &sa);
+		if (sa.status == FOUND) {
+			c = sa.at.first;
+			d = sa.at.last;
+		}
+	} else if (s->kind == SCOPE_RANGE) {
+		c = s->first;
+		d = s->last;
 	}
 	return !a || !c || (a <= d && c <= b);
 }
 
-int geometry_overlaps(const struct contract_geometry *g, const struct scope *q, const struct scope_result *at, int depending)
+/* v14 3.9, 3.9a: C overlaps Q in T; DEPENDING leaves out what only a directory provider covers */
+int contract_overlaps(const struct contract *c, struct tree *t, const struct scope *q, const struct scope_result *qa,
+		      int depending)
 {
-	const struct contract *c = g->contract;
 	size_t i;
 
 	for (i = 0; i < c->consumer.nr; i++)
-		if (positions_overlap(q, at, &c->consumer.items[i], &g->consumer[i]))
+		if (scope_overlaps(q, qa, &c->consumer.items[i], t))
 			return 1;
 	for (i = 0; i < c->provider.nr; i++) {
 		const struct scope *s = &c->provider.items[i];
 
 		if ((!depending || (s->kind != SCOPE_DIR && s->kind != SCOPE_ROOT) ||
-		     q->kind == SCOPE_DIR || q->kind == SCOPE_ROOT) && positions_overlap(q, at, s, &g->provider[i]))
+		     q->kind == SCOPE_DIR || q->kind == SCOPE_ROOT) && scope_overlaps(q, qa, s, t))
 			return 1;
 	}
 	return 0;
-}
-
-int contract_overlaps(struct contract *c, const struct scope *q, struct tree *t, int depending)
-{
-	struct diff_cache diffs = { 0 };
-	struct contract_geometry geometry;
-	struct scope_result at;
-	int overlaps;
-
-	geometry_init(&geometry, c, t, &diffs);
-	scope_result_at(q, t, &diffs, &at);
-	overlaps = geometry_overlaps(&geometry, q, &at, depending);
-	geometry_clear(&geometry);
-	diff_cache_clear(&diffs);
-	return overlaps;
 }
 
 /* spec 1.7: how the offer O holds the demand ID: 'w' wholly, 'p' partially, 0 not (or O is no offer) */
@@ -1791,12 +1749,11 @@ void dependencies(const struct contract_view *v, struct contract *c, struct stri
 }
 
 /* One completed result per contract; a back edge is never a completed result. */
-void judgment_init(struct judgment *j, const struct contract_view *view, struct tree *t, struct diff_cache *diffs)
+void judgment_init(struct judgment *j, const struct contract_view *view, struct tree *t)
 {
 	memset(j, 0, sizeof(*j));
 	j->view = *view;
 	j->tree = t;
-	j->diffs = diffs;
 	string_list_init_dup(&j->done);
 	string_list_init_dup(&j->visiting);
 }
@@ -1814,8 +1771,6 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 	if (string_list_has_string(&j->visiting, c->id))
 		return NULL;
 	r = xcalloc(1, sizeof(*r));
-	geometry_init(&r->geometry, c, j->tree, j->diffs);
-	r->matches_any = xcalloc(c->provider.nr, sizeof(*r->matches_any));
 	if (!strcmp(c->state, "cancelled")) {
 		r->verdict = V_CANCELLED;
 		goto done;
@@ -1843,6 +1798,7 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 	}
 	string_list_remove(&j->visiting, c->id, 0);
 	/* Per-scope matches can come from different fulfilments; a whole witness cannot. */
+	r->matches_any = xcalloc(c->provider.nr, sizeof(*r->matches_any));
 	for_each_string_list_item(f, &valid) {
 		struct code_list code = { 0 };
 		int all = 1;
@@ -1850,7 +1806,7 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 		for (i = 0; i < c->provider.nr; i++) {
 			const struct scope *s = &c->provider.items[i];
 			struct recorded_code at;
-			int same = recorded_same(f->util, s, j->tree, &at, j->diffs);
+			int same = recorded_same(f->util, s, j->tree, &at);
 
 			r->matches_any[i] |= same;
 			all &= same;
@@ -1859,12 +1815,12 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 		}
 		if (all) {
 			r->code = code;
-			r->witness = f->util;
 			break;
 		}
 		code_clear(&code);
 	}
-	r->verdict = whole_ok && r->witness ? V_CURRENT : V_UNVERIFIED;
+	/* D and O have a provider, so a whole witness records code */
+	r->verdict = whole_ok && r->code.nr ? V_CURRENT : V_UNVERIFIED;
 done:
 	string_list_clear(&valid, 0);
 	string_list_clear(&needs, 0);
@@ -1879,33 +1835,12 @@ void judgment_clear(struct judgment *j)
 	for_each_string_list_item(item, &j->done) {
 		struct judgment_result *r = item->util;
 
-		geometry_clear(&r->geometry);
 		code_clear(&r->code);
 		free(r->matches_any);
 		free(r);
 	}
 	string_list_clear(&j->done, 0);
 	string_list_clear(&j->visiting, 0);
-}
-
-enum verdict judge_view(const struct contract_view *v, struct contract *c, struct tree *x)
-{
-	struct diff_cache diffs = { 0 };
-	struct judgment j;
-	enum verdict verdict;
-
-	judgment_init(&j, v, x, &diffs);
-	verdict = judgment_get(&j, c)->verdict;
-	judgment_clear(&j);
-	diff_cache_clear(&diffs);
-	return verdict;
-}
-
-enum verdict judge(struct branch *b, struct contract *c, struct tree *x)
-{
-	struct contract_view view = { b, NULL, NULL };
-
-	return judge_view(&view, c, x);
 }
 
 /* spec 1.5: a promise is a live contract judged future or current ?unverified */
@@ -1921,8 +1856,11 @@ const char *verdict_word(enum verdict v)
 	return words[v];
 }
 
-/* Printing consumes positions and matches; it cannot invoke Git or judge again. */
-static char *geometry_display(const struct contract_geometry *g, int provider, const unsigned char *matches)
+/*
+ * v14 3.8: the scopes of G's contract as they are in its tree; MATCHES, a
+ * judgment's per-scope comparison, marks a found scope that differs ?changed
+ */
+char *geometry_text(const struct contract_geometry *g, int provider, const unsigned char *matches)
 {
 	const struct contract *c = g->contract;
 	const struct scope_list *scopes = provider ? &c->provider : &c->consumer;
@@ -1934,7 +1872,7 @@ static char *geometry_display(const struct contract_geometry *g, int provider, c
 	for (i = 0; i < scopes->nr; i++) {
 		size_t n = ordered[i] - scopes->items;
 		char *display = scope_result_text(ordered[i], &positions[n]);
-		int changed = matches && !matches[n] && !strchr(display, '?');
+		int changed = matches && !matches[n] && positions[n].status == FOUND;
 
 		strbuf_addf(&out, "%s%s%s", i ? "," : "", display, changed ? " ?changed" : "");
 		free(display);
@@ -1943,57 +1881,18 @@ static char *geometry_display(const struct contract_geometry *g, int provider, c
 	return strbuf_detach(&out, NULL);
 }
 
-char *geometry_scopes(const struct contract_geometry *g, int provider)
+/* spec 5.5: C is current in H's judgment, and X differs from the code that witnessed it */
+int judgment_touched(struct judgment *h, struct contract *c, struct tree *x)
 {
-	return geometry_display(g, provider, NULL);
-}
-
-char *judgment_scopes(const struct judgment_result *r, int provider)
-{
-	const unsigned char *matches = provider && (r->verdict == V_CURRENT || r->verdict == V_UNVERIFIED) ? r->matches_any : NULL;
-
-	return geometry_display(&r->geometry, provider, matches);
-}
-
-char *provider_display(struct branch *b, struct contract *c, struct tree *x)
-{
-	struct contract_view view = { b, NULL, NULL };
-	struct diff_cache diffs = { 0 };
-	struct judgment j;
-	char *text;
-
-	judgment_init(&j, &view, x, &diffs);
-	text = judgment_scopes(judgment_get(&j, c), 1);
-	judgment_clear(&j);
-	diff_cache_clear(&diffs);
-	return text;
-}
-
-/* Compare X with the single whole witness mapped to H, even when X is also current. */
-int judgment_touched(const struct judgment_result *h, struct tree *x, struct diff_cache *diffs)
-{
+	const struct judgment_result *r = judgment_get(h, c);
 	size_t i;
 
-	if (h->verdict != V_CURRENT)
+	if (r->verdict != V_CURRENT)
 		return 0;
-	for (i = 0; i < h->code.nr; i++)
-		if (!scope_same(&h->code.items[i].scope, &h->code.items[i].value, x, NULL, diffs))
+	for (i = 0; i < r->code.nr; i++)
+		if (!scope_same(&r->code.items[i].scope, &r->code.items[i].value, x, NULL))
 			return 1;
 	return 0;
-}
-
-int touched(struct branch *b, struct contract *c, struct tree *h, struct tree *x)
-{
-	struct contract_view view = { b, NULL, NULL };
-	struct diff_cache diffs = { 0 };
-	struct judgment j;
-	int changed;
-
-	judgment_init(&j, &view, h, &diffs);
-	changed = judgment_touched(judgment_get(&j, c), x, &diffs);
-	judgment_clear(&j);
-	diff_cache_clear(&diffs);
-	return changed;
 }
 
 void violations_clear(struct string_list *violations)
@@ -2033,22 +1932,14 @@ char *violation_words(struct violation *v)
 /* Step zero checks the requested fulfilments before their files are written. */
 static int fulfilled_in(const struct contract_view *v, struct contract *c, const struct string_list *fulfilling)
 {
-	struct string_list valid = STRING_LIST_INIT_DUP;
-	int found;
-
-	if (fulfilling && string_list_has_string(fulfilling, c->id))
-		return 1;
-	valid_fulfilments(v, c, &valid);
-	found = valid.nr > 0;
-	string_list_clear(&valid, 0);
-	return found;
+	return (fulfilling && string_list_has_string(fulfilling, c->id)) || has_valid_fulfilment(v, c);
 }
 
 /*
  * spec 4.10 (b) and (c): the violations of B. A mix is told from WAS:
  * what held the demand there is what it is "already" held by.
  */
-void invariants_view(const struct contract_view *v, struct branch *was, const struct string_list *fulfilling, struct string_list *out)
+void invariants(const struct contract_view *v, struct branch *was, const struct string_list *fulfilling, struct string_list *out)
 {
 	struct contract_view old = { was, NULL, NULL };
 	struct string_list contracts = STRING_LIST_INIT_DUP;
@@ -2087,11 +1978,4 @@ void invariants_view(const struct contract_view *v, struct branch *was, const st
 		string_list_clear(&before, 0);
 	}
 	string_list_clear(&contracts, 0);
-}
-
-void invariants(struct branch *b, struct branch *was, const struct string_list *fulfilling, struct string_list *out)
-{
-	struct contract_view view = { b, NULL, NULL };
-
-	invariants_view(&view, was, fulfilling, out);
 }

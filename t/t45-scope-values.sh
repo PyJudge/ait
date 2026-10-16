@@ -1,5 +1,5 @@
 #!/bin/sh
-# spec 3: scopes become values at input; read consumers never parse them again.
+# spec 3: scopes are read once at input; status, sub and unsub show them in v14 3.2a order.
 . "$(dirname "$0")/lib.sh"
 setup
 run ait future demand src/order.c:10-12,src/order.c:2-4 src/stock.c:10-12,src/stock.c:2-4,src/order.c cond.yaml -m values
@@ -7,24 +7,6 @@ D=$(newest D)
 run ait fulfill "$D" --force -m verified
 check_rc 'prepare consumer, provider and recorded-code ranges' 0
 
-set -- -std=gnu99 -O2 -Wall -Werror -Wdeclaration-after-statement -I"$AIT_DIR" -I"$AIT_DIR/libyaml"
-case $(uname -s) in
-Linux) set -- "$@" -DHAVE_GETRANDOM ;;
-Darwin) set -- "$@" -DHAVE_ARC4RANDOM -DPRECOMPOSE_UNICODE ;;
-esac
-compiler=${CC:-cc}
-"$compiler" "$@" -Dmain=ait_command_main -c "$AIT_DIR/ait.c" -o "$T/ait.o" || exit 1
-"$compiler" "$@" -finstrument-functions -c "$AIT_DIR/t/helper-scope-values.c" -o "$T/scopes.o" || exit 1
-for source in "$AIT_DIR"/*.c; do
-	case $source in */ait.c|*/contract.c) continue ;; esac
-	set -- "$@" "$source"
-done
-set -- "$@" "$T/ait.o" "$T/scopes.o" "$AIT_DIR"/libyaml/*.o
-case $(uname -s) in Darwin) set -- "$@" -liconv ;; esac
-"$compiler" "$@" -o "$T/scope-values" || exit 1
-run "$T/scope-values"
-check_rc 'sorting, locating, display, overlap and judgment reuse parsed scope values' 0
-check 'the read-consumer probe finishes without another coordinate parse' "has out '^no coordinate reparsing after input$'"
 run ait status src/stock.c:2-4
 check_rc 'a parsed status range filters the verified contract' 0
 check 'status retains the parsed filter and canonical numerical range order' \

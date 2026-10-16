@@ -119,7 +119,6 @@ struct checkin {
 	char *(*retry_hint)(struct checkin *c, const char *old);
 	/* Step zero's planned fulfilments, before their files exist (6.7.5). */
 	const struct string_list *fulfilling;
-	const struct contract_view *candidate; /* typed final view, or NULL for an external tree */
 	struct branch *at;		/* the contracts at T, for the judge */
 	void *data;			/* the command's own state, for its judge and hints */
 };
@@ -297,13 +296,6 @@ enum scope_status {
 	DELETED,
 	ABSTRACT
 };
-/* Results belong to one immutable view/tree; the shared diff cache has its own owner. */
-struct blob_diff;
-struct diff_cache {
-	struct blob_diff *items;
-	size_t nr;
-	size_t alloc;
-};
 struct scope_result {
 	struct scope_location at;
 	enum scope_status status;
@@ -314,57 +306,51 @@ struct contract_geometry {
 	struct scope_result *consumer;
 	struct scope_result *provider;
 };
+/*
+ * spec 5: the one way to judge. A judgment holds a view and a tree; each
+ * contract is judged once in it. MATCHES_ANY is set when C has a valid
+ * fulfilment: which provider scopes some valid fulfilment recorded as they are.
+ */
 struct judgment_result {
-	struct contract_geometry geometry;
 	enum verdict verdict;
-	const struct fulfilment *witness;
-	struct code_list code;
+	struct code_list code;		/* the whole witness's code as it is in the tree */
 	unsigned char *matches_any;
 };
 struct judgment {
 	struct contract_view view;
 	struct tree *tree;
-	struct diff_cache *diffs;
 	struct string_list done;
 	struct string_list visiting;
 };
-void diff_cache_clear(struct diff_cache *cache);
-void geometry_init(struct contract_geometry *g, const struct contract *c, struct tree *t, struct diff_cache *diffs);
+void blob_pairs_clear(void);
+void geometry_init(struct contract_geometry *g, const struct contract *c, struct tree *t);
 void geometry_clear(struct contract_geometry *g);
-char *geometry_scopes(const struct contract_geometry *g, int provider);
+char *geometry_text(const struct contract_geometry *g, int provider, const unsigned char *matches);
 char *scope_result_text(const struct scope *scope, const struct scope_result *at);
-void scope_result_at(const struct scope *s, struct tree *t, struct diff_cache *diffs, struct scope_result *out);
-int geometry_overlaps(const struct contract_geometry *g, const struct scope *q, const struct scope_result *at, int depending);
-void judgment_init(struct judgment *j, const struct contract_view *view, struct tree *t, struct diff_cache *diffs);
+void scope_result_at(const struct scope *s, struct tree *t, struct scope_result *out);
+int contract_overlaps(const struct contract *c, struct tree *t, const struct scope *q, const struct scope_result *qa,
+		      int depending);
+void judgment_init(struct judgment *j, const struct contract_view *view, struct tree *t);
 const struct judgment_result *judgment_get(struct judgment *j, struct contract *c);
 void judgment_clear(struct judgment *j);
-char *judgment_scopes(const struct judgment_result *r, int provider);
-int judgment_touched(const struct judgment_result *h, struct tree *x, struct diff_cache *diffs);
+int judgment_touched(struct judgment *h, struct contract *c, struct tree *x);
 
 struct contract *contract_lookup(const struct contract_view *v, const char *id);
 struct fulfilment *fulfilment_lookup(const struct contract_view *v, const char *path);
 int live(struct contract *c);
-int has_valid_fulfilment(struct branch *b, struct contract *c);
+int has_valid_fulfilment(const struct contract_view *v, struct contract *c);
 void undertakings(const struct contract_view *v, struct contract *c, int how, struct string_list *out);
 void dependencies(const struct contract_view *v, struct contract *c, struct string_list *out);
-enum verdict judge_view(const struct contract_view *v, struct contract *c, struct tree *x);
-enum verdict judge(struct branch *b, struct contract *c, struct tree *x);
 const char *verdict_word(enum verdict v);
 int promise(struct contract *c, enum verdict v);
-int contract_overlaps(struct contract *c, const struct scope *q, struct tree *t, int depending);
 char *scopes_bare(const struct scope_list *l);
-char *scopes_display(const struct scope_list *l, struct tree *x);
 char *scope_display(const struct scope *scope, struct tree *x);
-char *provider_display(struct branch *b, struct contract *c, struct tree *x);
 char *violation_words(struct violation *v);
 void violations_clear(struct string_list *violations);
-void invariants_view(const struct contract_view *v, struct branch *was, const struct string_list *fulfilling, struct string_list *out);
-void invariants(struct branch *b, struct branch *was, const struct string_list *fulfilling, struct string_list *out);
+void invariants(const struct contract_view *v, struct branch *was, const struct string_list *fulfilling, struct string_list *out);
 int scope_pin(struct scope *s, struct tree *t, char **err);
 int scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_list *was, char **err);
-enum scope_status scope_locate(const struct scope *scope, struct tree *t, struct scope_location *where);
 struct recorded_code code_at(struct tree *t, const struct scope_location *where);
-int touched(struct branch *b, struct contract *c, struct tree *h, struct tree *x);
 
 /* contract.c: the YAML subset (v14 2.5.1) and its writing (v14 8.2) */
 void yaml_out_scalar(struct strbuf *sb, const char *s);

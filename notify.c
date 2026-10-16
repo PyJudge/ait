@@ -14,15 +14,11 @@ static char *pathspec_of(const struct scope *arg)
 	return xstrfmt(":(top,literal)%s", arg->path);
 }
 
-struct status_selection {
-	const struct judgment_result *result;
-	int touch;
-};
-
-static void block(struct branch *b, const struct status_selection *selection, struct judgment *judgments, const char *me)
+/* spec 6.3-5: C's block, judged in X's judgment J; G is where its scopes are in X */
+static void block(struct branch *b, struct judgment *j, struct contract *c, const struct contract_geometry *g,
+		  int touch, const char *me)
 {
-	const struct judgment_result *result = selection->result;
-	struct contract *c = (struct contract *)result->geometry.contract;
+	const struct judgment_result *result = judgment_get(j, c);
 	enum verdict v = result->verdict;
 	struct string_list_item *item;
 	size_t i;
@@ -30,8 +26,8 @@ static void block(struct branch *b, const struct status_selection *selection, st
 
 	printf("id %s\nkind %s\ngroup %s\nstate %s\ncreator %s\n", c->id, c->kind, *c->group ? c->group : "-",
 	       verdict_word(v), c->creator);
-	if (!strcmp(c->kind, "demand")) {
-		char *display = judgment_scopes(result, 0);
+	if (demand) {
+		char *display = geometry_text(g, 0, NULL);
 
 		printf("consumer %s\n", display);
 		free(display);
@@ -39,7 +35,7 @@ static void block(struct branch *b, const struct status_selection *selection, st
 	if (!strcmp(c->kind, "drop")) {
 		printf("target %s\n", c->target);
 	} else {
-		char *display = judgment_scopes(result, 1);
+		char *display = geometry_text(g, 1, result->matches_any);
 
 		printf("provider %s\n", display);
 		free(display);
@@ -50,13 +46,13 @@ static void block(struct branch *b, const struct status_selection *selection, st
 	for (i = 0; i < 2; i++) {
 		struct string_list related = STRING_LIST_INIT_DUP;
 
-		undertakings(&judgments->view, c, i ? 'p' : 'w', &related);
+		undertakings(&j->view, c, i ? 'p' : 'w', &related);
 		held |= related.nr > 0;
 		for_each_string_list_item(item, &related) {
 			struct contract *other = item->util;
 
 			printf("%s %s %s %s %s\n", demand ? "undertaken-by" : "undertakes", other->id,
-			       verdict_word(judgment_get(judgments, other)->verdict), other->creator, i ? "partial" : "whole");
+			       verdict_word(judgment_get(j, other)->verdict), other->creator, i ? "partial" : "whole");
 		}
 		string_list_clear(&related, 0);
 	}
@@ -69,12 +65,12 @@ static void block(struct branch *b, const struct status_selection *selection, st
 			printf("fulfilled %.13s %s %s %s %s\n", rid, ful->by, ful->outcome,
 			       strcmp(ful->condition_id, c->condition_id) ? "old" : "valid", ful->commit);
 	}
-	if (selection->touch)
+	if (touch)
 		puts("touch");
 	putchar('\n');
 	if (me && !strcmp(c->creator, me) && promise(c, v) && strcmp(c->kind, "drop"))
 		suggest("%s", hint_command("ait fulfill %s -m <why>", c->id));
-	if (!strcmp(c->kind, "demand") && live(c) && !held)
+	if (demand && live(c) && !held)
 		suggest("%s", hint_command("ait future offer %s <files> as o undertake %s o -m <why>",
 					  quoted(scopes_bare(&c->provider)), c->id));
 }
@@ -97,10 +93,9 @@ static int violates(struct string_list *bad, const char *id)
 int cmd_status(int argc, const char **argv)
 {
 	struct strvec args = STRVEC_INIT;
-	struct string_list wanted = STRING_LIST_INIT_DUP, pins = STRING_LIST_INIT_DUP, bad = STRING_LIST_INIT_DUP;
+	struct string_list pins = STRING_LIST_INIT_DUP, bad = STRING_LIST_INIT_DUP;
 	struct scope_list scopes = { 0 };
 	struct scope_result *positions;
-	struct diff_cache diffs = { 0 };
 	struct judgment current, original;
 	struct contract_view view;
 	struct string_list_item *item;
@@ -123,8 +118,8 @@ int cmd_status(int argc, const char **argv)
 	x = index_tree();
 	h = head ? tree_load(head) : NULL;
 	view = (struct contract_view){ b, NULL, NULL };
-	judgment_init(&current, &view, x, &diffs);
-	judgment_init(&original, &view, h, &diffs);
+	judgment_init(&current, &view, x);
+	judgment_init(&original, &view, h);
 	positions = xcalloc(scopes.nr, sizeof(*positions));
 	strvec_pushl(&args, "--no-literal-pathspecs", "status", NULL);
 	if (argc > 1)
@@ -135,55 +130,51 @@ int cmd_status(int argc, const char **argv)
 
 		if (q->kind == SCOPE_RANGE && scope_pin(q, x, &err))
 			reject(128, NULL, "bad scope: %s", err);
+		scope_result_at(q, x, &positions[i - 1]);
 		if (!unsorted_string_list_has_string(&pins, pathspec))
 			string_list_append(&pins, pathspec);
 		free(pathspec);
 	}
-	for (i = 0; i < scopes.nr; i++)
-		scope_result_at(&scopes.items[i], x, &diffs, &positions[i]);
 	for_each_string_list_item(item, &pins)
 		strvec_push(&args, item->string);
 	if ((rc = git_pass(&args)))
 		goto out;
 	putchar('\n');
 	me = session(0) ? agent : NULL;
-	invariants(b, b, NULL, &bad);
+	invariants(&view, b, NULL, &bad);
 	for_each_string_list_item(item, &bad)
 		warning("%s", violation_words(item->util));
+	/* the contracts are in ID order, the order of the blocks */
 	for_each_string_list_item(item, &b->contracts) {
 		struct contract *c = item->util;
-		const struct judgment_result *result = judgment_get(&current, c);
-		enum verdict v = result->verdict;
-		int touch = h && judgment_touched(judgment_get(&original, c), x, &diffs);
-		int pick = 0;
+		struct contract_geometry g;
+		int pick = 0, touch = 0;
 
-		if (argc > 1) {
+		if (scopes.nr) {
 			size_t n;
 
 			for (n = 0; n < scopes.nr; n++)
-				pick |= geometry_overlaps(&result->geometry, &scopes.items[n], &positions[n], 0);
+				pick |= contract_overlaps(c, x, &scopes.items[n], &positions[n], 0);
+			touch = pick && h && judgment_touched(&original, c, x);
 		} else {
-			pick = (me && !strcmp(c->creator, me) && promise(c, v)) ||
-			       (me && !strcmp(c->creator, me) && !strcmp(c->kind, "demand") && v == V_CURRENT) ||
+			enum verdict v = judgment_get(&current, c)->verdict;
+			int mine = me && !strcmp(c->creator, me);
+
+			touch = h && judgment_touched(&original, c, x);
+			pick = (mine && promise(c, v)) || (mine && !strcmp(c->kind, "demand") && v == V_CURRENT) ||
 			       v == V_UNVERIFIED || touch || violates(&bad, c->id);
 		}
-		if (pick) {
-			struct status_selection *selection = xmalloc(sizeof(*selection));
-
-			selection->result = result;
-			selection->touch = touch;
-			string_list_insert(&wanted, c->id)->util = selection;
-		}
+		if (!pick)
+			continue;
+		geometry_init(&g, c, x);
+		block(b, &current, c, &g, touch, me);
+		geometry_clear(&g);
 	}
-	for_each_string_list_item(item, &wanted)
-		block(b, item->util, &current, me);
 out:
 	judgment_clear(&current);
 	judgment_clear(&original);
-	diff_cache_clear(&diffs);
 	free(positions);
 	scopes_clear(&scopes);
-	string_list_clear(&wanted, 1);
 	string_list_clear(&pins, 0);
 	violations_clear(&bad);
 	strvec_clear(&args);
@@ -539,12 +530,11 @@ static void reason_lines(struct event_reasons *reasons, struct strbuf *out)
 
 /* spec 9.5: why the session's agent receives C (OLD at the first parent): relations at MINE and HEAD H */
 static void reasons(struct judgment *judgments, struct contract *c, struct contract *old,
-		    struct subscription_list *subs, const struct scope_result *positions, struct diff_cache *event_diffs, struct event_reasons *out)
+		    struct subscription_list *subs, const struct scope_result *positions, struct event_reasons *out)
 {
 	struct branch *mine = judgments->view.at;
 	struct string_list related = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct contract_geometry changed = { 0 }, previous = { 0 };
 	size_t i;
 	struct contract *k = contract_get(mine, c->id);
 	enum verdict v = k && !strcmp(k->creator, agent) ? judgment_get(judgments, k)->verdict : V_FUTURE;
@@ -578,21 +568,14 @@ static void reasons(struct judgment *judgments, struct contract *c, struct contr
 			continue;
 		}
 		/* E and its parent may have the same ID as MINE, but are different values. */
-		if (!changed.contract) {
-			geometry_init(&changed, c, judgments->tree, event_diffs);
-			if (old)
-				geometry_init(&previous, old, judgments->tree, event_diffs);
-		}
-		if (geometry_overlaps(&changed, &sub->scope, &positions[i], 1) ||
-		    (old && geometry_overlaps(&previous, &sub->scope, &positions[i], 1))) {
+		if (contract_overlaps(c, judgments->tree, &sub->scope, &positions[i], 1) ||
+		    (old && contract_overlaps(old, judgments->tree, &sub->scope, &positions[i], 1))) {
 			char *display = scope_result_text(&sub->scope, &positions[i]);
 
 			add_reason(out, REASON_SUB_SCOPE, display);
 			free(display);
 		}
 	}
-	geometry_clear(&changed);
-	geometry_clear(&previous);
 }
 
 /* spec 9.4: the ACTION lines of C changed from OLD */
@@ -625,7 +608,6 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 	struct string_list files = STRING_LIST_INIT_DUP;
 	struct string_list_item *f;
 	struct event_reasons why;
-	struct diff_cache diffs = { 0 };
 	struct strbuf reason_text = STRBUF_INIT, acts = STRBUF_INIT, refs = STRBUF_INIT;
 	enum reason_kind kind;
 	char *parent;
@@ -667,11 +649,11 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 		if (ful)
 			continue;
 		old = before ? contract_get(before, c->id) : NULL;
-		reasons(judgments, c, old, subs, positions, &diffs, &why);
+		reasons(judgments, c, old, subs, positions, &why);
 		actions(c, old, &acts);
 		if (!strcmp(c->kind, "drop") && contract_get(at, c->target))
 			reasons(judgments, contract_get(at, c->target), before ? contract_get(before, c->target) : NULL,
-				subs, positions, &diffs, &why);
+				subs, positions, &why);
 	}
 	reason_lines(&why, &reason_text);
 	if (!reason_text.len)
@@ -691,7 +673,6 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 	}
 	strbuf_addstr(payload, "ait-event-end\n");
 out:
-	diff_cache_clear(&diffs);
 	free(parent);
 	string_list_clear(&files, 0);
 	strbuf_release(&reason_text);
@@ -727,7 +708,6 @@ static void deliver(int *warned)
 	struct names n;
 	struct branch *mine = NULL;
 	struct tree *h = NULL;
-	struct diff_cache diffs = { 0 };
 	struct judgment judgments = { 0 };
 	struct scope_result *positions = NULL;
 	size_t i;
@@ -768,11 +748,11 @@ static void deliver(int *warned)
 	mine = branch_load(name, tip, tip);
 	h = tree_load(*v.head_oid ? v.head_oid : EMPTY_TREE);
 	subscriptions_read(&subs, &v.lines);
-	judgment_init(&judgments, &(struct contract_view){ mine, NULL, NULL }, h, &diffs);
+	judgment_init(&judgments, &(struct contract_view){ mine, NULL, NULL }, h);
 	positions = xcalloc(subs.nr, sizeof(*positions));
 	for (i = 0; i < subs.nr; i++)
 		if (!subs.items[i].id)
-			scope_result_at(&subs.items[i].scope, h, &diffs, &positions[i]);
+			scope_result_at(&subs.items[i].scope, h, &positions[i]);
 	for_each_string_list_item(item, &v.lines) {
 		if (starts_with(item->string, "tip "))
 			strbuf_addf(&in, "^%.40s\n", item->string + 4);
@@ -844,7 +824,8 @@ static void deliver(int *warned)
 	session_tips(sid, v.version, &n.tips, skipped.buf);
 out:
 	judgment_clear(&judgments);
-	diff_cache_clear(&diffs);
+	/* a round's blob pairs are not kept for the next (9.6) */
+	blob_pairs_clear();
 	free(positions);
 	if (candidates)
 		fclose(candidates);

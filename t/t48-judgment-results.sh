@@ -85,11 +85,11 @@ done
 run env PATH="$T/diff-bin:$PATH" ait future drop "$R" -m 'first witness suffices'
 check_rc 'an early whole witness satisfies verdict-only callers' 0
 check 'later witnesses cannot add matches after a whole match' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 1"
-# Index validation and committed-code validation are distinct; recording reuses the latter.
+# Nothing staged: the index and the committed code hold the same blob, one pair mapped once.
 : >"$T/diff.trace"
 run env PATH="$T/diff-bin:$PATH" ait fulfill "$R" --force -m 'record mapped code once'
 check_rc 'recording consumes its validated provider positions' 0
-check 'one map at index and one at committed code suffice' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 2"
+check 'the same blob pair is mapped once for validation and recording' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 1"
 for spec_number in 1 2 3; do printf 'body: condition %s\n' "$spec_number" >"c$spec_number.yaml"; done
 run ait future offer src/stock.c:2-2 c1.yaml,c2.yaml,c3.yaml -m 'three specs'
 THREE=$(newest O)

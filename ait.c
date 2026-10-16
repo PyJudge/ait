@@ -1517,11 +1517,9 @@ static void checkin_invariants(struct checkin *c, struct branch *now, const char
 	if (after->errors.nr)
 		reject(1, c->violation_hint ? c->violation_hint(c, NULL) : NULL, "%s'%s': %s", c->refusal, after->errors.items[0].string,
 		       (char *)after->errors.items[0].util);
-	invariants(now, now, NULL, &before);
-	if (c->candidate)
-		invariants_view(c->candidate, now, c->fulfilling, &then);
-	else
-		invariants(after, now, c->fulfilling, &then);
+	/* the published tree is read back once; its invariants are judged on what was read */
+	invariants(&(struct contract_view){ now, NULL, NULL }, now, NULL, &before);
+	invariants(&(struct contract_view){ after, NULL, NULL }, now, c->fulfilling, &then);
 	for_each_string_list_item(v, &then)
 		if (!string_list_has_string(&before, v->string))
 			string_list_insert(&added, v->string)->util = v->util;
@@ -1563,7 +1561,6 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
 	c->tree = NULL;
 	c->second_parent = c->ff = NULL;
 	c->fulfilling = NULL;
-	c->candidate = NULL;
 	c->at = now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
 	/* a tip that a git commit or merge broke after start() (4.3-3) */
 	refuse_malformed(now, 0);
