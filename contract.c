@@ -600,23 +600,62 @@ int kind_letter(const char *kind)
 	return !strcmp(kind, "demand") ? 'D' : !strcmp(kind, "offer") ? 'O' : 'X';
 }
 
+/*
+ * spec 2.1.3: where PATH lies on an ait branch: a contract file
+ * (<group>/<ID>.yaml), a fulfilment file (an .md under fulfill/), or
+ * neither; nonzero OK when its name and group are right (<group>/fulfill/
+ * <ID>-<RID>.md), with ID, RID and GROUP filled
+ */
+enum placed { MISPLACED, CONTRACT_FILE, FULFIL_FILE };
+struct placement {
+	int ok;
+	char id[16];
+	char rid[16];
+	char *group;
+};
+
+static enum placed place(const char *path, struct placement *at)
+{
+	const char *slash = strrchr(path, '/'), *base = slash ? slash + 1 : path;
+	size_t len = strlen(base);
+	enum placed kind;
+
+	memset(at, 0, sizeof(*at));
+	at->group = slash ? xstrndup(path, slash - path) : xstrdup("");
+	if (ends_with(base, ".md") && (starts_with(path, "fulfill/") || strstr(path, "/fulfill/"))) {
+		kind = FULFIL_FILE;
+		/* the group above fulfill/, and "<ID>-<RID>.md" */
+		if (!strcmp(at->group, "fulfill"))
+			*at->group = 0;
+		else if (ends_with(at->group, "/fulfill"))
+			at->group[strlen(at->group) - 8] = 0;
+		else
+			return kind;
+		if (len != 30 || base[13] != '-')
+			return kind;
+		snprintf(at->id, sizeof(at->id), "%.13s", base);
+		snprintf(at->rid, sizeof(at->rid), "%.13s", base + 14);
+		at->ok = id_ok(at->id, "DOX") && id_ok(at->rid, "R");
+	} else if (ends_with(base, ".yaml")) {
+		kind = CONTRACT_FILE;
+		if (len == 18)
+			snprintf(at->id, sizeof(at->id), "%.13s", base);
+		at->ok = id_ok(at->id, "DOX");
+	} else {
+		return MISPLACED;
+	}
+	at->ok = at->ok && group_ok(at->group);
+	return kind;
+}
+
 /* spec 2.1.3: the ID of the contract path "<group>/<ID>.yaml", or NULL */
 char *contract_path_id(const char *path)
 {
-	const char *base = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
-	char *id, *group;
-	int valid;
+	struct placement at;
+	char *id = place(path, &at) == CONTRACT_FILE && at.ok ? xstrdup(at.id) : NULL;
 
-	if (!ends_with(base, ".yaml"))
-		return NULL;
-	id = xstrndup(base, strlen(base) - 5);
-	group = group_of(path);
-	valid = id_ok(id, "DOX") && group_ok(group);
-	free(group);
-	if (valid)
-		return id;
-	free(id);
-	return NULL;
+	free(at.group);
+	return id;
 }
 
 /* a new contract of KIND in GROUP with ID, its fields empty (spec 6.4, 6.5.2) */
@@ -644,41 +683,15 @@ char *fulfil_path(struct contract *c, const char *rid)
 	return xstrfmt("%s%sfulfill/%s-%s.md", c->group, *c->group ? "/" : "", c->id, rid);
 }
 
+/* spec 2.1.3: PATH is a fulfilment of ID, in GROUP when one is given */
 static int fulfil_path_ok(const char *path, const char *id, const char *group)
 {
-	const char *slash = strrchr(path, '/'), *rid;
-	char *dir, *expected = NULL, *parent = NULL, *stem = NULL;
-	int valid = 0;
-	size_t id_len = strlen(id);
+	struct placement at;
+	int ok = place(path, &at) == FULFIL_FILE && at.ok && !strcmp(at.id, id) &&
+		 (!group || !strcmp(at.group, group));
 
-	if (!slash)
-		return 0;
-	dir = xstrndup(path, slash - path);
-	if (group) {
-		expected = xstrfmt("%s%sfulfill", group, *group ? "/" : "");
-		if (strcmp(dir, expected))
-			goto out;
-	}
-	if (strcmp(dir, "fulfill")) {
-		if (!ends_with(dir, "/fulfill"))
-			goto out;
-		parent = xstrndup(dir, strlen(dir) - 8);
-		if (!group_ok(parent))
-			goto out;
-	}
-	if (strncmp(slash + 1, id, id_len) || slash[1 + id_len] != '-')
-		goto out;
-	rid = slash + 2 + id_len;
-	if (!ends_with(rid, ".md"))
-		goto out;
-	stem = xstrndup(rid, strlen(rid) - 3);
-	valid = id_ok(stem, "R");
-out:
-	free(dir);
-	free(expected);
-	free(parent);
-	free(stem);
-	return valid;
+	free(at.group);
+	return ok;
 }
 
 /*
@@ -1075,7 +1088,10 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 		const char *nul;
 		char *err = NULL;
 		size_t len;
+		struct placement at;
+		int fulfil_file = place(e->path, &at) == FULFIL_FILE;
 
+		free(at.group);
 		if (!strcmp(e->type, "tree"))
 			continue;
 		if (strcmp(e->type, "blob")) {
@@ -1084,7 +1100,7 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 			err = yaml_refusal_at(1, "could not read blob '%s'", e->oid);
 		} else if ((nul = memchr(text, 0, len))) {
 			err = yaml_refusal_at((int)line_at(text, nul - text) + 1, "a NUL character");
-		} else if (ends_with(e->path, ".md") && (starts_with(e->path, "fulfill/") || strstr(e->path, "/fulfill/"))) {
+		} else if (fulfil_file) {
 			struct fulfilment *f = fulfil_parse(text, e->path, &err);
 
 			if (f)
