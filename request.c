@@ -24,7 +24,7 @@ struct clause {
 	int nargs;
 	const char *as;
 	struct scope_input scopes[2];	/* consumer and provider; "-" when not given */
-	const int *provider_word;	/* the word of a provider given, for hints */
+	int provider_arg;		/* the argument that gives a provider, or -1 (for hints) */
 	const char *files;		/* condition files given, or NULL */
 	const char *target;		/* amend of a drop: the new target, or NULL */
 };
@@ -570,6 +570,7 @@ static int read_clauses(struct request_input *q, int argc, const char **argv)
 		cl->verb = v;
 		cl->future = future;
 		cl->scopes[0].keep = cl->scopes[1].keep = 1;
+		cl->provider_arg = -1;
 		if (!strcmp(w, "undertake") && i < argc && (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--partial"))) {
 			cl->partial = 1;
 			i++;
@@ -612,7 +613,7 @@ static int read_clauses(struct request_input *q, int argc, const char **argv)
 				prepare_scopes(&cl->scopes[0], cl->args[1], 1, 0);
 			prepare_scopes(&cl->scopes[1], cl->args[provider], 1, 1);
 			if (strcmp(cl->args[provider], "-"))
-				cl->provider_word = &cl->arg_words[provider];
+				cl->provider_arg = provider;
 			if (strcmp(cl->args[provider + 1], "-"))
 				cl->files = cl->args[provider + 1];
 		} else if (!strcmp(w, "amend") && cl->nargs == 2 && strcmp(cl->args[1], "-")) {
@@ -672,8 +673,9 @@ static void apply_clauses(struct request_input *q, struct request_result *r)
 			scopes_arg(&c->consumer, &cl->scopes[0], pin_at);
 		if (c->kind != DROP)
 			scopes_arg(&c->provider, &cl->scopes[1], pin_at);
-		if (cl->provider_word)
-			string_list_insert(&r->provider_words, c->id)->util = (void *)cl->provider_word;
+		/* the clauses are all read: their array no longer moves */
+		if (cl->provider_arg >= 0)
+			string_list_insert(&r->provider_words, c->id)->util = &cl->arg_words[cl->provider_arg];
 		if (cl->files)
 			specs_from_files(q, c, cl->files);
 		if (cl->target)

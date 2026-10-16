@@ -46,4 +46,9 @@ check 'a null env.set value is a format refusal' "test $rc = 128 && has err \"ba
 sed -i.bak 's/nulls/nullitem/' envnull.yaml
 run ait offer src/stock.c envnull.yaml -m 'null inherit item'
 check 'a null inherit item is a format refusal' "test $rc = 128 && has err \"bad format: 'specs/environments/nullitem.yaml'\""
+
+# a hint names the word of a provider given in an early clause, after later clauses were read (3.3)
+run ait offer / cond.yaml future offer src/stock.c cond.yaml future offer src/order.c cond.yaml future offer src/stock.c:1-2 cond.yaml future offer src/order.c:1-2 cond.yaml -m many
+check 'the abstract provider of the first clause is refused' "test $rc = 128 && has err 'needs concrete scopes'"
+check 'its hint replaces that word' "has err \"^hint: ait offer '<scope>' cond.yaml future offer src/stock.c\""
 done_testing
