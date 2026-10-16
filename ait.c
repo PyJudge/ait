@@ -1347,9 +1347,11 @@ static char *trailer_probe(const char *text, struct strbuf *unread)
 	view = read_message(probe);
 	expected = xstrfmt("%s\n", nonce);
 	value = view + strlen(view) + 1;
-	for (i = 0; i < ARRAY_SIZE(trailer_keys); value += strlen(value) + 1, i++)
+	for (i = 0; i < ARRAY_SIZE(trailer_keys); i++) {
 		if (strcmp(value, expected))
 			strbuf_addf(unread, "%s'%s'", unread->len ? ", " : "", trailer_keys[i]);
+		value += strlen(value) + 1;
+	}
 	free(expected);
 	free(probe);
 	return view;
@@ -1369,8 +1371,12 @@ char *request_message(const char *msg, int fulfilling)
 	message_probed = 1;
 	if (hidden_trailers.len) {
 		/* git resolves core.commentChar and core.commentString for its cut line */
-		comment_line_str = git_run("x\n", NULL, NULL, "stripspace", "--comment-lines");
-		((char *)comment_line_str)[git_out_len - 3] = 0;
+		char *prefix = git_run("x\n", NULL, NULL, "stripspace", "--comment-lines");
+
+		if (!ends_with(prefix, " x\n"))
+			BUG("git stripspace: missing commented line");
+		prefix[git_out_len - 3] = 0;
+		comment_line_str = prefix;
 		end = wt_status_locate_end(view, len);
 		if (end < len)
 			reject(129, "remove that line from the message", "the message hides the trailers: '%s'",

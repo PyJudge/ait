@@ -873,7 +873,18 @@ static char *environment_refusal(struct ynode *map)
 	return NULL;
 }
 
-/* spec 7.2 and v14 2.5.3: HEAD's environment NAME, checked, written as it was read */
+/* v14 2.5.3 types the values: every one a string, but timeout_ms a number (keys stay as written) */
+static void environment_types(struct ynode *n)
+{
+	size_t i;
+
+	if (n->kind == 's' || n->kind == '?')
+		n->plain = 0;
+	for (i = n->kind == 'm'; i < n->nr; i += n->kind == 'm' ? 2 : 1)
+		environment_types(n->kids[i]);
+}
+
+/* spec 7.2 and v14 2.5.3: HEAD's environment NAME, checked, written with its schema's types */
 static char *environment_out(struct strbuf *sb, const char *name, struct tree *h)
 {
 	char *path = xstrfmt("specs/environments/%s.yaml", name), *text, *err = NULL;
@@ -883,8 +894,12 @@ static char *environment_out(struct strbuf *sb, const char *name, struct tree *h
 
 	if (!oid || !(text = object(oid, 1, NULL, &len)))
 		return xstrfmt("could not read '%s' at HEAD", path);
-	if ((map = yaml_parse(text, len, &err)) && !(err = environment_refusal(map)))
+	if ((map = yaml_parse(text, len, &err)) && !(err = environment_refusal(map))) {
+		environment_types(map);
+		if (yget(map, "timeout_ms"))
+			yget(map, "timeout_ms")->plain = 1;
 		yaml_out_node(sb, "environment", map);
+	}
 	ynode_free(map);
 	free(text);
 	return err ? xstrfmt("bad format: '%s': %s", path, err) : NULL;
@@ -1970,7 +1985,8 @@ static int contract_pull(int argc, const char **argv)
 		reject(128, NULL, "'%s' has no upstream", ck.branch);
 	p.name = line1(git("rev-parse", "--abbrev-ref", p.upstream));
 	string_list_init_dup(&ck.put);
-	ck.msg = request_message(xstrfmt("merge '%s'", p.name), 0);
+	/* ait's own words hold no cut line; start() read the trailers back alone */
+	ck.msg = xstrfmt("[CONTRACT] merge '%s'", p.name);
 	ck.refusal = xstrfmt("merging '%s' breaks contract rules: ", p.name);
 	ck.violation_hint = pull_hint;
 	ck.data = &p;

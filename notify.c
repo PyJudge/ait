@@ -684,6 +684,7 @@ static void deliver(int *warned)
 	struct strbuf in = STRBUF_INIT, seenbuf = STRBUF_INIT, skipped = STRBUF_INIT, hint = STRBUF_INIT,
 		      msg = STRBUF_INIT;
 	const char *name, *up, *tip;
+	char *listed;
 	int rc, fd;
 
 	/* Git's collect→consume pattern: V, refs and upstream are inputs to this round. */
@@ -726,9 +727,10 @@ static void deliver(int *warned)
 	for_each_string_list_item(item, &watched)
 		strbuf_addf(&in, "%s\n", (char *)item->util);
 	/* 9.2, 9.4: each candidate with the session its trailers name (two values name none, v14 5.4) */
-	string_list_split(&candidates, git_run(in.buf, NULL, NULL, "rev-list", "--reverse", "--topo-order",
-		"--ignore-missing", "--stdin", "--no-commit-header",
-		"--format=%H %(trailers:key=Ait-Session,valueonly,separator=%x2C)"), "\n", -1);
+	listed = git_run(in.buf, NULL, NULL, "rev-list", "--reverse", "--topo-order", "--ignore-missing", "--stdin",
+			 "--no-commit-header", "--format=%H %(trailers:key=Ait-Session,valueonly,unfold,separator=%x2C)");
+	string_list_split(&candidates, listed, "\n", -1);
+	free(listed);
 	for_each_string_list_item(item, &candidates) {
 		char *revision = item->string, *sender = strchr(revision, ' ');
 		struct strbuf keys = STRBUF_INIT, payload = STRBUF_INIT;

@@ -421,7 +421,6 @@ static int yaml_node_events(yaml_emitter_t *emitter, struct ynode *n)
 	size_t i;
 	int ok;
 
-	/* a plain scalar stays plain where libyaml can keep it so, which keeps its YAML type */
 	if (n->kind == 's' || n->kind == '?')
 		return yaml_scalar_event_initialize(&event, NULL, NULL, (yaml_char_t *)n->value, strlen(n->value), 1, 1,
 						   n->plain ? YAML_ANY_SCALAR_STYLE : YAML_DOUBLE_QUOTED_SCALAR_STYLE) &&
@@ -436,9 +435,10 @@ static int yaml_node_events(yaml_emitter_t *emitter, struct ynode *n)
 }
 
 /*
- * v14 8.2, spec 7.2: "  KEY:" and the value N as it was read (its order and
- * its plain or quoted scalars), written by libyaml as the first key of a list
- * item; the item's "- " becomes indentation
+ * v14 8.2, spec 7.2: "  KEY:" and the value N in its order, written by
+ * libyaml as the first key of a list item (the item's "- " becomes
+ * indentation); a plain scalar stays plain where it can, the rest are quoted,
+ * and lists flow
  */
 void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n)
 {
