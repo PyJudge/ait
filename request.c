@@ -1399,7 +1399,7 @@ static void run_request(struct request *req, int fulfilling)
 
 	ck.msg = request_message(q->msg.buf, fulfilling);
 	ck.branch = start_name(START_SESSION | START_WRITES | START_TRAILERS | (fulfilling ? START_FULFILS : 0));
-	checkin_prepare(&ck);
+	newid(ck.rid, 'R');
 	q->x = index_tree();
 	q->h = tree_load(head ? head : EMPTY_TREE);
 	string_list_init_dup(&ck.put);
@@ -1889,7 +1889,7 @@ static int contract_commit(int argc, const char **argv)
 		reject(129, NULL, "contract commit takes -m, -F and --force");
 	ck.msg = request_message(st.q.input.msg.buf, 0);
 	ck.branch = start_name(START_SESSION | START_WRITES | START_TRAILERS);
-	checkin_prepare(&ck);
+	newid(ck.rid, 'R');
 	st.q.input.x = index_tree();
 	st.q.input.h = tree_load(head ? head : EMPTY_TREE);
 	st.q.input.rid = ck.rid;

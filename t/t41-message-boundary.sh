@@ -99,12 +99,12 @@ done
 
 # The parser decides; a failed Git parser cannot be replaced by a C cutoff verdict.
 racing_git
-printf '%s\n' "git config core.commentString ''" >"$T/before-interpret-trailers"
+printf '%s\n' "git config core.commentString ''" >"$T/before-log"
 run env PATH="$T/bin:$PATH" ait future offer src/stock.c cond.yaml -m "$message"
 check_rc 'an actual Git parser failure precedes a scissors diagnosis' 128
-check 'a parser failure retains E_GIT rather than a guessed usage error' "has err \"git failed: 'git interpret-trailers'\""
+check 'a parser failure retains E_GIT rather than a guessed usage error' "has err \"git failed: 'git log'\""
 git config --unset-all core.commentString || :
-rm -f "$T/before-interpret-trailers" "$T/before-interpret-trailers.done"
+rm -f "$T/before-log" "$T/before-log.done"
 git update-ref refs/heads/ait/master "$good"
 
 # Git 2.53 is the minimum runtime; the shim changes the reported version only.

@@ -1298,7 +1298,7 @@ static char *read_message(const char *message)
 	static int initialized;
 	struct tempfile *probe = mks_tempfile_dt("ait-message-XXXXXX", "owner");
 	struct strbuf format = STRBUF_INIT;
-	char *dir, *tree = NULL, *oid = NULL, *out = NULL;
+	char *dir, *oid = NULL, *out = NULL;
 	const char *env[] = { NULL, "GIT_AUTHOR_NAME=ait", "GIT_AUTHOR_EMAIL=ait@invalid",
 		"GIT_AUTHOR_DATE=@0 +0000", "GIT_COMMITTER_NAME=ait", "GIT_COMMITTER_EMAIL=ait@invalid",
 		"GIT_COMMITTER_DATE=@0 +0000", NULL };
@@ -1320,10 +1320,9 @@ static char *read_message(const char *message)
 	if (close_tempfile_gently(probe))
 		write_error(probe->filename.buf);
 	env[0] = xstrfmt("GIT_OBJECT_DIRECTORY=%s", message_directory);
-	tree = line1(git_argv_n("", 0, NULL, &rc, (const char *[]){ "mktree", NULL }, env, -1));
-	if (!rc)
-		oid = line1(git_argv_n(message, strlen(message), NULL, &rc,
-			(const char *[]){ "commit-tree", tree, NULL }, env, -1));
+	/* git knows the empty tree without its object (object-file.c) */
+	oid = line1(git_argv_n(message, strlen(message), NULL, &rc,
+		(const char *[]){ "commit-tree", EMPTY_TREE, NULL }, env, -1));
 	if (!rc) {
 		strbuf_addstr(&format, "--format=format:%B%x00");
 		for (i = 0; i < ARRAY_SIZE(trailer_keys); i++)
@@ -1335,7 +1334,6 @@ static char *read_message(const char *message)
 	cleanup_errno = errno;
 	/* Deactivate the file even after a failed directory cleanup. */
 	delete_tempfile(&probe);
-	free(tree);
 	free(oid);
 	free((char *)env[0]);
 	strbuf_release(&format);
@@ -1351,27 +1349,56 @@ static char *read_message(const char *message)
 	return out;
 }
 
-/* spec 4.5: compare the exact three values using the same reader as history. */
-static void require_trailers(const char *found, const char *rid, const char *who, const char *session_id)
+/* the keys git's history reader left unread in request_message's probe (4.5) */
+static struct strbuf hidden_trailers = STRBUF_INIT;
+
+/*
+ * spec 4.5, v14 5.3: the trailers must read back through the reader history
+ * uses, on a commit as git writes it. A cut line in the body git decodes is
+ * E_USAGE here, before the common checks; otherwise an unread key is the
+ * config's, E_CONFIG after them (start). The probe holds a fresh nonce: a
+ * block quoted in MSG cannot pose as the appended one, and trailer.c's
+ * find_separator stops at the key, so the request's own ASCII values
+ * ([A-Za-z0-9._-], 1.11) read as the nonce does.
+ */
+char *request_message(const char *msg, int fulfilling)
 {
-	const char *values[] = { rid, who, session_id };
-	const char *p = found;
-	struct strbuf missing = STRBUF_INIT, settings = STRBUF_INIT;
+	char *text = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", msg);
+	char nonce[16], *probe, *view, *value, *expected;
+	size_t i, len, end;
+
+	newid(nonce, 'R');
+	probe = trailer_message(text, nonce, nonce, nonce);
+	view = read_message(probe);
+	free(probe);
+	expected = xstrfmt("%s\n", nonce);
+	value = view + strlen(view) + 1;
+	for (i = 0; i < ARRAY_SIZE(trailer_keys); value += strlen(value) + 1, i++)
+		if (strcmp(value, expected))
+			strbuf_addf(&hidden_trailers, "%s'%s'", hidden_trailers.len ? ", " : "", trailer_keys[i]);
+	if (hidden_trailers.len) {
+		/* git resolves core.commentChar and core.commentString for its cut line */
+		comment_line_str = git_run("x\n", NULL, NULL, "stripspace", "--comment-lines");
+		((char *)comment_line_str)[git_out_len - 3] = 0;
+		len = strlen(view);
+		end = wt_status_locate_end(view, len);
+		if (end < len)
+			reject(129, "remove that line from the message", "the message hides the trailers: '%s'",
+			       xstrndup(view + end, strcspn(view + end, "\n")));
+	}
+	free(expected);
+	free(view);
+	return text;
+}
+
+/* spec 4.5: E_CONFIG names the settings that change what git's trailer parser reads */
+static void refuse_hidden_trailers(void)
+{
 	struct string_list names = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	size_t i;
+	struct strbuf settings = STRBUF_INIT;
 	int rc;
 
-	for (i = 0; i < ARRAY_SIZE(trailer_keys); i++) {
-		char *expected = xstrfmt("%s\n", values[i]);
-
-		if (strcmp(p, expected))
-			strbuf_addf(&missing, "%s'%s'", missing.len ? ", " : "", trailer_keys[i]);
-		free(expected);
-		p += strlen(p) + 1;
-	}
-	if (!missing.len)
-		return;
 	git_records(&names, NULL, &rc, "config", "--null", "--name-only", "--get-regexp",
 		    "^(core\\.comment(char|string)|trailer\\.separators|trailer\\..*\\.key)$");
 	if (rc > 1)
@@ -1380,68 +1407,8 @@ static void require_trailers(const char *found, const char *rid, const char *who
 	string_list_remove_duplicates(&names, 0);
 	for_each_string_list_item(item, &names)
 		strbuf_addf(&settings, "%s'%s'", settings.len ? ", " : "", item->string);
-	reject(128, NULL, "git config hides the trailers: %s%s%s%s", missing.buf,
+	reject(128, NULL, "git config hides the trailers: %s%s%s%s", hidden_trailers.buf,
 	       settings.len ? " (" : "", settings.buf, settings.len ? ")" : "");
-}
-
-/* Git judges trailer visibility; its cutoff helper only supplies the rejected line. */
-static void message_usage(const char *message, const char *reference)
-{
-	char *parsed = git_run(message, NULL, NULL, "interpret-trailers", "--parse", "--no-divider");
-	char *expected = git_run(reference, NULL, NULL, "interpret-trailers", "--parse", "--no-divider");
-	size_t len = strlen(message), end;
-	int readable = *parsed && !strcmp(parsed, expected);
-
-	free(parsed);
-	free(expected);
-	if (readable)
-		return;
-	if (!comment_line_str) {
-		char *prefix = git_run("x\n", NULL, NULL, "stripspace", "--comment-lines");
-
-		if (!ends_with(prefix, " x\n"))
-			BUG("git stripspace: missing commented line");
-		prefix[git_out_len - 3] = 0;
-		comment_line_str = prefix;
-	}
-	end = wt_status_locate_end(message, len);
-	if (end < len)
-		reject(129, "remove that line from the message", "the message hides the trailers: '%s'",
-		       xstrndup(message + end, strcspn(message + end, "\n")));
-}
-
-static char *checked_message(const char *msg, const char *rid, const char *who, const char *session_id,
-			     int check_values)
-{
-	char *text = trailer_message(msg, rid, who, session_id);
-	char *reference = trailer_message("", rid, who, session_id);
-	char *view = read_message(text);
-
-	message_usage(view, reference);
-	if (check_values)
-		require_trailers(view + strlen(view) + 1, rid, who, session_id);
-	free(view);
-	free(reference);
-	return text;
-}
-
-char *request_message(const char *msg, int fulfilling)
-{
-	char *text = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", msg), *probe;
-	char nonce[16];
-
-	/* A body that quotes an earlier probe must not impersonate the appended block. */
-	newid(nonce, 'R');
-	probe = checked_message(text, nonce, nonce, nonce, 0);
-	free(probe);
-	return text;
-}
-
-void checkin_prepare(struct checkin *c)
-{
-	if (!*c->rid)
-		newid(c->rid, 'R');
-	c->record = checked_message(c->msg, c->rid, agent, sid, 1);
 }
 
 struct branch *start(int how)
@@ -1457,12 +1424,8 @@ struct branch *start(int how)
 	if ((how & START_FULFILS) && *git("ls-files", "--unmerged"))
 		reject(1, NULL, "%s", refusal_words(UNMERGED, NULL, NULL, NULL));
 	session(!!(how & START_SESSION));
-	if (how & START_TRAILERS) {
-		/* The history formatter needs an inert subject before the trailer-only probe. */
-		char *probe = checked_message("ait", "R000000000000", agent, sid, 1);
-
-		free(probe);
-	}
+	if ((how & START_TRAILERS) && hidden_trailers.len)
+		refuse_hidden_trailers();
 	return b;
 }
 
@@ -1597,12 +1560,8 @@ char *checkin_run(struct checkin *c, judge_fn decide)
 	guard_git_children();
 	if (!*c->rid)
 		newid(c->rid, 'R');
-	if (!c->record) {
-		if (c->no_trailers)
-			c->record = trailer_message(c->msg, NULL, NULL, NULL);
-		else
-			checkin_prepare(c);
-	}
+	if (!c->record)
+		c->record = trailer_message(c->msg, c->no_trailers ? NULL : c->rid, agent, sid);
 	checkin_tip(c);
 	for (;;) {
 		char old[48], *tree = checkin_judge(c, decide);

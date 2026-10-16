@@ -124,7 +124,6 @@ struct checkin {
 };
 typedef void (*judge_fn)(struct checkin *c);
 char *request_message(const char *msg, int fulfilling);
-void checkin_prepare(struct checkin *c);
 void checkin_tip(struct checkin *c);
 void checkin_clear(struct checkin *c);
 char *checkin_judge(struct checkin *c, judge_fn decide);
