@@ -251,3 +251,22 @@ int string_list_split(struct string_list *list, const char *string,
 {
 	return split_string(list, string, delim, maxsplit, 0, 0);
 }
+
+/* git v2.53.0 string-list.c:109-125 */
+void string_list_remove_duplicates(struct string_list *list, int free_util)
+{
+	if (list->nr > 1) {
+		size_t dst = 1;
+		compare_strings_fn cmp = list->cmp ? list->cmp : strcmp;
+		for (size_t src = 1; src < list->nr; src++) {
+			if (!cmp(list->items[dst - 1].string, list->items[src].string)) {
+				if (list->strdup_strings)
+					free(list->items[src].string);
+				if (free_util)
+					free(list->items[src].util);
+			} else
+				list->items[dst++] = list->items[src];
+		}
+		list->nr = dst;
+	}
+}

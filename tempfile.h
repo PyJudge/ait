@@ -14,6 +14,9 @@ struct tempfile {
 };
 
 struct tempfile *register_tempfile(const char *path);
+/* git v2.53.0 tempfile.h:210-211 */
+struct tempfile *mks_tempfile_dt(const char *directory_template,
+				 const char *filename);
 int close_tempfile_gently(struct tempfile *tempfile);
 int delete_tempfile(struct tempfile **tempfile_p);
 

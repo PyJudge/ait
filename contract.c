@@ -4,12 +4,7 @@
  */
 #include "ait.h"
 #include <yaml.h>
-#include "utf8.h"
 
-static char *xstrdup_null(const char *s)
-{
-	return s ? xstrdup(s) : NULL;
-}
 
 /* git's "return error(...)" for the parsers: ERR says why, NULL is returned */
 static void *bad(char **err, char *why)
@@ -26,21 +21,17 @@ static int cmp_entry(const void *a, const void *b)
 /* one sorted listing per tree (git ls-tree -r -t -z) */
 struct tree *tree_load(const char *treeish)
 {
-	static struct string_list listed = STRING_LIST_INIT_DUP;
-	struct string_list_item *hit;
 	struct string_list records = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct tree *t;
 	size_t alloc = 0;
-	char oid[48];
+	char oid[48], *expression = xstrfmt("%s^{tree}", treeish);
 
-	if (!object(xstrfmt("%s^{tree}", treeish), 0, oid, NULL))
+	if (!object_oid(expression, oid))
 		reject(128, NULL, "git failed: 'git cat-file': not a tree: '%s'", treeish);
-	if ((hit = string_list_lookup(&listed, oid)))
-		return hit->util;
+	free(expression);
 	t = xcalloc(1, sizeof(*t));
 	snprintf(t->oid, sizeof(t->oid), "%s", oid);
-	string_list_insert(&listed, oid)->util = t;
 	git_records(&records, NULL, NULL, "ls-tree", "-r", "-t", "-z", "--full-tree", oid);
 	for_each_string_list_item(item, &records) {
 		struct entry *e;
@@ -50,9 +41,10 @@ struct tree *tree_load(const char *treeish)
 		e = &t->e[t->nr++];
 		if (sscanf(p, "%7s %7s %47s", e->mode, e->type, e->oid) != 3)
 			BUG("git ls-tree: '%s'", p);
-		e->path = strchr(p, '\t') + 1;
+		e->path = xstrdup(strchr(p, '\t') + 1);
 	}
 	QSORT(t->e, t->nr, cmp_entry);
+	string_list_clear(&records, 0);
 	return t;
 }
 
@@ -76,19 +68,19 @@ const char *blob_at(struct tree *t, const char *path)
  */
 struct tree *index_tree(void)
 {
-	static struct tree *x;
+	struct tree *x, *h = NULL;
 	struct strbuf info = STRBUF_INIT;
 	struct string_list records = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	const char *last = "";
 	char *p;
 
-	if (x)
-		return x;
 	git_records(&records, NULL, NULL, "ls-files", "-u", "-z");
+	if (records.nr && head)
+		h = tree_load(head);
 	for_each_string_list_item(item, &records) {
 		const char *path = strchr(item->string, '\t') + 1;
-		struct entry *e = head ? tree_get(tree_load(head), path) : NULL;
+		struct entry *e = h ? tree_get(h, path) : NULL;
 
 		/* the stages of a path come one after another */
 		if (!strcmp(path, last))
@@ -99,11 +91,21 @@ struct tree *index_tree(void)
 		if (e)
 			strbuf_addf(&info, "%s %s\t%s%c", e->mode, e->oid, path, 0);
 	}
-	if (!info.len)
-		return x = tree_load(line1(git("write-tree")));
-	p = git("ls-files", "-s", "-z");
-	strbuf_splice(&info, 0, 0, p, git_out_len);
-	return x = tree_load(tree_with(EMPTY_TREE, &info));
+	if (!info.len) {
+		p = git("write-tree");
+		x = tree_load(line1(p));
+	} else {
+		p = git("ls-files", "-s", "-z");
+		strbuf_splice(&info, 0, 0, p, git_out_len);
+		free(p);
+		p = tree_with(EMPTY_TREE, &info);
+		x = tree_load(p);
+	}
+	free(p);
+	tree_free(h);
+	string_list_clear(&records, 0);
+	strbuf_release(&info);
+	return x;
 }
 
 /* the YAML subset of v14 2.5.1, read by libyaml (moved from v14 record.c) */
@@ -172,6 +174,19 @@ static const char *yaml_outside(yaml_event_t *e, int docs)
 	}
 }
 
+void yaml_clear(struct string_list *kv)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, kv) {
+		struct yval *v = item->util;
+
+		free(v->s);
+		free(v);
+	}
+	string_list_clear(kv, 0);
+}
+
 struct yframe {
 	char *path, *key;
 	int n;
@@ -187,10 +202,15 @@ static char *yaml_place(struct yframe *frame, yaml_event_t *e, const char **why)
 			*why = "no key";
 		return NULL;
 	}
-	if (frame->kind == 'l')
-		return yaml_path(frame->path, xstrfmt("%d", frame->n++));
+	if (frame->kind == 'l') {
+		char index[32];
+
+		snprintf(index, sizeof(index), "%d", frame->n++);
+		return yaml_path(frame->path, index);
+	}
 	if (frame->key) {
 		path = yaml_path(frame->path, frame->key);
+		free(frame->key);
 		frame->key = NULL;
 		return path;
 	}
@@ -210,13 +230,17 @@ static char yaml_kind(yaml_event_t *e)
 	return e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE && !e->data.scalar.length ? '?' : 0;
 }
 
-static const char *yaml_event(struct string_list *kv, struct yframe *stack, int *depth, yaml_event_t *e)
+static const char *yaml_event(struct string_list *kv, struct yframe *stack, int *depth, yaml_event_t *e, struct strbuf *reason)
 {
 	const char *why = NULL;
 	char *path;
 
-	if (e->type == YAML_MAPPING_END_EVENT || e->type == YAML_SEQUENCE_END_EVENT)
+	if (e->type == YAML_MAPPING_END_EVENT || e->type == YAML_SEQUENCE_END_EVENT) {
 		(*depth)--;
+		free(stack[*depth].path);
+		free(stack[*depth].key);
+		memset(&stack[*depth], 0, sizeof(stack[*depth]));
+	}
 	if (e->type != YAML_SCALAR_EVENT && e->type != YAML_MAPPING_START_EVENT && e->type != YAML_SEQUENCE_START_EVENT)
 		return NULL;
 	if (e->type == YAML_SCALAR_EVENT && strlen((char *)e->data.scalar.value) != e->data.scalar.length)
@@ -226,8 +250,11 @@ static const char *yaml_event(struct string_list *kv, struct yframe *stack, int 
 		return why;
 	if (!*depth)
 		path = xstrdup(ROOT);
-	if (path && unsorted_string_list_has_string(kv, path))
-		return xstrfmt("duplicate key '%s'", path);
+	if (path && unsorted_string_list_has_string(kv, path)) {
+		strbuf_addf(reason, "duplicate key '%s'", path);
+		free(path);
+		return reason->buf;
+	}
 	if (path) {
 		struct yval *v = xcalloc(1, sizeof(*v));
 
@@ -236,11 +263,17 @@ static const char *yaml_event(struct string_list *kv, struct yframe *stack, int 
 		v->line = e->start_mark.line + 1;
 		string_list_append(kv, path)->util = v;
 	}
-	if (e->type == YAML_SCALAR_EVENT)
+	if (e->type == YAML_SCALAR_EVENT) {
+		free(path);
 		return NULL;
-	if (*depth == YAML_DEPTH)
+	}
+	if (*depth == YAML_DEPTH) {
+		free(path);
 		return "nested too deeply";
+	}
 	stack[*depth].path = strcmp(path, ROOT) ? path : NULL;
+	if (!stack[*depth].path)
+		free(path);
 	stack[*depth].key = NULL;
 	stack[*depth].n = 0;
 	stack[*depth].kind = yaml_kind(e);
@@ -257,31 +290,23 @@ static size_t line_at(const char *text, size_t offset)
 	return n;
 }
 
-/* v14 2.5.1: UTF-8, and LF the only line break */
-static const char *not_text(const char *text, size_t *line)
+/* v14 2.5.1 permits LF only, even where YAML itself accepts other breaks. */
+static const char *non_lf(const char *text)
 {
 	static const char *const breaks[] = { "\r", "\xc2\x85", "\xe2\x80\xa8", "\xe2\x80\xa9", NULL };
-	struct string_list lines = STRING_LIST_INIT_DUP;
 	const char *p, *first = NULL;
-	size_t n;
 	int i;
 
-	string_list_split(&lines, text, "\n", -1);
-	for (n = 0; n < lines.nr; n++)
-		if (!is_utf8(lines.items[n].string)) {
-			*line = n;
-			return "not UTF-8";
-		}
 	for (i = 0; breaks[i]; i++)
 		if ((p = strstr(text, breaks[i])) && (!first || p < first))
 			first = p;
-	*line = first ? line_at(text, first - text) : 0;
-	return first ? "a line break other than LF" : NULL;
+	return first;
 }
 
 int yaml_parse(const char *text, size_t len, struct string_list *kv, char **err)
 {
-	struct yframe stack[YAML_DEPTH];
+	struct yframe stack[YAML_DEPTH] = { 0 };
+	struct strbuf reason = STRBUF_INIT;
 	yaml_parser_t parser;
 	yaml_event_t e;
 	const char *why = NULL;
@@ -294,18 +319,19 @@ int yaml_parse(const char *text, size_t len, struct string_list *kv, char **err)
 		*err = xstrfmt("a NUL character in line %d", (int)line_at(text, nul - text) + 1);
 		return -1;
 	}
-	if ((why = not_text(text, &line))) {
-		*err = xstrfmt("%s in line %d", why, (int)line + 1);
+	if ((why = non_lf(text))) {
+		*err = xstrfmt("a line break other than LF in line %d", (int)line_at(text, why - text) + 1);
 		return -1;
 	}
 	yaml_parser_initialize(&parser);
+	yaml_parser_set_encoding(&parser, YAML_UTF8_ENCODING);
 	yaml_parser_set_input_string(&parser, (const unsigned char *)text, len);
 	while (!done && !why && yaml_parser_parse(&parser, &e)) {
 		line = e.start_mark.line;
 		docs += e.type == YAML_DOCUMENT_START_EVENT;
 		why = yaml_outside(&e, docs > 1);
 		if (!why)
-			why = yaml_event(kv, stack, &depth, &e);
+			why = yaml_event(kv, stack, &depth, &e, &reason);
 		done = e.type == YAML_STREAM_END_EVENT;
 		yaml_event_delete(&e);
 	}
@@ -316,6 +342,11 @@ int yaml_parse(const char *text, size_t len, struct string_list *kv, char **err)
 	if (why)
 		*err = xstrfmt("%s in line %d", why, (int)line + 1);
 	yaml_parser_delete(&parser);
+	strbuf_release(&reason);
+	while (depth) {
+		free(stack[--depth].path);
+		free(stack[depth].key);
+	}
 	return why ? -1 : 0;
 }
 
@@ -399,14 +430,18 @@ static char *yaml_list(struct string_list *kv, const char *key, struct string_li
 
 	if (k != 'l' && k != '?')
 		return yaml_refusal(kv, key, "'%s' is not a list", key);
-	for (i = 0; yget(kv, xstrfmt("%s.%d", key, i)); i++) {
-		char *child = xstrfmt("%s.%d", key, i);
+	for (i = 0; ; i++) {
+		char *child = xstrfmt("%s.%d", key, i), *why = NULL;
+		const char *value = yget(kv, child);
 
-		if (ykind(kv, child))
-			return yaml_refusal(kv, child, "'%s' is not a scalar", child);
-		string_list_append(out, yget(kv, child));
+		if (value && ykind(kv, child))
+			why = yaml_refusal(kv, child, "'%s' is not a scalar", child);
+		if (value && !why)
+			string_list_append(out, value);
+		free(child);
+		if (why || !value)
+			return why;
 	}
-	return NULL;
 }
 
 static int yaml_out(void *sb, unsigned char *buf, size_t n)
@@ -415,66 +450,60 @@ static int yaml_out(void *sb, unsigned char *buf, size_t n)
 	return 1;
 }
 
-/* S as one "..." scalar into SB, written by libyaml's emitter (v14 8.2) */
-void yaml_out_scalar(struct strbuf *sb, const char *s)
+/*
+ * v14 8.2: a scalar inside two block sequences gives the four-space
+ * indentation used by both specs and tasks. libyaml chooses escaping and
+ * chomping too;
+ * discard the synthetic "- - " prefix and document terminator only.
+ */
+static void yaml_scalar(struct strbuf *sb, const char *s, yaml_scalar_style_t style)
 {
-	yaml_emitter_t y;
-	yaml_event_t e;
+	yaml_emitter_t emitter;
+	yaml_event_t event;
 	struct strbuf one = STRBUF_INIT;
 	int ok;
 
-	yaml_emitter_initialize(&y);
-	yaml_emitter_set_output(&y, yaml_out, &one);
-	yaml_emitter_set_unicode(&y, 1);
-	yaml_emitter_set_width(&y, -1);
-	ok = yaml_stream_start_event_initialize(&e, YAML_UTF8_ENCODING) && yaml_emitter_emit(&y, &e) &&
-	     yaml_document_start_event_initialize(&e, NULL, NULL, NULL, 1) && yaml_emitter_emit(&y, &e) &&
-	     yaml_scalar_event_initialize(&e, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1,
-					  YAML_DOUBLE_QUOTED_SCALAR_STYLE) && yaml_emitter_emit(&y, &e) &&
-	     yaml_document_end_event_initialize(&e, 1) && yaml_emitter_emit(&y, &e) &&
-	     yaml_stream_end_event_initialize(&e) && yaml_emitter_emit(&y, &e);
-	yaml_emitter_delete(&y);
+	if (!yaml_emitter_initialize(&emitter))
+		die("out of memory");
+	yaml_emitter_set_output(&emitter, yaml_out, &one);
+	yaml_emitter_set_unicode(&emitter, 1);
+	yaml_emitter_set_width(&emitter, -1);
+	yaml_emitter_set_indent(&emitter, 2);
+	yaml_emitter_set_break(&emitter, YAML_LN_BREAK);
+	ok = yaml_stream_start_event_initialize(&event, YAML_UTF8_ENCODING) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_document_start_event_initialize(&event, NULL, NULL, NULL, 1) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_sequence_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_SEQUENCE_STYLE) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_sequence_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_SEQUENCE_STYLE) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_scalar_event_initialize(&event, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1, style) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_sequence_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_sequence_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_document_end_event_initialize(&event, 1) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_stream_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event);
 	if (!ok)
-		BUG("libyaml cannot write a scalar: %s", y.problem);
-	strbuf_rtrim(&one);
-	strbuf_addstr(sb, one.buf);
+		BUG("libyaml cannot write a scalar: %s", emitter.problem ? emitter.problem : "event initialization failed");
+	yaml_emitter_delete(&emitter);
+	if (!starts_with(one.buf, "- - ") || !ends_with(one.buf, "\n"))
+		BUG("libyaml scalar has no wrapper");
+	if (ends_with(one.buf, "\n...\n"))
+		strbuf_setlen(&one, one.len - 4);
+	if (style == YAML_DOUBLE_QUOTED_SCALAR_STYLE)
+		strbuf_setlen(&one, one.len - 1);
+	strbuf_add(sb, one.buf + 4, one.len - 4);
+	strbuf_release(&one);
 }
 
-/*
- * v14 8.2: a "|" block of S under INDENT where its lines allow one (no
- * leading space, no trailing blanks, printable), with "-" or "+" for its
- * end; else a "..." scalar
- */
-void yaml_out_body(struct strbuf *sb, const char *s, const char *indent)
+void yaml_out_scalar(struct strbuf *sb, const char *s)
 {
-	struct string_list lines = STRING_LIST_INIT_DUP;
-	struct string_list_item *line;
-	size_t len = strlen(s), ends = 0;
-	int block = len && *s != ' ' && *s != '\n';
+	yaml_scalar(sb, s, YAML_DOUBLE_QUOTED_SCALAR_STYLE);
+}
 
-	while (ends < len && s[len - 1 - ends] == '\n')
-		ends++;
-	string_list_split(&lines, xstrndup(s, len - ends), "\n", -1);
-	for_each_string_list_item(line, &lines) {
-		const char *p;
+void yaml_out_body(struct strbuf *sb, const char *s)
+{
+	int quote = non_lf(s) != NULL;
 
-		for (p = line->string; *p; p++)
-			/* These decoded scalars need escapes even though their UTF-8 bytes exceed 0x20. */
-			block &= (((unsigned char)*p >= 0x20 && (unsigned char)*p != 0x7f) || *p == '\t') &&
-				!((unsigned char)*p == 0xc2 && (unsigned char)p[1] < 0xa0) &&
-				!starts_with(p, "\xe2\x80\xa8") && !starts_with(p, "\xe2\x80\xa9") &&
-				!starts_with(p, "\xef\xbf\xbe") && !starts_with(p, "\xef\xbf\xbf");
-		block &= !*line->string || !isspace(line->string[strlen(line->string) - 1]);
-	}
-	if (!block) {
-		yaml_out_scalar(sb, s);
-		strbuf_addch(sb, '\n');
-		return;
-	}
-	strbuf_addf(sb, "|%s\n", ends == 0 ? "-" : ends == 1 ? "" : "+");
-	for_each_string_list_item(line, &lines)
-		strbuf_addf(sb, "%s%s\n", *line->string ? indent : "", line->string);
-	for (; ends > 1; ends--)
+	/* YAML would emit LS/PS literally; ait's raw input remains LF-only. */
+	yaml_scalar(sb, s, quote ? YAML_DOUBLE_QUOTED_SCALAR_STYLE : YAML_LITERAL_SCALAR_STYLE);
+	if (quote)
 		strbuf_addch(sb, '\n');
 }
 
@@ -516,7 +545,7 @@ static char *group_of(const char *path)
 }
 
 /* Canonical positive line numbers, shared by scopes and stored code spans. */
-static const char *range_numbers(const char *text, int *first, int *last)
+const char *range_numbers(const char *text, int *first, int *last)
 {
 	char *next;
 	long a, b;
@@ -535,124 +564,9 @@ static const char *range_numbers(const char *text, int *first, int *last)
 	return next;
 }
 
-int range_of(const char *v, int *first, int *last)
-{
-	const char *colon, *end;
-
-	skip_prefix(v, "new:", &v);
-	colon = strchr(v, ':');
-	if (!colon || colon > v + strcspn(v, " "))
-		return 0;
-	end = range_numbers(colon + 1, first, last);
-	return end && (!*end || *end == ' ') ? 1 : -1;
-}
-
-char *scope_path(const char *v)
-{
-	skip_prefix(v, "new:", &v);
-	return xstrndup(v, strcspn(v, " :"));
-}
-
-const char *scope_blob(const char *v)
-{
-	return strchr(v, ' ') ? strchr(v, ' ') + 1 : NULL;
-}
-
-static int oid_ok(const char *s)
+int oid_ok(const char *s)
 {
 	return strlen(s) == 40 && !s[strspn(s, "0123456789abcdef")];
-}
-
-/* spec 2.3.2, 3: a stored scope; a line range carries its base blob, nothing else does */
-static int scope_valid(const char *v, int allow_new, int allow_abs, int stored)
-{
-	char *path = scope_path(v);
-	const char *blob = scope_blob(v);
-	int first, end, range = range_of(v, &first, &end);
-
-	if (range < 0 || (range && starts_with(v, "new:")))
-		return 0;
-	if (range)
-		return path_ok(path) && (blob ? oid_ok(blob) : !stored);
-	if (blob)
-		return 0;
-	if (starts_with(v, "new:"))
-		return allow_new && path_ok(path);
-	if (!strcmp(v, "/"))
-		return allow_abs;
-	if (ends_with(v, "/"))
-		return allow_abs && path_ok(xstrndup(v, strlen(v) - 1));
-	return path_ok(v);
-}
-
-int scope_ok(const char *v, int allow_new, int allow_abs)
-{
-	return scope_valid(v, allow_new, allow_abs, 1);
-}
-
-int scope_arg_ok(const char *v, int allow_new, int allow_abs)
-{
-	return !scope_blob(v) && scope_valid(v, allow_new, allow_abs, 0);
-}
-
-/* v14 3.2a: input identity is new/PATH/S/E, before any fixing changes a row. */
-char *scopes_refusal(struct string_list *scopes, int allow_new, int allow_abs, enum scope_form form)
-{
-	struct string_list seen = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	char *err = NULL;
-
-	for_each_string_list_item(item, scopes) {
-		char *bare = xstrndup(item->string, strcspn(item->string, " "));
-
-		if (!scope_valid(item->string, allow_new, allow_abs, form == SCOPE_STORED) ||
-		    (form == SCOPE_ARGUMENT && scope_blob(item->string)))
-			err = xstrfmt("'%s' is not a scope", item->string);
-		else if (string_list_has_string(&seen, bare))
-			err = xstrfmt("'%s' is given twice", bare);
-		else
-			string_list_insert(&seen, bare);
-		free(bare);
-		if (err)
-			break;
-	}
-	string_list_clear(&seen, 0);
-	return err;
-}
-
-static void scopes_split(const char *list, struct string_list *out)
-{
-	if (*list)
-		string_list_split(out, list, ",", -1);
-}
-
-/* v14 3.2a: PATH byte order, the whole file before its ranges, ranges by start and end */
-static int cmp_scope(const void *pa, const void *pb)
-{
-	const char *a = (*(const struct string_list_item *)pa).string, *b = (*(const struct string_list_item *)pb).string;
-	char *x = scope_path(a), *y = scope_path(b);
-	int c = strcmp(x, y), sa = 0, ea = 0, sb = 0, eb = 0, ra = range_of(a, &sa, &ea), rb = range_of(b, &sb, &eb);
-
-	if (c)
-		return c;
-	if (ra != rb)
-		return ra - rb;
-	return sa != sb ? sa - sb : ea - eb;
-}
-
-char *scopes_join(struct string_list *l)
-{
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list sorted = STRING_LIST_INIT_NODUP;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, l)
-		string_list_append(&sorted, item->string);
-	QSORT(sorted.items, sorted.nr, cmp_scope);
-	for_each_string_list_item(item, &sorted)
-		strbuf_addf(&sb, "%s%s", sb.len ? "," : "", item->string);
-	string_list_clear(&sorted, 0);
-	return strbuf_detach(&sb, NULL);
 }
 
 /* the key NAME under PREFIX ("specs.N"), or NAME itself at the root of a condition file ("") */
@@ -683,25 +597,36 @@ char *keys_refusal(struct string_list *kv, const char *prefix, const char *const
 
 		if (!strcmp(k, ROOT) || (plen && (strncmp(k, prefix, plen - 1) || k[plen - 1] != '.')))
 			continue;
-		if (!one_of(xstrndup(k + plen, strcspn(k + plen, ".")), keys))
-			return yaml_refusal(kv, k, "unknown key '%s'", k);
+		{
+			char *component = xstrndup(k + plen, strcspn(k + plen, "."));
+			int known = one_of(component, keys);
+
+			free(component);
+			if (!known)
+				return yaml_refusal(kv, k, "unknown key '%s'", k);
+		}
 	}
-	for (; required && *keys; keys++)
-		if (!unsorted_string_list_has_string(kv, pk(prefix, *keys)))
-			return yaml_refusal(kv, pk(prefix, *keys), "'%s' is missing", *keys);
+	for (; required && *keys; keys++) {
+		char *key = pk(prefix, *keys), *why = NULL;
+
+		if (!unsorted_string_list_has_string(kv, key))
+			why = yaml_refusal(kv, key, "'%s' is missing", *keys);
+		free(key);
+		if (why)
+			return why;
+	}
 	return NULL;
 }
 
 /* v14 2.5.2 without inputs: a spec under PREFIX of KV; NULL with ERR */
-struct spec *spec_from(struct string_list *kv, const char *prefix, char **err)
+static struct spec *spec_read(struct string_list *kv, const char *prefix, char **err,
+			      struct spec *s, struct string_list *cmd, const char *const *fields)
 {
 	static const char *const keys[] = { "body", "engine", "command", "success", "environment", NULL };
-	struct spec *s = xcalloc(1, sizeof(*s));
-	struct string_list cmd = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	const char *body_key = pk(prefix, "body"), *engine_key = pk(prefix, "engine"),
-		   *command_key = pk(prefix, "command"), *success_key = pk(prefix, "success"),
-		   *environment_key = pk(prefix, "environment"), *engine = yget(kv, engine_key),
+	const char *body_key = fields[0], *engine_key = fields[1],
+		   *command_key = fields[2], *success_key = fields[3],
+		   *environment_key = fields[4], *engine = yget(kv, engine_key),
 		   *success = yget(kv, success_key);
 
 	strvec_init(&s->command);
@@ -716,7 +641,7 @@ struct spec *spec_from(struct string_list *kv, const char *prefix, char **err)
 	if (engine && *engine && strcmp(engine, "exec"))
 		return bad(err, yaml_refusal(kv, engine_key, "unknown engine '%s'", engine));
 	s->engine = engine && *engine ? xstrdup(engine) : NULL;
-	if (yget(kv, command_key) && (*err = yaml_list(kv, command_key, &cmd)))
+	if (yget(kv, command_key) && (*err = yaml_list(kv, command_key, cmd)))
 		return NULL;
 	if (success && ykind(kv, success_key) != 'l')
 		return bad(err, yaml_refusal(kv, success_key, "'%s' is not a list", success_key));
@@ -724,13 +649,17 @@ struct spec *spec_from(struct string_list *kv, const char *prefix, char **err)
 		return NULL;
 	if (s->engine && !success)
 		string_list_append(&s->success, "0");
-	for_each_string_list_item(item, &cmd)
+	for_each_string_list_item(item, cmd)
 		strvec_push(&s->command, item->string);
 	for_each_string_list_item(item, &s->success)
 		if (!*item->string || item->string[strspn(item->string, "0123456789")] ||
-		    (*item->string == '0' && item->string[1]))
-			return bad(err, yaml_refusal(kv, xstrfmt("%s.%d", success_key, (int)(item - s->success.items)),
-					     "'success' holds '%s', not a decimal integer", item->string));
+		    (*item->string == '0' && item->string[1])) {
+			char *key = xstrfmt("%s.%d", success_key, (int)(item - s->success.items));
+
+			*err = yaml_refusal(kv, key, "'success' holds '%s', not a decimal integer", item->string);
+			free(key);
+			return NULL;
+		}
 	s->environment = xstrdup_null(yget(kv, environment_key));
 	if (s->environment && ykind(kv, environment_key) != 0 && ykind(kv, environment_key) != '?')
 		return bad(err, yaml_refusal(kv, environment_key, "'%s' is not a string", environment_key));
@@ -740,6 +669,25 @@ struct spec *spec_from(struct string_list *kv, const char *prefix, char **err)
 		return bad(err, yaml_refusal(kv, yget(kv, command_key) ? command_key : success ? success_key : environment_key,
 					     "a prompt spec takes only 'body'"));
 	return s;
+}
+
+struct spec *spec_from(struct string_list *kv, const char *prefix, char **err)
+{
+	struct spec *s = xcalloc(1, sizeof(*s)), *parsed;
+	struct string_list cmd = STRING_LIST_INIT_DUP;
+	const char *fields[] = { pk(prefix, "body"), pk(prefix, "engine"), pk(prefix, "command"),
+				 pk(prefix, "success"), pk(prefix, "environment") };
+	size_t i;
+
+	parsed = spec_read(kv, prefix, err, s, &cmd, fields);
+	string_list_clear(&cmd, 0);
+	for (i = 0; i < ARRAY_SIZE(fields); i++)
+		free((char *)fields[i]);
+	if (!parsed) {
+		spec_clear(s);
+		free(s);
+	}
+	return parsed;
 }
 
 static const char *const demand_keys[] = { "condition-id", "change-id", "kind", "creator", "consumer", "provider",
@@ -765,9 +713,19 @@ int kind_letter(const char *kind)
 char *contract_path_id(const char *path)
 {
 	const char *base = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
-	char *id = xstrndup(base, strcspn(base, "."));
+	char *id, *group;
+	int valid;
 
-	return !strcmp(base, xstrfmt("%s.yaml", id)) && id_ok(id, "DOX") && group_ok(group_of(path)) ? id : NULL;
+	if (!ends_with(base, ".yaml"))
+		return NULL;
+	id = xstrndup(base, strlen(base) - 5);
+	group = group_of(path);
+	valid = id_ok(id, "DOX") && group_ok(group);
+	free(group);
+	if (valid)
+		return id;
+	free(id);
+	return NULL;
 }
 
 /* a new contract of KIND in GROUP with ID, its fields empty (spec 6.4, 6.5.2) */
@@ -783,8 +741,6 @@ struct contract *contract_new(const char *kind, const char *group, const char *i
 	c->change_id = xstrdup("");
 	c->creator = xstrdup("");
 	c->state = xstrdup("future");
-	string_list_init_dup(&c->consumer);
-	string_list_init_dup(&c->provider);
 	string_list_init_dup(&c->undertakes);
 	string_list_init_dup(&c->partially);
 	string_list_init_dup(&c->fulfilled);
@@ -803,111 +759,168 @@ char *fulfil_path(struct contract *c, const char *rid)
 static int fulfil_path_ok(const char *path, const char *id, const char *group)
 {
 	const char *slash = strrchr(path, '/'), *rid;
-	char *dir;
+	char *dir, *expected = NULL, *parent = NULL, *stem = NULL;
+	int valid = 0;
+	size_t id_len = strlen(id);
 
 	if (!slash)
 		return 0;
 	dir = xstrndup(path, slash - path);
-	if (group && strcmp(dir, xstrfmt("%s%sfulfill", group, *group ? "/" : "")))
-		return 0;
-	if (strcmp(dir, "fulfill") &&
-	    (!ends_with(dir, "/fulfill") || !group_ok(xstrndup(dir, strlen(dir) - 8))))
-		return 0;
-	return skip_prefix(slash + 1, xstrfmt("%s-", id), &rid) && ends_with(rid, ".md") &&
-		id_ok(xstrndup(rid, strlen(rid) - 3), "R");
+	if (group) {
+		expected = xstrfmt("%s%sfulfill", group, *group ? "/" : "");
+		if (strcmp(dir, expected))
+			goto out;
+	}
+	if (strcmp(dir, "fulfill")) {
+		if (!ends_with(dir, "/fulfill"))
+			goto out;
+		parent = xstrndup(dir, strlen(dir) - 8);
+		if (!group_ok(parent))
+			goto out;
+	}
+	if (strncmp(slash + 1, id, id_len) || slash[1 + id_len] != '-')
+		goto out;
+	rid = slash + 2 + id_len;
+	if (!ends_with(rid, ".md"))
+		goto out;
+	stem = xstrndup(rid, strlen(rid) - 3);
+	valid = id_ok(stem, "R");
+out:
+	free(dir);
+	free(expected);
+	free(parent);
+	free(stem);
+	return valid;
 }
 
-struct contract *contract_parse(const char *text, size_t len, const char *path, int draft, char **err)
+static struct contract *contract_read(const char *text, size_t len, const char *path, int draft, char **err,
+				      struct string_list *kv, struct contract **owned)
 {
 	static const char *const states_do[] = { "future", "cancelled", "withdrawn", NULL };
 	static const char *const states_x[] = { "future", "cancelled", NULL };
-	struct string_list kv = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct contract *c;
 	const char *const *keys, *v;
 	char *id = contract_path_id(path);
 	int i, demand, offer, drop;
 
-	if (yaml_parse(text, len, &kv, err))
+	if (yaml_parse(text, len, kv, err)) {
+		free(id);
 		return NULL;
+	}
 	*err = NULL;
 	if (!id)
-		return bad(err, yaml_refusal(&kv, NULL, "not a contract path"));
-	v = yget(&kv, "kind");
-	if (!v || !(keys = keys_of(v)) || kind_letter(v) != *id)
-		return bad(err, yaml_refusal(&kv, "kind", "'kind' is missing or does not match the ID"));
-	c = contract_new(v, group_of(path), id);
+		return bad(err, yaml_refusal(kv, NULL, "not a contract path"));
+	v = yget(kv, "kind");
+	if (!v || !(keys = keys_of(v)) || kind_letter(v) != *id) {
+		free(id);
+		return bad(err, yaml_refusal(kv, "kind", "'kind' is missing or does not match the ID"));
+	}
+	{
+		char *group = group_of(path);
+
+		c = contract_new(v, group, id);
+		free(group);
+		free(id);
+	}
+	*owned = c;
 	demand = !strcmp(v, "demand");
 	offer = !strcmp(v, "offer");
 	drop = !strcmp(v, "drop");
-	if ((*err = keys_refusal(&kv, "", keys, 1)))
+	if ((*err = keys_refusal(kv, "", keys, 1)))
 		return NULL;
-	c->condition_id = xstrdup(yget(&kv, "condition-id"));
-	c->change_id = xstrdup(yget(&kv, "change-id"));
-	c->creator = xstrdup(yget(&kv, "creator"));
-	c->state = xstrdup(yget(&kv, "state"));
-	if ((ykind(&kv, "condition-id") != 0 && ykind(&kv, "condition-id") != '?') ||
+	replace_text(&c->condition_id, yget(kv, "condition-id"));
+	replace_text(&c->change_id, yget(kv, "change-id"));
+	replace_text(&c->creator, yget(kv, "creator"));
+	replace_text(&c->state, yget(kv, "state"));
+	if ((ykind(kv, "condition-id") != 0 && ykind(kv, "condition-id") != '?') ||
 	    (draft && !*c->condition_id ? 0 : !id_ok(c->condition_id, "R")))
-		return bad(err, yaml_refusal(&kv, "condition-id", "bad 'condition-id'"));
-	if ((ykind(&kv, "change-id") != 0 && ykind(&kv, "change-id") != '?') ||
+		return bad(err, yaml_refusal(kv, "condition-id", "bad 'condition-id'"));
+	if ((ykind(kv, "change-id") != 0 && ykind(kv, "change-id") != '?') ||
 	    (draft && !*c->change_id ? 0 : !id_ok(c->change_id, "R")))
-		return bad(err, yaml_refusal(&kv, "change-id", "bad 'change-id'"));
-	if ((ykind(&kv, "creator") != 0 && ykind(&kv, "creator") != '?') ||
+		return bad(err, yaml_refusal(kv, "change-id", "bad 'change-id'"));
+	if ((ykind(kv, "creator") != 0 && ykind(kv, "creator") != '?') ||
 	    (draft && !*c->creator ? 0 : !agent_ok(c->creator)))
-		return bad(err, yaml_refusal(&kv, "creator", "bad 'creator'"));
+		return bad(err, yaml_refusal(kv, "creator", "bad 'creator'"));
 	if (!one_of(c->state, drop ? states_x : states_do))
-		return bad(err, yaml_refusal(&kv, "state", "bad 'state'"));
-	if (demand)
-		scopes_split(yget(&kv, "consumer"), &c->consumer);
-	if (!drop)
-		scopes_split(yget(&kv, "provider"), &c->provider);
+		return bad(err, yaml_refusal(kv, "state", "bad 'state'"));
 	for (i = !demand; !drop && i < 2; i++) {
-		char *why = scopes_refusal(i ? &c->provider : &c->consumer, 1, i,
-					  draft ? SCOPE_DRAFT : SCOPE_STORED);
+		const char *field = i ? "provider" : "consumer";
+		char *why = scopes_parse(i ? &c->provider : &c->consumer, yget(kv, field), 1, i,
+					draft ? SCOPE_DRAFT : SCOPE_STORED);
 
-		if (why)
-			return bad(err, yaml_refusal(&kv, i ? "provider" : "consumer", "bad scope in '%s': %s",
-						 i ? "provider" : "consumer", why));
+		if (why) {
+			*err = yaml_refusal(kv, field, "bad scope in '%s': %s", field, why);
+			free(why);
+			return NULL;
+		}
 	}
 	if (!drop && (!c->provider.nr || (demand && !c->consumer.nr)))
-		return bad(err, yaml_refusal(&kv, !c->provider.nr ? "provider" : "consumer", "a scope list is empty"));
-	if (drop && !id_ok(c->target = xstrdup(yget(&kv, "target")), "DO"))
-		return bad(err, yaml_refusal(&kv, "target", "bad 'target'"));
-	if (offer && ((*err = yaml_list(&kv, "undertakes", &c->undertakes)) ||
-		      (*err = yaml_list(&kv, "undertakes-partially", &c->partially))))
+		return bad(err, yaml_refusal(kv, !c->provider.nr ? "provider" : "consumer", "a scope list is empty"));
+	if (drop && !id_ok(c->target = xstrdup(yget(kv, "target")), "DO"))
+		return bad(err, yaml_refusal(kv, "target", "bad 'target'"));
+	if (offer && ((*err = yaml_list(kv, "undertakes", &c->undertakes)) ||
+		      (*err = yaml_list(kv, "undertakes-partially", &c->partially))))
 		return NULL;
-	for_each_string_list_item(item, &c->undertakes)
+	for_each_string_list_item(item, &c->undertakes) {
+		char key[64];
+
+		snprintf(key, sizeof(key), "undertakes.%d", (int)(item - c->undertakes.items));
 		if (!id_ok(item->string, "D") || unsorted_string_list_has_string(&c->partially, item->string))
-			return bad(err, yaml_refusal(&kv, xstrfmt("undertakes.%d", (int)(item - c->undertakes.items)),
-						 "bad ID '%s' in 'undertakes'", item->string));
-	for_each_string_list_item(item, &c->partially)
+			return bad(err, yaml_refusal(kv, key, "bad ID '%s' in 'undertakes'", item->string));
+	}
+	for_each_string_list_item(item, &c->partially) {
+		char key[64];
+
+		snprintf(key, sizeof(key), "undertakes-partially.%d", (int)(item - c->partially.items));
 		if (!id_ok(item->string, "D"))
-			return bad(err, yaml_refusal(&kv, xstrfmt("undertakes-partially.%d", (int)(item - c->partially.items)),
-						 "bad ID '%s' in 'undertakes-partially'", item->string));
-	if ((*err = yaml_list(&kv, "fulfilled", &c->fulfilled)))
+			return bad(err, yaml_refusal(kv, key, "bad ID '%s' in 'undertakes-partially'", item->string));
+	}
+	if ((*err = yaml_list(kv, "fulfilled", &c->fulfilled)))
 		return NULL;
 	for_each_string_list_item(item, &c->fulfilled) {
-		char *key = xstrfmt("fulfilled.%d", (int)(item - c->fulfilled.items));
+		char key[64];
 		int *source_line;
 
+		snprintf(key, sizeof(key), "fulfilled.%d", (int)(item - c->fulfilled.items));
+
 		if (!fulfil_path_ok(item->string, c->id, c->group))
-			return bad(err, yaml_refusal(&kv, key, "bad path '%s' in 'fulfilled'", item->string));
+			return bad(err, yaml_refusal(kv, key, "bad path '%s' in 'fulfilled'", item->string));
 		source_line = xmalloc(sizeof(*source_line));
-		*source_line = yline(&kv, key);
+		*source_line = yline(kv, key);
 		item->util = source_line;
 	}
 	if (drop)
 		return c;
-	if (ykind(&kv, "specs") != 'l' || !yget(&kv, "specs.0"))
-		return bad(err, yaml_refusal(&kv, "specs", "'specs' is no list of specs"));
-	for (i = 0; yget(&kv, xstrfmt("specs.%d", i)); i++) {
-		struct spec *s = spec_from(&kv, xstrfmt("specs.%d", i), err);
+	if (ykind(kv, "specs") != 'l' || !yget(kv, "specs.0"))
+		return bad(err, yaml_refusal(kv, "specs", "'specs' is no list of specs"));
+	for (i = 0; ; i++) {
+		char key[64];
+		struct spec *s;
+
+		snprintf(key, sizeof(key), "specs.%d", i);
+		if (!yget(kv, key))
+			break;
+		s = spec_from(kv, key, err);
 
 		if (!s)
 			return NULL;
 		REALLOC_ARRAY(c->specs, c->nspecs + 1);
 		c->specs[c->nspecs++] = *s;
+		free(s);
 	}
+	return c;
+}
+
+struct contract *contract_parse(const char *text, size_t len, const char *path, int draft, char **err)
+{
+	struct string_list kv = STRING_LIST_INIT_DUP;
+	struct contract *owned = NULL;
+	struct contract *c = contract_read(text, len, path, draft, err, &kv, &owned);
+
+	yaml_clear(&kv);
+	if (!c)
+		contract_free(owned);
 	return c;
 }
 
@@ -925,13 +938,17 @@ static void ids_out(struct strbuf *sb, const char *key, struct string_list *l)
 		first = 0;
 	}
 	strbuf_addstr(sb, "]\n");
+	string_list_clear(&sorted, 0);
 }
 
-static void scope_line(struct strbuf *sb, const char *key, struct string_list *l)
+static void scope_line(struct strbuf *sb, const char *key, const struct scope_list *l)
 {
+	char *text = scopes_join(l);
+
 	strbuf_addf(sb, "%s: ", key);
-	yaml_out_scalar(sb, scopes_join(l));
+	yaml_out_scalar(sb, text);
 	strbuf_addch(sb, '\n');
+	free(text);
 }
 
 /* spec 2.3.2, 7.2: both outputs use the parsed command and success values. */
@@ -975,7 +992,7 @@ char *contract_text(struct contract *c)
 			struct spec *s = &c->specs[i];
 
 			strbuf_addstr(&sb, "- body: ");
-			yaml_out_body(&sb, s->body, "    ");
+			yaml_out_body(&sb, s->body);
 			if (!s->engine)
 				continue;
 			strbuf_addstr(&sb, "  engine: exec\n");
@@ -1002,16 +1019,14 @@ char *contract_text(struct contract *c)
 }
 
 /* A recorded tree entry is parsed once at the stored-fact boundary (2.5). */
-static struct recorded_code *parse_code(const char *scope, const char *text)
+static struct recorded_code *parse_code(const struct scope *scope, const char *text)
 {
 	struct string_list fields = STRING_LIST_INIT_DUP;
 	struct recorded_code *code = NULL;
 	const char *mode, *type, *oid, *end;
 	int first = 0, last = 0, range;
 
-	if (!scope_ok(scope, 0, 0))
-		return NULL;
-	range = range_of(scope, &first, &last) == 1;
+	range = scope->kind == SCOPE_RANGE;
 	string_list_split(&fields, text, " ", -1);
 	if (fields.nr != (range ? 4 : 3))
 		goto done;
@@ -1042,75 +1057,108 @@ static char *code_text(struct recorded_code *code)
 }
 
 /* spec 2.5: the fulfilment at PATH from TEXT, or NULL with ERR */
-static struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
+static struct fulfilment *fulfil_read(const char *text, const char *path, char **err,
+				     struct string_list *kv, struct fulfilment **owned)
 {
 	static const char *const keys[] = { "contract", "condition-id", "by", "session", "commit", "outcome", "code", NULL };
-	struct string_list kv = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct fulfilment *f = xcalloc(1, sizeof(*f));
 	const char *end, *invalid;
 	char *front;
 
+	*owned = f;
 	*err = NULL;
 	if (!starts_with(text, "---\n") || !(end = strstr(text + 3, "\n---\n")))
-		return bad(err, yaml_refusal(&kv, NULL, "no front matter"));
+		return bad(err, yaml_refusal(kv, NULL, "no front matter"));
 	front = xstrndup(text, end + 1 - text);
-	if (yaml_parse(front, end + 1 - text, &kv, err))
+	if (yaml_parse(front, end + 1 - text, kv, err)) {
+		free(front);
 		return NULL;
-	if ((*err = keys_refusal(&kv, "", keys, 1)))
+	}
+	free(front);
+	if ((*err = keys_refusal(kv, "", keys, 1)))
 		return NULL;
 	f->path = xstrdup(path);
-	f->contract = xstrdup(yget(&kv, "contract"));
-	f->condition_id = xstrdup(yget(&kv, "condition-id"));
-	f->by = xstrdup(yget(&kv, "by"));
-	f->session = xstrdup(yget(&kv, "session"));
-	f->commit = xstrdup(yget(&kv, "commit"));
-	f->outcome = xstrdup(yget(&kv, "outcome"));
+	f->contract = xstrdup(yget(kv, "contract"));
+	f->condition_id = xstrdup(yget(kv, "condition-id"));
+	f->by = xstrdup(yget(kv, "by"));
+	f->session = xstrdup(yget(kv, "session"));
+	f->commit = xstrdup(yget(kv, "commit"));
+	f->outcome = xstrdup(yget(kv, "outcome"));
 	f->body = xstrdup(end + 5);
-	string_list_init_dup(&f->code);
 	invalid = !id_ok(f->contract, "DOX") ? "contract" : !id_ok(f->condition_id, "R") ? "condition-id" :
 		!agent_ok(f->by) ? "by" : !id_ok(f->session, "S") ? "session" : !oid_ok(f->commit) ? "commit" :
 		!one_of(f->outcome, (const char *const[]){ "pass", "forced", "withdrawn", NULL }) ? "outcome" :
-		ykind(&kv, "code") != 'm' ? "code" : NULL;
+		ykind(kv, "code") != 'm' ? "code" : NULL;
 	if (invalid)
-		return bad(err, yaml_refusal(&kv, invalid, "bad '%s' in the front matter", invalid));
+		return bad(err, yaml_refusal(kv, invalid, "bad '%s' in the front matter", invalid));
 	if (!fulfil_path_ok(path, f->contract, NULL))
-		return bad(err, yaml_refusal(&kv, NULL, "not a fulfilment path"));
+		return bad(err, yaml_refusal(kv, NULL, "not a fulfilment path"));
 	if ((*f->contract == 'X') != !strcmp(f->outcome, "withdrawn"))
-		return bad(err, yaml_refusal(&kv, "outcome", "'outcome' does not match the contract kind"));
-	for_each_string_list_item(item, &kv) {
+		return bad(err, yaml_refusal(kv, "outcome", "'outcome' does not match the contract kind"));
+	for_each_string_list_item(item, kv) {
 		const char *scope;
 
 		if (skip_prefix(item->string, "code.", &scope)) {
-			char *unescaped = yaml_key_decode(scope);
+			char *unescaped = yaml_key_decode(scope), *scope_error;
 			struct recorded_code *code;
+			struct scope key;
 
-			if (((struct yval *)item->util)->kind)
-				return bad(err, yaml_refusal(&kv, item->string, "a code entry is not a string"));
-			code = parse_code(unescaped, ((struct yval *)item->util)->s);
-			if (!code)
-				return bad(err, yaml_refusal(&kv, item->string, "bad code entry for '%s'", unescaped));
-			string_list_insert(&f->code, unescaped)->util = code;
+			if (((struct yval *)item->util)->kind) {
+				free(unescaped);
+				return bad(err, yaml_refusal(kv, item->string, "a code entry is not a string"));
+			}
+			scope_error = scope_parse(&key, unescaped, 0, 0, SCOPE_STORED);
+			code = scope_error ? NULL : parse_code(&key, ((struct yval *)item->util)->s);
+			if (!code) {
+				char *why = yaml_refusal(kv, item->string, "bad code entry for '%s'", unescaped);
+
+				free(scope_error);
+				scope_clear(&key);
+				free(unescaped);
+				return bad(err, why);
+			}
+			code_add(&f->code, &key, code);
+			scope_clear(&key);
+			free(code);
+			free(unescaped);
 		}
 	}
 	if (*f->contract == 'X' && f->code.nr)
-		return bad(err, yaml_refusal(&kv, "code", "a drop's code is not empty"));
+		return bad(err, yaml_refusal(kv, "code", "a drop's code is not empty"));
+	return f;
+}
+
+static struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
+{
+	struct string_list kv = STRING_LIST_INIT_DUP;
+	struct fulfilment *owned = NULL;
+	struct fulfilment *f = fulfil_read(text, path, err, &kv, &owned);
+
+	yaml_clear(&kv);
+	if (!f)
+		fulfilment_free(owned);
 	return f;
 }
 
 char *fulfil_text(struct fulfilment *f)
 {
 	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
+	size_t i;
 
 	strbuf_addf(&sb, "---\ncontract: %s\ncondition-id: %s\nby: %s\nsession: %s\ncommit: %s\noutcome: %s\ncode:%s\n",
 		    f->contract, f->condition_id, f->by, f->session, f->commit, f->outcome, f->code.nr ? "" : " {}");
-	for_each_string_list_item(item, &f->code) {
+	for (i = 0; i < f->code.nr; i++) {
+		char *key = scope_text(&f->code.items[i].scope, 1);
+		char *value = code_text(&f->code.items[i].value);
+
 		strbuf_addstr(&sb, "  ");
-		yaml_out_scalar(&sb, item->string);
+		yaml_out_scalar(&sb, key);
 		strbuf_addstr(&sb, ": ");
-		yaml_out_scalar(&sb, code_text(item->util));
+		yaml_out_scalar(&sb, value);
 		strbuf_addch(&sb, '\n');
+		free(key);
+		free(value);
 	}
 	strbuf_addf(&sb, "---\n%s", f->body);
 	strbuf_complete_line(&sb);
@@ -1121,32 +1169,37 @@ char *fulfil_text(struct fulfilment *f)
  * spec 2.1.3, 2.3, 2.5: the contracts and fulfilments of the branch NAME at
  * TIP (or of the tree TREEISH); each malformed file is one error
  */
+static void branch_error(struct branch *b, const char *path, char *reason)
+{
+	struct string_list_item *slot = string_list_insert(&b->errors, path);
+
+	free(slot->util);
+	slot->util = reason;
+}
+
 struct branch *branch_load(const char *name, const char *tip, const char *treeish)
 {
-	static struct string_list loaded = STRING_LIST_INIT_DUP;
-	struct string_list_item *hit, *item;
+	struct string_list_item *item;
 	struct string_list invalid = STRING_LIST_INIT_DUP;
 	struct branch *b;
 	char oid[48];
 	size_t i;
 
 	if (!treeish && !tip)
-		tip = branch_tip(name, oid) ? xstrdup(oid) : NULL;
+		tip = branch_tip(name, oid) ? oid : NULL;
 	if (!treeish)
 		treeish = tip ? tip : EMPTY_TREE;
-	if ((hit = string_list_lookup(&loaded, xstrfmt("%s %s", name, treeish))))
-		return hit->util;
 	b = xcalloc(1, sizeof(*b));
-	b->name = name;
+	b->name = xstrdup(name);
 	snprintf(b->tip, sizeof(b->tip), "%s", tip ? tip : "");
 	b->tree = tree_load(treeish);
 	string_list_init_dup(&b->contracts);
 	string_list_init_dup(&b->fulfils);
 	string_list_init_dup(&b->errors);
-	string_list_insert(&loaded, xstrfmt("%s %s", name, treeish))->util = b;
 	for (i = 0; i < b->tree->nr; i++) {
 		struct entry *e = &b->tree->e[i];
-		const char *text, *nul;
+		char *text = NULL;
+		const char *nul;
 		char *err = NULL;
 		size_t len;
 
@@ -1166,14 +1219,16 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 		} else {
 			struct contract *c = contract_parse(text, len, e->path, 0, &err);
 
-			if (c && string_list_lookup(&b->contracts, c->id))
+			if (c && string_list_lookup(&b->contracts, c->id)) {
 				err = yaml_refusal_at(1, "'%s' is also at '%s'", c->id,
 						      ((struct contract *)string_list_lookup(&b->contracts, c->id)->util)->path);
-			else if (c)
+				contract_free(c);
+			} else if (c)
 				string_list_insert(&b->contracts, c->id)->util = c;
 		}
+		free(text);
 		if (err)
-			string_list_insert(&b->errors, e->path)->util = err;
+			branch_error(b, e->path, err);
 	}
 	for_each_string_list_item(item, &b->contracts) {
 		struct contract *c = item->util;
@@ -1183,14 +1238,16 @@ struct branch *branch_load(const char *name, const char *tip, const char *treeis
 			struct string_list_item *got = string_list_lookup(&b->fulfils, f->string);
 
 			if (!got || strcmp(((struct fulfilment *)got->util)->contract, c->id)) {
-				string_list_insert(&b->errors, c->path)->util =
-					yaml_refusal_at(*(int *)f->util, "'%s' is not a fulfilment of '%s'", f->string, c->id);
+				branch_error(b, c->path,
+					yaml_refusal_at(*(int *)f->util, "'%s' is not a fulfilment of '%s'", f->string, c->id));
 				string_list_insert(&invalid, c->id);
 			}
 		}
 	}
-	for_each_string_list_item(item, &invalid)
+	for_each_string_list_item(item, &invalid) {
+		contract_free(contract_get(b, item->string));
 		string_list_remove(&b->contracts, item->string, 0);
+	}
 	string_list_clear(&invalid, 0);
 	return b;
 }
@@ -1209,15 +1266,24 @@ int live(struct contract *c)
 }
 
 /* spec 5.2: the fulfilments of C made with its condition-id */
-static void valid_fulfilments(struct branch *b, struct contract *c, struct string_list *out)
+struct fulfilment *fulfilment_lookup(const struct contract_view *v, const char *path)
+{
+	struct string_list_item *item = v->fulfils ? string_list_lookup(v->fulfils, path) : NULL;
+
+	if (!item)
+		item = string_list_lookup(&v->at->fulfils, path);
+	return item ? item->util : NULL;
+}
+
+static void valid_fulfilments(const struct contract_view *v, struct contract *c, struct string_list *out)
 {
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &c->fulfilled) {
-		struct string_list_item *f = string_list_lookup(&b->fulfils, item->string);
+		struct fulfilment *f = fulfilment_lookup(v, item->string);
 
-		if (f && !strcmp(((struct fulfilment *)f->util)->condition_id, c->condition_id))
-			string_list_append(out, item->string)->util = f->util;
+		if (f && !strcmp(f->condition_id, c->condition_id))
+			string_list_append(out, item->string)->util = f;
 	}
 }
 
@@ -1226,7 +1292,11 @@ int has_valid_fulfilment(struct branch *b, struct contract *c)
 	struct string_list v = STRING_LIST_INIT_DUP;
 	int found;
 
-	valid_fulfilments(b, c, &v);
+	{
+		struct contract_view view = { b, NULL, NULL };
+
+		valid_fulfilments(&view, c, &v);
+	}
 	found = v.nr > 0;
 	string_list_clear(&v, 0);
 	return found;
@@ -1247,35 +1317,94 @@ static char *diff0(const char *a, const char *b)
 		"--inter-hunk-context=0", "--diff-algorithm=myers", "--no-indent-heuristic", a, b);
 }
 
-/*
- * v14 3.7 and 3.10: the range S-E of the blob BASE mapped to the blob NOW;
- * CHANGED when a hunk's touch span (an insertion [os, os+1]) meets S-E
- */
-static enum scope_status map_blobs(const char *base, const char *now, int a, int b, int *first, int *end, int *changed)
+struct blob_hunk {
+	int old_first;
+	int old_length;
+	int new_first;
+	int new_length;
+};
+struct blob_diff {
+	char base[48];
+	char now[48];
+	struct blob_hunk *hunks;
+	size_t nr;
+	size_t alloc;
+};
+
+void diff_cache_clear(struct diff_cache *cache)
+{
+	size_t i;
+
+	for (i = 0; i < cache->nr; i++)
+		free(cache->items[i].hunks);
+	free(cache->items);
+	memset(cache, 0, sizeof(*cache));
+}
+
+/* A hunk list belongs to this ordered blob pair, independent of scope coordinates. */
+static struct blob_diff *blob_diff_get(struct diff_cache *cache, const char *base, const char *now)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct string_list_item *line;
+	struct blob_diff *diff;
+	char *text;
+	size_t i;
+
+	for (i = 0; i < cache->nr; i++)
+		if (!strcmp(cache->items[i].base, base) && !strcmp(cache->items[i].now, now))
+			return &cache->items[i];
+	ALLOC_GROW(cache->items, cache->nr + 1, cache->alloc);
+	diff = &cache->items[cache->nr++];
+	memset(diff, 0, sizeof(*diff));
+	snprintf(diff->base, sizeof(diff->base), "%s", base);
+	snprintf(diff->now, sizeof(diff->now), "%s", now);
+	text = diff0(base, now);
+	string_list_split(&lines, text, "\n", -1);
+	free(text);
+	for_each_string_list_item(line, &lines) {
+		const char *new_part;
+		struct blob_hunk *hunk;
+
+		if (!starts_with(line->string, "@@ -") || !(new_part = strstr(line->string, " +")))
+			continue;
+		ALLOC_GROW(diff->hunks, diff->nr + 1, diff->alloc);
+		hunk = &diff->hunks[diff->nr++];
+		hunk_part(line->string + 4, &hunk->old_first, &hunk->old_length);
+		hunk_part(new_part + 2, &hunk->new_first, &hunk->new_length);
+	}
+	string_list_clear(&lines, 0);
+	return diff;
+}
+
+/* v14 3.7/3.10: map coordinates through the shared, ordered hunk list. */
+static enum scope_status map_blobs(const char *base, const char *now, int a, int b,
+				   int *first, int *end, int *changed, struct diff_cache *cache)
+{
+	struct blob_diff *diff;
 	int ma = -1, mb = -1, offset = 0;
+	char *type;
+	size_t i;
 
 	*changed = 0;
 	if (!now)
 		return MISSING;
-	if (!base || !object(base, 0, NULL, NULL))
+	type = base ? object(base, 0, NULL, NULL) : NULL;
+	if (!type || strcmp(type, "blob")) {
+		free(type);
 		return NOBASE;
+	}
+	free(type);
 	if (!strcmp(base, now)) {
 		*first = a;
 		*end = b;
 		return FOUND;
 	}
-	string_list_split(&lines, diff0(base, now), "\n", -1);
-	for_each_string_list_item(line, &lines) {
-		int os, ol, ns, nl;
-		const char *new_part;
+	diff = blob_diff_get(cache, base, now);
+	for (i = 0; i < diff->nr; i++) {
+		const struct blob_hunk *hunk = &diff->hunks[i];
+		int os = hunk->old_first, ol = hunk->old_length;
+		int ns = hunk->new_first, nl = hunk->new_length;
 
-		if (!starts_with(line->string, "@@ -") || !(new_part = strstr(line->string, " +")))
-			continue;
-		hunk_part(line->string + 4, &os, &ol);
-		hunk_part(new_part + 2, &ns, &nl);
 		*changed |= a <= os + (ol ? ol - 1 : 1) && b >= os;
 		if (ma < 0) {
 			if (ol ? a < os : a <= os)
@@ -1296,12 +1425,10 @@ static enum scope_status map_blobs(const char *base, const char *now, int a, int
 	return *first > *end ? DELETED : FOUND;
 }
 
-static enum scope_status map_range(const char *scope, struct tree *t, int *first, int *end, int *changed)
+static enum scope_status map_range(const struct scope *scope, struct tree *t, int *first, int *end, int *changed, struct diff_cache *cache)
 {
-	int a, b;
-
-	range_of(scope, &a, &b);
-	return map_blobs(scope_blob(scope), blob_at(t, scope_path(scope)), a, b, first, end, changed);
+	return map_blobs(*scope->base ? scope->base : NULL, blob_at(t, scope->path),
+			 scope->first, scope->last, first, end, changed, cache);
 }
 
 static int line_count(const char *text, size_t n)
@@ -1314,69 +1441,72 @@ static int line_count(const char *text, size_t n)
 }
 
 /* spec 3.2 (v14 3.3): a scope argument fixed at T, a line range taking T's blob; NULL with ERR */
-char *scope_pin(const char *arg, struct tree *t, char **err)
+int scope_pin(struct scope *s, struct tree *t, char **err)
 {
-	char *path = scope_path(arg);
 	struct entry *e;
-	int first, end;
 
 	*err = NULL;
-	if (!scope_arg_ok(arg, 1, 1))
-		return bad(err, xstrfmt("'%s' is not a scope", arg));
-	if (starts_with(arg, "new:")) {
-		if (tree_get(t, path))
-			*err = xstrfmt("'%s' exists", path);
-		return *err ? NULL : xstrdup(arg);
+	if (s->kind == SCOPE_ROOT)
+		return 0;
+	if (s->kind == SCOPE_NEW) {
+		if (tree_get(t, s->path))
+			*err = xstrfmt("'%s' exists", s->path);
+		return *err ? -1 : 0;
 	}
-	if (!strcmp(arg, "/"))
-		return xstrdup(arg);
-	if (ends_with(arg, "/")) {
-		e = tree_get(t, xstrndup(arg, strlen(arg) - 1));
+	if (s->kind == SCOPE_DIR) {
+		char *dir = xstrndup(s->path, strlen(s->path) - 1);
+
+		e = tree_get(t, dir);
+		free(dir);
 		if (!e || strcmp(e->type, "tree"))
-			*err = xstrfmt("'%s' is not a directory", arg);
-		return *err ? NULL : xstrdup(arg);
+			*err = xstrfmt("'%s' is not a directory", s->path);
+		return *err ? -1 : 0;
 	}
-	/* a file scope is any entry but a tree, a gitlink too (2.5); a line range is in a blob */
-	if (!(e = tree_get(t, path)) || !strcmp(e->type, "tree"))
-		return bad(err, xstrfmt("'%s' is not a file", path));
-	if (range_of(arg, &first, &end) == 1) {
+	/* File scopes include gitlinks; line ranges require a text blob. */
+	e = tree_get(t, s->path);
+	if (!e || !strcmp(e->type, "tree")) {
+		*err = xstrfmt("'%s' is not a file", s->path);
+		return -1;
+	}
+	if (s->kind == SCOPE_RANGE) {
 		size_t n;
-		char *text = blob_at(t, path) ? object(blob_at(t, path), 1, NULL, &n) : NULL;
+		const char *oid = blob_at(t, s->path);
+		char *text = oid ? object(oid, 1, NULL, &n) : NULL;
+		int valid = text && strlen(text) == n && s->last <= line_count(text, n);
 
-		if (!text || strlen(text) != n || end > line_count(text, n))
-			return bad(err, xstrfmt("'%s' is not a range of '%s'", arg, path));
-		return xstrfmt("%s:%d-%d %s", path, first, end, blob_at(t, path));
-	}
-	return xstrdup(path);
-}
+		free(text);
+		if (!valid) {
+			char *range = scope_text(s, 0);
 
-/* v14 3.2a, 3.3: unchanged draft tuples keep T's pin; supplied bases are ignored. */
-int scopes_pin(struct string_list *scopes, struct tree *t, struct string_list *was, char **err)
-{
-	struct string_list fixed = STRING_LIST_INIT_DUP;
-	struct string_list_item *item, *w;
-
-	*err = NULL;
-	for_each_string_list_item(item, scopes) {
-		size_t len = strcspn(item->string, " ");
-		char *bare = xstrndup(item->string, len), *pinned = NULL;
-
-		if (was)
-			for_each_string_list_item(w, was)
-				if (strcspn(w->string, " ") == len && !strncmp(w->string, bare, len))
-					pinned = xstrdup(w->string);
-		if (!pinned)
-			pinned = scope_pin(bare, t, err);
-		free(bare);
-		if (!pinned) {
-			string_list_clear(&fixed, 0);
+			*err = xstrfmt("'%s' is not a range of '%s'", range, s->path);
+			free(range);
 			return -1;
 		}
-		string_list_insert(&fixed, pinned);
-		free(pinned);
+		snprintf(s->base, sizeof(s->base), "%s", oid);
 	}
-	string_list_clear(scopes, 0);
-	*scopes = fixed;
+	return 0;
+}
+
+/* Draft input tuples keep their old pin; only new tuples read the code tree. */
+int scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_list *was, char **err)
+{
+	struct scope *s;
+	const struct scope *old;
+
+	*err = NULL;
+	for_each_scope(s, scopes) {
+		int retained = 0;
+
+		if (was)
+			for_each_scope(old, was)
+				if (scope_equal(s, old, 0)) {
+					snprintf(s->base, sizeof(s->base), "%s", old->base);
+					retained = 1;
+					break;
+				}
+		if (!retained && scope_pin(s, t, err))
+			return -1;
+	}
 	return 0;
 }
 
@@ -1384,50 +1514,60 @@ int scopes_pin(struct string_list *scopes, struct tree *t, struct string_list *w
  * spec 6.7.4, v14 3.8: where SCOPE is in T, as one judgment its callers word:
  * FOUND with its path and mapped line endpoints, or the reason it is not
  */
-enum scope_status scope_locate(const char *scope, struct tree *t, struct scope_location *where)
+static enum scope_status scope_locate_in(const struct scope *scope, struct tree *t, struct scope_location *where,
+					 struct diff_cache *cache)
 {
-	char *path = scope_path(scope);
-	struct entry *e = tree_get(t, path);
+	struct entry *e = tree_get(t, scope->path);
 	int changed;
 
-	where->path = path;
+	where->path = scope->path;
 	where->first = where->last = 0;
-	if (starts_with(scope, "new:") || ends_with(scope, "/"))
+	if (scope->kind == SCOPE_NEW || scope->kind == SCOPE_DIR || scope->kind == SCOPE_ROOT)
 		return ABSTRACT;
-	if (range_of(scope, &where->first, &where->last) != 1)
+	if (scope->kind != SCOPE_RANGE)
 		return e && strcmp(e->type, "tree") ? FOUND : MISSING;
-	return map_range(scope, t, &where->first, &where->last, &changed);
+	return map_range(scope, t, &where->first, &where->last, &changed, cache);
 }
 
-/* spec 2.5: the recorded tree entry of SCOPE at T; NULL when it is not found. */
-struct recorded_code *code_entry(const char *scope, struct tree *t)
+enum scope_status scope_locate(const struct scope *scope, struct tree *t, struct scope_location *where)
 {
-	struct scope_location where;
-	struct entry *e;
-	struct recorded_code *code;
+	struct diff_cache diffs = { 0 };
+	enum scope_status status = scope_locate_in(scope, t, where, &diffs);
 
-	if (scope_locate(scope, t, &where) != FOUND)
-		return NULL;
-	e = tree_get(t, where.path);
-	code = xcalloc(1, sizeof(*code));
-	snprintf(code->mode, sizeof(code->mode), "%s", e->mode);
-	snprintf(code->type, sizeof(code->type), "%s", e->type);
-	snprintf(code->oid, sizeof(code->oid), "%s", e->oid);
-	code->first = where.first;
-	code->last = where.last;
+	diff_cache_clear(&diffs);
+	return status;
+}
+
+void scope_result_at(const struct scope *s, struct tree *t, struct diff_cache *diffs, struct scope_result *out)
+{
+	out->status = scope_locate_in(s, t, &out->at, diffs);
+	out->exists = tree_get(t, s->path) != NULL;
+}
+
+/* spec 2.5: read the entry at a position already validated FOUND in this tree. */
+struct recorded_code code_at(struct tree *t, const struct scope_location *where)
+{
+	struct entry *e = tree_get(t, where->path);
+	struct recorded_code code;
+
+	snprintf(code.mode, sizeof(code.mode), "%s", e->mode);
+	snprintf(code.type, sizeof(code.type), "%s", e->type);
+	snprintf(code.oid, sizeof(code.oid), "%s", e->oid);
+	code.first = where->first;
+	code.last = where->last;
 	return code;
 }
 
 /* spec 5.3: the scope is in X as recorded; AT receives that verified entry in X. */
-static int scope_same(const char *scope, struct recorded_code *code, struct tree *x, struct recorded_code *at)
+static int scope_same(const struct scope *scope, const struct recorded_code *code, struct tree *x, struct recorded_code *at, struct diff_cache *cache)
 {
-	struct entry *e = tree_get(x, scope_path(scope));
+	struct entry *e = tree_get(x, scope->path);
 	int first = 0, last = 0, changed;
 
 	if (!code || !e || strcmp(e->mode, code->mode) || strcmp(e->type, code->type))
 		return 0;
 	if (code->first) {
-		if (map_blobs(code->oid, e->oid, code->first, code->last, &first, &last, &changed) != FOUND || changed)
+		if (map_blobs(code->oid, e->oid, code->first, code->last, &first, &last, &changed, cache) != FOUND || changed)
 			return 0;
 	} else if (strcmp(e->oid, code->oid)) {
 		return 0;
@@ -1442,107 +1582,157 @@ static int scope_same(const char *scope, struct recorded_code *code, struct tree
 }
 
 /* spec 5.3: the fulfilment F recorded SCOPE as X has it */
-static int recorded_same(struct fulfilment *f, const char *scope, struct tree *x, struct recorded_code *at)
+static int recorded_same(struct fulfilment *f, const struct scope *scope, struct tree *x, struct recorded_code *at, struct diff_cache *cache)
 {
-	struct string_list_item *code = unsorted_string_list_lookup(&f->code, scope);
+	const struct recorded_code *code = code_lookup(&f->code, scope);
 
-	return code && scope_same(scope, code->util, x, at);
+	return code && scope_same(scope, code, x, at, cache);
 }
 
-/* spec 5.4: every provider must match the same fulfilment; retain its verified code when requested. */
-static int provider_same(struct contract *c, struct fulfilment *f, struct tree *x, struct string_list *code)
-{
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, &c->provider) {
-		struct recorded_code at;
-
-		if (!recorded_same(f, item->string, x, code ? &at : NULL)) {
-			if (code)
-				string_list_clear(code, 1);
-			return 0;
-		}
-		if (code) {
-			struct recorded_code *saved = xmalloc(sizeof(*saved));
-
-			*saved = at;
-			string_list_append(code, item->string)->util = saved;
-		}
-	}
-	return 1;
-}
-
-/* v14 3.8: the scope as shown, located in X */
-char *scope_display(const char *scope, struct tree *x)
+/* v14 3.8: formatting reads a prepared position and cannot invoke Git. */
+char *scope_result_text(const struct scope *scope, const struct scope_result *at)
 {
 	static const char *const marks[] = { [NOBASE] = "?nobase", [MISSING] = "?missing", [DELETED] = "?deleted" };
-	struct scope_location where;
-	enum scope_status found = scope_locate(scope, x, &where);
+	char *bare, *display;
 
-	if (starts_with(scope, "new:"))
-		return xstrfmt("%s%s", scope, tree_get(x, scope_path(scope)) ? " ?exists" : "");
-	if (found == ABSTRACT)
-		return xstrdup(scope);
-	if (found == FOUND)
-		return where.first ? xstrfmt("%s:%d-%d", where.path, where.first, where.last) : xstrdup(where.path);
-	return xstrfmt("%.*s %s", (int)strcspn(scope, " "), scope, marks[found]);
+	if (scope->kind == SCOPE_NEW)
+		return xstrfmt("new:%s%s", scope->path, at->exists ? " ?exists" : "");
+	if (at->status == ABSTRACT)
+		return scope_text(scope, 0);
+	if (at->status == FOUND)
+		return at->at.first ? xstrfmt("%s:%d-%d", at->at.path, at->at.first, at->at.last) : xstrdup(at->at.path);
+	bare = scope_text(scope, 0);
+	display = xstrfmt("%s %s", bare, marks[at->status]);
+	free(bare);
+	return display;
 }
 
-/* a scope list as a request takes it: each scope without its base blob, which the request fixes again (3.2) */
-char *scopes_bare(struct string_list *l)
+char *scope_display(const struct scope *scope, struct tree *x)
 {
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
+	struct diff_cache diffs = { 0 };
+	struct scope_result at;
+	char *display;
 
-	for_each_string_list_item(item, l)
-		strbuf_addf(&sb, "%s%.*s", sb.len ? "," : "", (int)strcspn(item->string, " "), item->string);
-	return strbuf_detach(&sb, NULL);
+	scope_result_at(scope, x, &diffs, &at);
+	display = scope_result_text(scope, &at);
+	diff_cache_clear(&diffs);
+	return display;
 }
 
-/* a scope list as shown in X, joined with "," */
-char *scopes_display(struct string_list *l, struct tree *x)
+char *scopes_bare(const struct scope_list *l)
 {
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
+	struct strbuf out = STRBUF_INIT;
+	const struct scope **ordered = scope_order(l);
+	size_t i;
 
-	for_each_string_list_item(item, l)
-		strbuf_addf(&sb, "%s%s", sb.len ? "," : "", scope_display(item->string, x));
-	return strbuf_detach(&sb, NULL);
+	for (i = 0; i < l->nr; i++) {
+		char *text = scope_text(ordered[i], 0);
+
+		strbuf_addf(&out, "%s%s", i ? "," : "", text);
+		free(text);
+	}
+	free(ordered);
+	return strbuf_detach(&out, NULL);
 }
 
-/* v14 3.9: two scopes overlap in T */
-static int scope_overlap(const char *q, const char *r, struct tree *t)
+char *scopes_display(const struct scope_list *l, struct tree *x)
 {
-	char *pq = scope_path(q), *pr = scope_path(r);
-	int a, b, c, d, cq, cr;
+	struct strbuf out = STRBUF_INIT;
+	struct diff_cache diffs = { 0 };
+	const struct scope **ordered = scope_order(l);
+	size_t i;
 
-	if (!strcmp(q, "/") || !strcmp(r, "/"))
+	for (i = 0; i < l->nr; i++) {
+		struct scope_result at;
+		char *text;
+
+		scope_result_at(ordered[i], x, &diffs, &at);
+		text = scope_result_text(ordered[i], &at);
+
+		strbuf_addf(&out, "%s%s", i ? "," : "", text);
+		free(text);
+	}
+	diff_cache_clear(&diffs);
+	free(ordered);
+	return strbuf_detach(&out, NULL);
+}
+
+void geometry_init(struct contract_geometry *g, const struct contract *c, struct tree *t, struct diff_cache *diffs)
+{
+	size_t i;
+
+	memset(g, 0, sizeof(*g));
+	g->contract = c;
+	g->consumer = xcalloc(c->consumer.nr, sizeof(*g->consumer));
+	g->provider = xcalloc(c->provider.nr, sizeof(*g->provider));
+	for (i = 0; i < c->consumer.nr; i++)
+		scope_result_at(&c->consumer.items[i], t, diffs, &g->consumer[i]);
+	for (i = 0; i < c->provider.nr; i++)
+		scope_result_at(&c->provider.items[i], t, diffs, &g->provider[i]);
+}
+
+void geometry_clear(struct contract_geometry *g)
+{
+	free(g->consumer);
+	free(g->provider);
+	memset(g, 0, sizeof(*g));
+}
+
+/* Missing/collected/deleted pins overlap their whole file, as v14 3.9 requires. */
+static int positions_overlap(const struct scope *q, const struct scope_result *qa,
+			     const struct scope *s, const struct scope_result *sa)
+{
+	int a = 0, b = 0, c = 0, d = 0;
+
+	if (q->kind == SCOPE_ROOT || s->kind == SCOPE_ROOT)
 		return 1;
-	if (ends_with(q, "/") || ends_with(r, "/"))
-		return starts_with(pr, ends_with(q, "/") ? q : "\x01") || starts_with(pq, ends_with(r, "/") ? r : "\x01");
-	if (strcmp(pq, pr))
+	if (q->kind == SCOPE_DIR || s->kind == SCOPE_DIR)
+		return (q->kind == SCOPE_DIR && starts_with(s->path, q->path)) ||
+		       (s->kind == SCOPE_DIR && starts_with(q->path, s->path));
+	if (strcmp(q->path, s->path))
 		return 0;
-	if (range_of(q, &a, &b) != 1 || range_of(r, &c, &d) != 1)
-		return 1;
-	if (scope_blob(q) && map_range(q, t, &a, &b, &cq) != FOUND)
-		return 1;
-	if (scope_blob(r) && map_range(r, t, &c, &d, &cr) != FOUND)
-		return 1;
-	return a <= d && c <= b;
+	if (q->kind == SCOPE_RANGE && (!*q->base || qa->status == FOUND)) {
+		a = *q->base ? qa->at.first : q->first;
+		b = *q->base ? qa->at.last : q->last;
+	}
+	if (s->kind == SCOPE_RANGE && (!*s->base || sa->status == FOUND)) {
+		c = *s->base ? sa->at.first : s->first;
+		d = *s->base ? sa->at.last : s->last;
+	}
+	return !a || !c || (a <= d && c <= b);
 }
 
-/* v14 3.9a: the scope Q overlaps C's consumer or provider in T */
-int contract_overlaps(struct contract *c, const char *q, struct tree *t, int depending)
+int geometry_overlaps(const struct contract_geometry *g, const struct scope *q, const struct scope_result *at, int depending)
 {
-	struct string_list_item *s;
+	const struct contract *c = g->contract;
+	size_t i;
 
-	for_each_string_list_item(s, &c->consumer)
-		if (scope_overlap(q, s->string, t))
+	for (i = 0; i < c->consumer.nr; i++)
+		if (positions_overlap(q, at, &c->consumer.items[i], &g->consumer[i]))
 			return 1;
-	for_each_string_list_item(s, &c->provider)
-		if ((!depending || !ends_with(s->string, "/") || ends_with(q, "/")) && scope_overlap(q, s->string, t))
+	for (i = 0; i < c->provider.nr; i++) {
+		const struct scope *s = &c->provider.items[i];
+
+		if ((!depending || (s->kind != SCOPE_DIR && s->kind != SCOPE_ROOT) ||
+		     q->kind == SCOPE_DIR || q->kind == SCOPE_ROOT) && positions_overlap(q, at, s, &g->provider[i]))
 			return 1;
+	}
 	return 0;
+}
+
+int contract_overlaps(struct contract *c, const struct scope *q, struct tree *t, int depending)
+{
+	struct diff_cache diffs = { 0 };
+	struct contract_geometry geometry;
+	struct scope_result at;
+	int overlaps;
+
+	geometry_init(&geometry, c, t, &diffs);
+	scope_result_at(q, t, &diffs, &at);
+	overlaps = geometry_overlaps(&geometry, q, &at, depending);
+	geometry_clear(&geometry);
+	diff_cache_clear(&diffs);
+	return overlaps;
 }
 
 /* spec 1.7: how the offer O holds the demand ID: 'w' wholly, 'p' partially, 0 not (or O is no offer) */
@@ -1600,59 +1790,122 @@ void dependencies(const struct contract_view *v, struct contract *c, struct stri
 	undertakings(v, c, !strcmp(c->kind, "offer") ? 'w' : 'p', out);
 }
 
-/* spec 5.4: one judgment on one view and tree, with the current visiting path. */
-static enum verdict judge_inner(const struct contract_view *v, struct contract *c, struct tree *x,
-			       struct string_list *judging, struct string_list *code)
+/* One completed result per contract; a back edge is never a completed result. */
+void judgment_init(struct judgment *j, const struct contract_view *view, struct tree *t, struct diff_cache *diffs)
 {
-	struct string_list valid = STRING_LIST_INIT_DUP;
-	struct string_list needs = STRING_LIST_INIT_DUP;
-	struct string_list_item *f, *item;
-	int whole_ok = 1;
+	memset(j, 0, sizeof(*j));
+	j->view = *view;
+	j->tree = t;
+	j->diffs = diffs;
+	string_list_init_dup(&j->done);
+	string_list_init_dup(&j->visiting);
+}
 
-	if (!strcmp(c->state, "cancelled"))
-		return V_CANCELLED;
-	if (!strcmp(c->state, "withdrawn"))
-		return V_WITHDRAWN;
-	valid_fulfilments(v->at, c, &valid);
-	if (!strcmp(c->kind, "drop"))
-		return c->fulfilled.nr ? V_FULFILLED : V_FUTURE;
-	if (!valid.nr)
-		return V_FUTURE;
-	/*
-	 * the undertakings it leans on (1.7): an offer on what it holds wholly,
-	 * a demand on its partial offers. 5.4 knows no cycle, but a git merge
-	 * that mixed undertakings (10.4) can make one: a contract met again
-	 * while it is being judged is not current.
-	 */
-	if (string_list_has_string(judging, c->id))
-		return V_UNVERIFIED;
-	string_list_insert(judging, c->id);
-	dependencies(v, c, &needs);
-	for_each_string_list_item(item, &needs)
-		if (judge_inner(v, item->util, x, judging, NULL) != V_CURRENT)
+const struct judgment_result *judgment_get(struct judgment *j, struct contract *c)
+{
+	struct string_list_item *hit = string_list_lookup(&j->done, c->id), *item, *f;
+	struct string_list valid = STRING_LIST_INIT_DUP, needs = STRING_LIST_INIT_DUP;
+	struct judgment_result *r;
+	int whole_ok = 1;
+	size_t i;
+
+	if (hit)
+		return hit->util;
+	if (string_list_has_string(&j->visiting, c->id))
+		return NULL;
+	r = xcalloc(1, sizeof(*r));
+	geometry_init(&r->geometry, c, j->tree, j->diffs);
+	r->matches_any = xcalloc(c->provider.nr, sizeof(*r->matches_any));
+	if (!strcmp(c->state, "cancelled")) {
+		r->verdict = V_CANCELLED;
+		goto done;
+	}
+	if (!strcmp(c->state, "withdrawn")) {
+		r->verdict = V_WITHDRAWN;
+		goto done;
+	}
+	if (!strcmp(c->kind, "drop")) {
+		r->verdict = c->fulfilled.nr ? V_FULFILLED : V_FUTURE;
+		goto done;
+	}
+	valid_fulfilments(&j->view, c, &valid);
+	if (!valid.nr) {
+		r->verdict = V_FUTURE;
+		goto done;
+	}
+	string_list_insert(&j->visiting, c->id);
+	dependencies(&j->view, c, &needs);
+	for_each_string_list_item(item, &needs) {
+		const struct judgment_result *dependency = judgment_get(j, item->util);
+
+		if (!dependency || dependency->verdict != V_CURRENT)
 			whole_ok = 0;
+	}
+	string_list_remove(&j->visiting, c->id, 0);
+	/* Per-scope matches can come from different fulfilments; a whole witness cannot. */
+	for_each_string_list_item(f, &valid) {
+		struct code_list code = { 0 };
+		int all = 1;
+
+		for (i = 0; i < c->provider.nr; i++) {
+			const struct scope *s = &c->provider.items[i];
+			struct recorded_code at;
+			int same = recorded_same(f->util, s, j->tree, &at, j->diffs);
+
+			r->matches_any[i] |= same;
+			all &= same;
+			if (same)
+				code_add(&code, s, &at);
+		}
+		if (all) {
+			r->code = code;
+			r->witness = f->util;
+			break;
+		}
+		code_clear(&code);
+	}
+	r->verdict = whole_ok && r->witness ? V_CURRENT : V_UNVERIFIED;
+done:
+	string_list_clear(&valid, 0);
 	string_list_clear(&needs, 0);
-	string_list_remove(judging, c->id, 0);
-	for_each_string_list_item(f, &valid)
-		if (whole_ok && provider_same(c, f->util, x, code))
-			return V_CURRENT;
-	return V_UNVERIFIED;
+	string_list_insert(&j->done, c->id)->util = r;
+	return r;
+}
+
+void judgment_clear(struct judgment *j)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &j->done) {
+		struct judgment_result *r = item->util;
+
+		geometry_clear(&r->geometry);
+		code_clear(&r->code);
+		free(r->matches_any);
+		free(r);
+	}
+	string_list_clear(&j->done, 0);
+	string_list_clear(&j->visiting, 0);
 }
 
 enum verdict judge_view(const struct contract_view *v, struct contract *c, struct tree *x)
 {
-	struct string_list judging = STRING_LIST_INIT_DUP;
-	enum verdict result = judge_inner(v, c, x, &judging, NULL);
+	struct diff_cache diffs = { 0 };
+	struct judgment j;
+	enum verdict verdict;
 
-	string_list_clear(&judging, 0);
-	return result;
+	judgment_init(&j, v, x, &diffs);
+	verdict = judgment_get(&j, c)->verdict;
+	judgment_clear(&j);
+	diff_cache_clear(&diffs);
+	return verdict;
 }
 
 enum verdict judge(struct branch *b, struct contract *c, struct tree *x)
 {
-	struct contract_view v = { b, NULL };
+	struct contract_view view = { b, NULL, NULL };
 
-	return judge_view(&v, c, x);
+	return judge_view(&view, c, x);
 }
 
 /* spec 1.5: a promise is a live contract judged future or current ?unverified */
@@ -1663,58 +1916,112 @@ int promise(struct contract *c, enum verdict v)
 
 const char *verdict_word(enum verdict v)
 {
-	static const char *const words[] = { "future", "current", "current ?unverified", "fulfilled", "cancelled",
-					    "withdrawn" };
+	static const char *const words[] = { "future", "current", "current ?unverified", "fulfilled", "cancelled", "withdrawn" };
 
 	return words[v];
 }
 
-/* spec 3.4, v14 3.8: C's provider as shown in X; a current C's scope no valid fulfilment has as X does is ?changed */
-char *provider_display(struct branch *b, struct contract *c, struct tree *x)
+/* Printing consumes positions and matches; it cannot invoke Git or judge again. */
+static char *geometry_display(const struct contract_geometry *g, int provider, const unsigned char *matches)
 {
-	struct string_list valid = STRING_LIST_INIT_DUP;
-	struct string_list_item *item, *f;
-	struct strbuf sb = STRBUF_INIT;
-	enum verdict v = judge(b, c, x);
+	const struct contract *c = g->contract;
+	const struct scope_list *scopes = provider ? &c->provider : &c->consumer;
+	const struct scope_result *positions = provider ? g->provider : g->consumer;
+	const struct scope **ordered = scope_order(scopes);
+	struct strbuf out = STRBUF_INIT;
+	size_t i;
 
-	valid_fulfilments(b, c, &valid);
-	for_each_string_list_item(item, &c->provider) {
-		char *shown = scope_display(item->string, x);
-		int same = 0;
+	for (i = 0; i < scopes->nr; i++) {
+		size_t n = ordered[i] - scopes->items;
+		char *display = scope_result_text(ordered[i], &positions[n]);
+		int changed = matches && !matches[n] && !strchr(display, '?');
 
-		for_each_string_list_item(f, &valid)
-			same |= recorded_same(f->util, item->string, x, NULL);
-		strbuf_addf(&sb, "%s%s%s", sb.len ? "," : "", shown,
-			    (v == V_CURRENT || v == V_UNVERIFIED) && !same && !strchr(shown, '?') ? " ?changed" : "");
+		strbuf_addf(&out, "%s%s%s", i ? "," : "", display, changed ? " ?changed" : "");
+		free(display);
 	}
-	return strbuf_detach(&sb, NULL);
+	free(ordered);
+	return strbuf_detach(&out, NULL);
 }
 
-/* spec 5.5: C, current at H, has a provider scope X changed from H */
+char *geometry_scopes(const struct contract_geometry *g, int provider)
+{
+	return geometry_display(g, provider, NULL);
+}
+
+char *judgment_scopes(const struct judgment_result *r, int provider)
+{
+	const unsigned char *matches = provider && (r->verdict == V_CURRENT || r->verdict == V_UNVERIFIED) ? r->matches_any : NULL;
+
+	return geometry_display(&r->geometry, provider, matches);
+}
+
+char *provider_display(struct branch *b, struct contract *c, struct tree *x)
+{
+	struct contract_view view = { b, NULL, NULL };
+	struct diff_cache diffs = { 0 };
+	struct judgment j;
+	char *text;
+
+	judgment_init(&j, &view, x, &diffs);
+	text = judgment_scopes(judgment_get(&j, c), 1);
+	judgment_clear(&j);
+	diff_cache_clear(&diffs);
+	return text;
+}
+
+/* Compare X with the single whole witness mapped to H, even when X is also current. */
+int judgment_touched(const struct judgment_result *h, struct tree *x, struct diff_cache *diffs)
+{
+	size_t i;
+
+	if (h->verdict != V_CURRENT)
+		return 0;
+	for (i = 0; i < h->code.nr; i++)
+		if (!scope_same(&h->code.items[i].scope, &h->code.items[i].value, x, NULL, diffs))
+			return 1;
+	return 0;
+}
+
 int touched(struct branch *b, struct contract *c, struct tree *h, struct tree *x)
 {
-	struct contract_view v = { b, NULL };
-	struct string_list judging = STRING_LIST_INIT_DUP, code = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	int changed = 0;
+	struct contract_view view = { b, NULL, NULL };
+	struct diff_cache diffs = { 0 };
+	struct judgment j;
+	int changed;
 
-	if (judge_inner(&v, c, h, &judging, &code) == V_CURRENT)
-		for_each_string_list_item(item, &code)
-			changed |= !scope_same(item->string, item->util, x, NULL);
-	string_list_clear(&judging, 0);
-	string_list_clear(&code, 1);
+	judgment_init(&j, &view, h, &diffs);
+	changed = judgment_touched(judgment_get(&j, c), x, &diffs);
+	judgment_clear(&j);
+	diff_cache_clear(&diffs);
 	return changed;
+}
+
+void violations_clear(struct string_list *violations)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, violations) {
+		struct violation *v = item->util;
+
+		free((char *)v->a);
+		free((char *)v->b);
+		free(v);
+	}
+	string_list_clear(violations, 0);
 }
 
 /* spec 4.10: one violation under its key, which names it across trees */
 static void violation(struct string_list *out, enum refusal kind, const char *a, const char *b)
 {
 	struct violation *v = xcalloc(1, sizeof(*v));
+	char *key;
 
 	v->kind = kind;
 	v->a = xstrdup(a);
 	v->b = xstrdup(b);
-	string_list_insert(out, kind == PAIR ? xstrfmt("pair:%s:%s", a, b) : xstrfmt("mix:%s", a))->util = v;
+	key = kind == PAIR ? xstrfmt("pair:%s:%s", a, b) : xstrfmt("mix:%s", a);
+	string_list_insert(out, key)->util = v;
+	free(key);
 }
 
 /* spec 4.8: the words of a violation, chosen by its kind */
@@ -1724,28 +2031,42 @@ char *violation_words(struct violation *v)
 }
 
 /* Step zero checks the requested fulfilments before their files are written. */
-static int fulfilled_in(struct branch *b, struct contract *c, const struct string_list *fulfilling)
+static int fulfilled_in(const struct contract_view *v, struct contract *c, const struct string_list *fulfilling)
 {
-	return (fulfilling && string_list_has_string(fulfilling, c->id)) || has_valid_fulfilment(b, c);
+	struct string_list valid = STRING_LIST_INIT_DUP;
+	int found;
+
+	if (fulfilling && string_list_has_string(fulfilling, c->id))
+		return 1;
+	valid_fulfilments(v, c, &valid);
+	found = valid.nr > 0;
+	string_list_clear(&valid, 0);
+	return found;
 }
 
 /*
  * spec 4.10 (b) and (c): the violations of B. A mix is told from WAS:
  * what held the demand there is what it is "already" held by.
  */
-void invariants(struct branch *b, struct branch *was, const struct string_list *fulfilling, struct string_list *out)
+void invariants_view(const struct contract_view *v, struct branch *was, const struct string_list *fulfilling, struct string_list *out)
 {
-	struct contract_view now = { b, NULL }, old = { was, NULL };
+	struct contract_view old = { was, NULL, NULL };
+	struct string_list contracts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item, *o;
 
-	for_each_string_list_item(item, &b->contracts) {
+	for_each_string_list_item(item, &v->at->contracts)
+		string_list_insert(&contracts, item->string)->util = contract_lookup(v, item->string);
+	if (v->changed)
+		for_each_string_list_item(item, v->changed)
+			string_list_insert(&contracts, item->string)->util = item->util;
+	for_each_string_list_item(item, &contracts) {
 		struct contract *d = item->util;
 		struct string_list whole = STRING_LIST_INIT_DUP, part = STRING_LIST_INIT_DUP, before = STRING_LIST_INIT_DUP;
 
 		if (!live(d) || strcmp(d->kind, "demand"))
 			continue;
-		undertakings(&now, d, 'w', &whole);
-		undertakings(&now, d, 'p', &part);
+		undertakings(v, d, 'w', &whole);
+		undertakings(v, d, 'p', &part);
 		if (whole.nr && part.nr) {
 			struct contract *previous = contract_get(was, d->id);
 
@@ -1756,13 +2077,21 @@ void invariants(struct branch *b, struct branch *was, const struct string_list *
 		}
 		/* 1.8: what leans on an unfulfilled contract may not stand fulfilled on it */
 		for_each_string_list_item(o, &whole)
-			if (fulfilled_in(b, o->util, fulfilling) && !fulfilled_in(b, d, fulfilling))
+			if (fulfilled_in(v, o->util, fulfilling) && !fulfilled_in(v, d, fulfilling))
 				violation(out, PAIR, o->string, d->id);
 		for_each_string_list_item(o, &part)
-			if (fulfilled_in(b, d, fulfilling) && !fulfilled_in(b, o->util, fulfilling))
+			if (fulfilled_in(v, d, fulfilling) && !fulfilled_in(v, o->util, fulfilling))
 				violation(out, PAIR, d->id, o->string);
 		string_list_clear(&whole, 0);
 		string_list_clear(&part, 0);
 		string_list_clear(&before, 0);
 	}
+	string_list_clear(&contracts, 0);
+}
+
+void invariants(struct branch *b, struct branch *was, const struct string_list *fulfilling, struct string_list *out)
+{
+	struct contract_view view = { b, NULL, NULL };
+
+	invariants_view(&view, was, fulfilling, out);
 }

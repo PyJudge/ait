@@ -8,6 +8,12 @@ struct strbuf {
 	char *buf;
 };
 
+/* git v2.53.0 strbuf.h:129-132 */
+static inline void strbuf_swap(struct strbuf *a, struct strbuf *b)
+{
+	SWAP(*a, *b);
+}
+
 extern char strbuf_slopbuf[];
 #define STRBUF_INIT  { .buf = strbuf_slopbuf }
 

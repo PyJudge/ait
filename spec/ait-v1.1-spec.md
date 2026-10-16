@@ -205,6 +205,7 @@ ait 쓰기 명령 하나가 체크인 하나다. 작업 폴더와 코드 브랜�
 - 쓰기 명령은 `-m MSG`(여러 번이면 문단) 또는 `-F FILE` 중 하나가 필요하다(v14 5.3. 없거나 정리한 결과가 비면 E_USAGE).
 - 체크인 커밋의 메시지는 MSG이고 첫 행에 `[CONTRACT] `(이행이면 `[FULFILL] `)를 붙인다. 4.4의 `<요약>`은 그 첫 행이다. 끝에 기록줄 `Ait-Request: RID`, `Ait-Agent: NAME`, `Ait-Session: SID`(v14 5.4의 형식과 파서).
 - 이행이 만드는 코드 커밋의 메시지는 MSG 그대로이고 기록줄이 없다(코드 커밋은 git의 것이다).
+- 기록줄은 사용자의 git 설정으로 읽는다. ait는 설정을 고치거나 내부에서 덮어쓰지 않는다. 기록줄을 붙이는 명령은 4.3의 목록과 session(4.6)을 지난 뒤, 명령별 판정·코드 커밋·체크인보다 먼저 MSG 없이 기록줄만 둔 메시지를 v14 5.4의 파서로 다시 읽는다. 세 키 중 하나라도 그대로 읽히지 않으면 `fatal: git config hides the trailers: '<key>'…`(읽히지 않은 키를 `, `로 잇는다)와, 읽기를 바꾸는 설정(`core.commentChar`·`core.commentString`·`trailer.separators`·`trailer.<token>.key`) 중 설정된 것이 있으면 ` ('<name>'…)`를 쓰고 멈춘다(E_CONFIG). hint는 없다(설정을 어떻게 고칠지는 그 저장소가 정한다). MSG 때문에 읽히지 않는 것(v14 5.3의 자르기 행)은 E_USAGE이고, git 명령 자체가 실패하면 E_GIT다.
 
 ### 4.6 session
 
@@ -224,6 +225,7 @@ v14 5.6·5.7을 쓴다. 바뀌는 점: 요약 행(4.4의 5, 6.7)의 OID는 짧�
 | `E_BUSY` | 128 | `fatal: cannot run now: …`(listener가 이미 돈다) |
 | `E_ID` | 128 | `fatal: no such contract: '…'`(없는 ID·alias, kind가 맞지 않음) |
 | `E_BRANCH` | 128 | 4.3의 0–2·5, `fatal: no local branch 'ait/<name>'`, `fatal: no contract branch 'ait/<name>'`, `fatal: 'ait/<name>' has no upstream` |
+| `E_CONFIG` | 128 | `fatal: git config hides the trailers: …`(4.5) |
 | `E_FORMAT` | 128 | `fatal: bad format: …`(파일과 행) |
 | `E_SCOPE` | 128 | `fatal: bad scope: …`, `fatal: repository lacks the base blob of '…' ('…')` |
 | `E_STATE` | 1 | `error: not allowed: …`, 아래의 거절 문구들 |
@@ -259,7 +261,7 @@ ait 브랜치의 tree 하나에 대해 판정한다: (a) 형식(2.3, 2.5, 배치
 
 ### 6.1 `ait init`
 
-1. git 작업 폴더 안이 아니면 E_GIT(2.6.5). ait는 git 2.38 이상을 요구한다(`merge-tree --write-tree`, 6.5.6). 낮으면 `fatal: git X.Y is too old for ait`와 `hint: install git 2.38 or later`.
+1. git 작업 폴더 안이 아니면 E_GIT(2.6.5). ait는 지원·검증 기준인 git 2.53 이상을 요구한다. 낮으면 `fatal: git X.Y is too old for ait`와 `hint: install git 2.53 or later`.
 1a. `git rev-parse --git-path hooks/reference-transaction`이 없으면 알림 hook(9.8)을 쓴다. 이미 다른 내용이 있으면 고치지 않고 `warning: '<path>' exists; 'ait listen' wakes by polling only`.
 2. `git rev-parse --git-path info/exclude` 파일에 `/.ait/` 행이 없으면 더한다.
 3. 원격 추적 `refs/remotes/<remote>/ait/<name>`(2.1.2) 중 로컬에 없는 이름마다, 원격 하나에만 있거나 `checkout.defaultRemote`가 그 원격이면 `git branch -q ait/<name> <remote>/ait/<name>`(upstream이 설정된다). 여러 원격에 있고 고를 수 없으면 `warning: 'ait/<name>' matched multiple (N) remote tracking branches`(`builtin/checkout.c:1321`의 문구)를 쓰고 그 이름은 만들지 않는다.

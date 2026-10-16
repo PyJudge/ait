@@ -21,6 +21,7 @@ void git_records_argv(struct string_list *out, const char *index, int *rc, const
 	git_records_argv(out, index, rc, (const char *[]){ __VA_ARGS__, NULL })
 void guard_git_children(void);
 char *git_argv(const char *in, const char *index, int *rc, const char **argv);
+FILE *git_spool(const char *in, const char **argv);
 #define git_run(in, index, rc, ...) \
 	git_argv(in, index, rc, (const char *[]){ __VA_ARGS__, NULL })
 #define git(...) git_run(NULL, NULL, NULL, __VA_ARGS__)
@@ -29,6 +30,7 @@ int git_commit(const char *msg);
 char *line1(char *s);
 int config_true(const char *key);
 char *object(const char *name, int contents, char *oid, size_t *size);
+int object_oid(const char *name, char *oid);
 int branch_tip(const char *name, char *oid);
 char *quoted(const char *s);
 char *hint_command_for(const char *session_id, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
@@ -47,26 +49,30 @@ NORETURN void no_contract(const char *id);
 char *state_path(const char *name);
 int agent_ok(const char *name);
 int id_ok(const char *s, const char *letters);
+int oid_ok(const char *s);
 
 /* ait.c: the contract branch (spec 2.1, 4.2, 4.3) */
 struct names {
-	struct string_list local;	/* ait/<name> of refs/heads/ait/<name> */
+	struct string_list local;	/* ait/<name> -> configured upstream ref */
 	struct string_list remote;	/* ait/<name> -> the remote-tracking refs that have it */
 	struct string_list remotes;	/* the configured remotes (git remote) */
 	struct string_list tips;		/* tip OID REF, from the same classified ref snapshot */
 	size_t nr;			/* distinct names in local and remote */
 };
 void names_load(struct names *n);
-const char *branch_find(struct names *n, const char **msg, struct strbuf *hint, int *only);
+void names_clear(struct names *n);
+const char *names_upstream(struct names *n, const char *branch);
+const char *branch_find(struct names *n, const char *chosen, const char **msg, struct strbuf *hint, int *only);
 const char *branch_name(void);
 int branch_only(void);
-enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8 };
-const char *start(int how);
+enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8, START_TRAILERS = 16 };
+struct branch *start(int how);
 char *git_path(const char *name);
 void leading_dirs(const char *path);
 int is_ancestor(const char *a, const char *b);
 char *upstream_of(const char *branch);
 char *checkout_file(void);
+char *checkout_read(void);
 
 /* spec 4.8: E_STATE reasons; the words are chosen once in refusal_words(). */
 enum refusal {
@@ -99,6 +105,7 @@ struct checkin {
 	char tip[48];			/* T; "" when the branch has no commit */
 	struct string_list put;		/* path -> its new text */
 	const char *msg;		/* the message; its first line is the summary */
+	const char *record;		/* assembled and validated once, reused across CAS retries */
 	int no_trailers;		/* ait init's commit: no trailers, no summary line (6.1) */
 	char rid[16];			/* this request's ID */
 	/* contract pull (6.5.6): a merge's tree and second parent, or the commit to fast-forward to */
@@ -112,11 +119,15 @@ struct checkin {
 	char *(*retry_hint)(struct checkin *c, const char *old);
 	/* Step zero's planned fulfilments, before their files exist (6.7.5). */
 	const struct string_list *fulfilling;
+	const struct contract_view *candidate; /* typed final view, or NULL for an external tree */
 	struct branch *at;		/* the contracts at T, for the judge */
 	void *data;			/* the command's own state, for its judge and hints */
 };
 typedef void (*judge_fn)(struct checkin *c);
+char *request_message(const char *msg, int fulfilling);
+void checkin_prepare(struct checkin *c);
 void checkin_tip(struct checkin *c);
+void checkin_clear(struct checkin *c);
 char *checkin_judge(struct checkin *c, judge_fn decide);
 char *checkin_run(struct checkin *c, judge_fn decide);
 void checkin_report(char *summary);
@@ -136,8 +147,39 @@ struct tree {
 	struct entry *e;
 };
 struct tree *tree_load(const char *treeish);
+void tree_free(struct tree *t);
 const char *blob_at(struct tree *t, const char *path);
 struct tree *index_tree(void);
+
+/* scope.c: like Git pathspec items, parse at input, then pass owned values. */
+enum scope_kind { SCOPE_FILE, SCOPE_RANGE, SCOPE_NEW, SCOPE_DIR, SCOPE_ROOT };
+enum scope_form { SCOPE_ARGUMENT, SCOPE_DRAFT, SCOPE_STORED };
+struct scope {
+	enum scope_kind kind;
+	char *path;
+	int first;
+	int last;
+	char base[48];
+	char *raw;			/* original spelling, for diagnostics only */
+};
+struct scope_list {
+	struct scope *items;
+	size_t nr;
+	size_t alloc;
+};
+#define for_each_scope(s, list) \
+	for ((s) = (list)->items; (s) && (s) < (list)->items + (list)->nr; (s)++)
+const char *range_numbers(const char *text, int *first, int *last);
+char *scope_parse(struct scope *s, const char *text, int allow_new, int allow_abs, enum scope_form form);
+char *scopes_parse(struct scope_list *out, const char *text, int allow_new, int allow_abs, enum scope_form form);
+void scope_clear(struct scope *s);
+void scopes_clear(struct scope_list *list);
+void scopes_copy(struct scope_list *out, const struct scope_list *from);
+void scope_append(struct scope_list *out, const struct scope *s);
+int scope_equal(const struct scope *a, const struct scope *b, int with_base);
+char *scope_text(const struct scope *s, int with_base);
+const struct scope **scope_order(const struct scope_list *list);
+char *scopes_join(const struct scope_list *list);
 
 /* contract.c: contracts and fulfilments (spec 2.3, 2.5) */
 struct spec {
@@ -157,8 +199,8 @@ struct contract {
 	char *creator;
 	char *state;
 	char *target;
-	struct string_list consumer;
-	struct string_list provider;
+	struct scope_list consumer;
+	struct scope_list provider;
 	struct string_list undertakes;
 	struct string_list partially;
 	struct string_list fulfilled;	/* parsed paths own int *source lines for the snapshot lifetime */
@@ -172,6 +214,18 @@ struct recorded_code {
 	int first;
 	int last;
 };
+struct scoped_code {
+	struct scope scope;
+	struct recorded_code value;
+};
+struct code_list {
+	struct scoped_code *items;
+	size_t nr;
+	size_t alloc;
+};
+void code_add(struct code_list *out, const struct scope *s, const struct recorded_code *value);
+const struct recorded_code *code_lookup(const struct code_list *code, const struct scope *s);
+void code_clear(struct code_list *code);
 struct fulfilment {
 	char *path;
 	char *contract;
@@ -181,7 +235,7 @@ struct fulfilment {
 	char *commit;
 	char *outcome;
 	char *body;
-	struct string_list code;	/* scope -> struct recorded_code */
+	struct code_list code;
 };
 struct branch {
 	const char *name;
@@ -192,51 +246,44 @@ struct branch {
 	struct string_list errors;	/* raw path -> reason */
 };
 struct branch *branch_load(const char *name, const char *tip, const char *treeish);
+void branch_free(struct branch *b);
 struct contract *contract_get(struct branch *b, const char *id);
 int kind_letter(const char *kind);
 char *contract_path_id(const char *path);
 struct contract *contract_parse(const char *text, size_t len, const char *path, int draft, char **err);
 char *contract_text(struct contract *c);
 struct contract *contract_new(const char *kind, const char *group, const char *id);
+enum contract_part {
+	CONTRACT_SPECS = 1, CONTRACT_REQUIREMENTS = 2, CONTRACT_DETAILS = 4,
+	CONTRACT_IDS = 8, CONTRACT_STATE = 16, CONTRACT_FULFILLED = 32,
+	CONTRACT_CONDITIONS = CONTRACT_SPECS | CONTRACT_REQUIREMENTS,
+	CONTRACT_ROWS = CONTRACT_CONDITIONS | CONTRACT_DETAILS,
+	CONTRACT_ALL = CONTRACT_ROWS | CONTRACT_IDS | CONTRACT_STATE | CONTRACT_FULFILLED
+};
+char *xstrdup_null(const char *s);
+void replace_text(char **field, const char *text);
+void spec_clear(struct spec *s);
+void spec_copy(struct spec *out, const struct spec *s);
+void specs_clear(struct contract *c);
+struct contract *contract_copy(const struct contract *c);
+void contract_free(struct contract *c);
+void contract_fulfilled_copy(struct contract *out, const struct contract *from);
+int scopes_same(const struct scope_list *a, const struct scope_list *b);
+int contract_same(const struct contract *a, const struct contract *b, unsigned parts);
+void fulfilment_free(struct fulfilment *f);
 char *fulfil_text(struct fulfilment *f);
 char *fulfil_path(struct contract *c, const char *rid);
 int group_ok(const char *group);
 int worktree_path_ok(const char *p, int allow_ait);
 int path_ok(const char *p);
-int scope_ok(const char *v, int allow_new, int allow_abs);
-int scope_arg_ok(const char *v, int allow_new, int allow_abs);
-enum scope_form { SCOPE_ARGUMENT, SCOPE_DRAFT, SCOPE_STORED };
-char *scopes_refusal(struct string_list *scopes, int allow_new, int allow_abs, enum scope_form form);
-char *scope_path(const char *v);
-const char *scope_blob(const char *v);
-int range_of(const char *v, int *first, int *last);
-char *scopes_join(struct string_list *l);
-
 /* contract.c: judgments (spec 1.4, 1.7, 1.8, 4.10, 5) */
 enum verdict { V_FUTURE, V_CURRENT, V_UNVERIFIED, V_FULFILLED, V_CANCELLED, V_WITHDRAWN };
 /* A branch at T, optionally overlaid with this request's new and changed contracts. */
 struct contract_view {
 	struct branch *at;
 	struct string_list *changed;
+	struct string_list *fulfils; /* new typed fulfilments, then lookup falls back to T */
 };
-struct contract *contract_lookup(const struct contract_view *v, const char *id);
-int live(struct contract *c);
-int has_valid_fulfilment(struct branch *b, struct contract *c);
-void undertakings(const struct contract_view *v, struct contract *c, int how, struct string_list *out);
-void dependencies(const struct contract_view *v, struct contract *c, struct string_list *out);
-enum verdict judge_view(const struct contract_view *v, struct contract *c, struct tree *x);
-enum verdict judge(struct branch *b, struct contract *c, struct tree *x);
-const char *verdict_word(enum verdict v);
-int promise(struct contract *c, enum verdict v);
-int contract_overlaps(struct contract *c, const char *q, struct tree *t, int depending);
-char *scopes_bare(struct string_list *l);
-char *scopes_display(struct string_list *l, struct tree *x);
-char *scope_display(const char *scope, struct tree *x);
-char *provider_display(struct branch *b, struct contract *c, struct tree *x);
-char *violation_words(struct violation *v);
-void invariants(struct branch *b, struct branch *was, const struct string_list *fulfilling, struct string_list *out);
-char *scope_pin(const char *arg, struct tree *t, char **err);
-int scopes_pin(struct string_list *scopes, struct tree *t, struct string_list *was, char **err);
 /* where a scope is (6.7.4): found, or why not */
 struct scope_location {
 	const char *path;
@@ -250,13 +297,79 @@ enum scope_status {
 	DELETED,
 	ABSTRACT
 };
-enum scope_status scope_locate(const char *scope, struct tree *t, struct scope_location *where);
-struct recorded_code *code_entry(const char *scope, struct tree *t);
+/* Results belong to one immutable view/tree; the shared diff cache has its own owner. */
+struct blob_diff;
+struct diff_cache {
+	struct blob_diff *items;
+	size_t nr;
+	size_t alloc;
+};
+struct scope_result {
+	struct scope_location at;
+	enum scope_status status;
+	int exists;
+};
+struct contract_geometry {
+	const struct contract *contract;
+	struct scope_result *consumer;
+	struct scope_result *provider;
+};
+struct judgment_result {
+	struct contract_geometry geometry;
+	enum verdict verdict;
+	const struct fulfilment *witness;
+	struct code_list code;
+	unsigned char *matches_any;
+};
+struct judgment {
+	struct contract_view view;
+	struct tree *tree;
+	struct diff_cache *diffs;
+	struct string_list done;
+	struct string_list visiting;
+};
+void diff_cache_clear(struct diff_cache *cache);
+void geometry_init(struct contract_geometry *g, const struct contract *c, struct tree *t, struct diff_cache *diffs);
+void geometry_clear(struct contract_geometry *g);
+char *geometry_scopes(const struct contract_geometry *g, int provider);
+char *scope_result_text(const struct scope *scope, const struct scope_result *at);
+void scope_result_at(const struct scope *s, struct tree *t, struct diff_cache *diffs, struct scope_result *out);
+int geometry_overlaps(const struct contract_geometry *g, const struct scope *q, const struct scope_result *at, int depending);
+void judgment_init(struct judgment *j, const struct contract_view *view, struct tree *t, struct diff_cache *diffs);
+const struct judgment_result *judgment_get(struct judgment *j, struct contract *c);
+void judgment_clear(struct judgment *j);
+char *judgment_scopes(const struct judgment_result *r, int provider);
+int judgment_touched(const struct judgment_result *h, struct tree *x, struct diff_cache *diffs);
+
+struct contract *contract_lookup(const struct contract_view *v, const char *id);
+struct fulfilment *fulfilment_lookup(const struct contract_view *v, const char *path);
+int live(struct contract *c);
+int has_valid_fulfilment(struct branch *b, struct contract *c);
+void undertakings(const struct contract_view *v, struct contract *c, int how, struct string_list *out);
+void dependencies(const struct contract_view *v, struct contract *c, struct string_list *out);
+enum verdict judge_view(const struct contract_view *v, struct contract *c, struct tree *x);
+enum verdict judge(struct branch *b, struct contract *c, struct tree *x);
+const char *verdict_word(enum verdict v);
+int promise(struct contract *c, enum verdict v);
+int contract_overlaps(struct contract *c, const struct scope *q, struct tree *t, int depending);
+char *scopes_bare(const struct scope_list *l);
+char *scopes_display(const struct scope_list *l, struct tree *x);
+char *scope_display(const struct scope *scope, struct tree *x);
+char *provider_display(struct branch *b, struct contract *c, struct tree *x);
+char *violation_words(struct violation *v);
+void violations_clear(struct string_list *violations);
+void invariants_view(const struct contract_view *v, struct branch *was, const struct string_list *fulfilling, struct string_list *out);
+void invariants(struct branch *b, struct branch *was, const struct string_list *fulfilling, struct string_list *out);
+int scope_pin(struct scope *s, struct tree *t, char **err);
+int scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_list *was, char **err);
+enum scope_status scope_locate(const struct scope *scope, struct tree *t, struct scope_location *where);
+struct recorded_code code_at(struct tree *t, const struct scope_location *where);
 int touched(struct branch *b, struct contract *c, struct tree *h, struct tree *x);
 
 /* contract.c: the YAML subset (v14 2.5.1) and its writing (v14 8.2) */
 void yaml_out_scalar(struct strbuf *sb, const char *s);
 int yaml_parse(const char *text, size_t len, struct string_list *kv, char **err);
+void yaml_clear(struct string_list *kv);
 const char *yget(struct string_list *kv, const char *key);
 char *yaml_key_decode(const char *key);
 char ykind(struct string_list *kv, const char *key);
@@ -265,7 +378,7 @@ char *yaml_refusal(struct string_list *kv, const char *key, const char *fmt, ...
 char *yaml_refusal_at(int line, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
 char *keys_refusal(struct string_list *kv, const char *prefix, const char *const *keys, int required);
 struct spec *spec_from(struct string_list *kv, const char *prefix, char **err);
-void yaml_out_body(struct strbuf *sb, const char *s, const char *indent);
+void yaml_out_body(struct strbuf *sb, const char *s);
 void spec_lists(struct strbuf *sb, struct spec *s);
 
 /* request.c, notify.c: the commands */
@@ -277,6 +390,7 @@ int cmd_sub(int argc, const char **argv);
 int cmd_unsub(int argc, const char **argv);
 int cmd_listen(int argc, const char **argv);
 int lock_path(const char *path, int nowait);
+int lock_session(const char *s);
 int hook_installed(void);
 char *session_path(const char *s, const char *suffix);
 void session_lines(const char *s, struct string_list *lines);

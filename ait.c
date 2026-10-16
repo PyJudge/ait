@@ -9,7 +9,10 @@
 #include "setup.h"
 #include "sigchain.h"
 #include "abspath.h"
+#include "wt-status.h"
+#include "tempfile.h"
 #include <dirent.h>
+#include <ftw.h>
 #include <sys/file.h>
 
 const char *top, *head, *gitdir;
@@ -20,6 +23,7 @@ static char *retry_command;
 size_t git_out_len;
 char agent[72], sid[16];
 static char *git_cmd;
+const char *comment_line_str;
 static const char *code_index;
 static const char *caller_index;
 static struct strbuf code_output = STRBUF_INIT;
@@ -197,8 +201,9 @@ void guard_git_children(void)
 	git_children_guarded = 1;
 }
 
-/* git with ARGS; IN feeds stdin, INDEX sets GIT_INDEX_FILE; without RC a failure is fatal (4.7) */
-static char *git_args_n(struct strvec *args, const char *in, size_t in_len, const char *index, int *rc)
+/* Git takes argv; IN feeds stdin, INDEX selects its index; without RC a failure is fatal (4.7). */
+static char *git_argv_n(const char *in, size_t in_len, const char *index, int *rc,
+			const char **argv, const char **env, int output_fd)
 {
 	struct child_process cmd = CHILD_PROCESS_INIT;
 	struct strbuf out = STRBUF_INIT, err = STRBUF_INIT;
@@ -208,21 +213,25 @@ static char *git_args_n(struct strvec *args, const char *in, size_t in_len, cons
 
 	/* git's output as ait parses it, whatever the user's config adds to it */
 	strvec_pushl(&cmd.args, "git", "-c", "core.quotePath=false", "-c", "log.showSignature=false",
-		     "-c", "i18n.logOutputEncoding=UTF-8", "-c", "trailer.separators=:", NULL);
+		     "-c", "i18n.logOutputEncoding=UTF-8", NULL);
 	at_repository(&cmd, index, 0);
-	strvec_pushv(&cmd.args, args->v);
+	strvec_pushv(&cmd.args, argv);
+	if (env)
+		strvec_pushv(&cmd.env, env);
 	/* git's messages untranslated: ait's are English (v14 5.6) */
 	strvec_push(&cmd.env, "LANGUAGE=C");
 	cmd.clean_on_exit = cmd.wait_after_clean = git_children_guarded;
-	code = pipe_command(&cmd, in, in_len, &out, 0, &err, 0);
+	if (output_fd >= 0)
+		cmd.out = xdup(output_fd);
+	code = pipe_command(&cmd, in, in_len, output_fd >= 0 ? NULL : &out, 0, &err, 0);
 	free(git_error);
 	git_error = xstrndup(err.buf, strcspn(err.buf, "\n"));
 	if (skip_prefix(git_error, "fatal: ", &reason) || skip_prefix(git_error, "error: ", &reason))
 		memmove(git_error, reason, strlen(reason) + 1);
-	for (i = 0; args->v[i] && *args->v[i] == '-'; i++)
+	for (i = 0; argv[i] && *argv[i] == '-'; i++)
 		;
 	free(git_cmd);
-	git_cmd = xstrdup(args->v[i] ? args->v[i] : "");
+	git_cmd = xstrdup(argv[i] ? argv[i] : "");
 	if (rc)
 		*rc = code;
 	if (code < 0 || (!rc && code))
@@ -233,39 +242,48 @@ static char *git_args_n(struct strvec *args, const char *in, size_t in_len, cons
 
 char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 {
-	return git_args_n(args, in, in ? strlen(in) : 0, index, rc);
-}
-
-/* Git takes an argv vector; argument bytes never pass through a command parser. */
-static char *git_argv_n(const char *in, size_t len, const char *index, int *rc, const char **argv)
-{
-	struct strvec args = STRVEC_INIT;
-	char *out;
-
-	strvec_pushv(&args, argv);
-	out = git_args_n(&args, in, len, index, rc);
-	strvec_clear(&args);
-	return out;
+	return git_argv_n(in, in ? strlen(in) : 0, index, rc, args->v, NULL, -1);
 }
 
 char *git_argv(const char *in, const char *index, int *rc, const char **argv)
 {
-	return git_argv_n(in, in ? strlen(in) : 0, index, rc, argv);
+	return git_argv_n(in, in ? strlen(in) : 0, index, rc, argv, NULL, -1);
 }
 
 /* Git's -z records preserve path bytes; no caller decodes display quoting. */
 void git_records_argv(struct string_list *out, const char *index, int *rc, const char **argv)
 {
-	char *p = git_argv(NULL, index, rc, argv), *end;
+	char *bytes = git_argv(NULL, index, rc, argv), *p = bytes, *end;
 
 	for (end = p + git_out_len; p < end; p += strlen(p) + 1)
 		string_list_append(out, p);
+	free(bytes);
+}
+
+/* Finish Git before consuming candidates, without retaining the entire backlog. */
+FILE *git_spool(const char *in, const char **argv)
+{
+	struct tempfile *tmp = mks_tempfile_dt("ait-candidates-XXXXXX", "revisions");
+	FILE *stream;
+	char *out;
+
+	if (!tmp)
+		write_error("temporary candidates");
+	stream = xfdopen(xdup(tmp->fd), "w+");
+	if (delete_tempfile(&tmp))
+		write_error("temporary candidates");
+	fcntl(fileno(stream), F_SETFD, FD_CLOEXEC);
+	out = git_argv_n(in, in ? strlen(in) : 0, NULL, NULL, argv, NULL, fileno(stream));
+	free(out);
+	if (fseek(stream, 0, SEEK_SET))
+		write_error("temporary candidates");
+	return stream;
 }
 
 /* Binary index input retains its byte length, including NUL record separators. */
 static char *git_feed_argv(const struct strbuf *in, const char *index, int *rc, const char **argv)
 {
-	return git_argv_n(in->buf, in->len, index, rc, argv);
+	return git_argv_n(in->buf, in->len, index, rc, argv, NULL, -1);
 }
 #define git_feed(in, index, rc, ...) \
 	git_feed_argv(in, index, rc, (const char *[]){ __VA_ARGS__, NULL })
@@ -313,29 +331,43 @@ int config_true(const char *key)
 	return !strcmp(line1(git_run(NULL, NULL, &rc, "config", "--bool", key)), "true");
 }
 
+static struct child_process cat_file = CHILD_PROCESS_INIT;
+static FILE *cat_output;
+
+/* transport-helper.c:disconnect closes helper IO before finish_command. */
+static void close_cat_file(void)
+{
+	if (!cat_output)
+		return;
+	close(cat_file.in);
+	fclose(cat_output);
+	cat_output = NULL;
+	finish_command(&cat_file);
+}
+
 /* the object NAME resolves to, through one "git cat-file --batch-command" (git-cat-file(1)) */
 char *object(const char *name, int contents, char *oid, size_t *size)
 {
-	static struct child_process cat = CHILD_PROCESS_INIT;
-	static FILE *out;
 	char *cmd = xstrfmt("%s %s\n", contents ? "contents" : "info", name);
 	char line[256], id[48], type[16], *buf;
 	size_t n;
 
-	if (!out) {
-		strvec_push(&cat.args, "git");
-		at_repository(&cat, NULL, 0);
-		strvec_pushl(&cat.args, "cat-file", "--batch-command", NULL);
-		cat.in = cat.out = -1;
-		cat.no_stderr = 1;
-		if (start_command(&cat))
+	if (!cat_output) {
+		strvec_push(&cat_file.args, "git");
+		at_repository(&cat_file, NULL, 0);
+		strvec_pushl(&cat_file.args, "cat-file", "--batch-command", NULL);
+		cat_file.in = cat_file.out = -1;
+		cat_file.no_stderr = 1;
+		if (start_command(&cat_file))
 			reject(128, NULL, "git failed: 'git cat-file': cannot run it");
-		fcntl(cat.in, F_SETFD, FD_CLOEXEC);
-		fcntl(cat.out, F_SETFD, FD_CLOEXEC);
-		out = xfdopen(cat.out, "r");
+		fcntl(cat_file.in, F_SETFD, FD_CLOEXEC);
+		fcntl(cat_file.out, F_SETFD, FD_CLOEXEC);
+		cat_output = xfdopen(cat_file.out, "r");
+		atexit(close_cat_file);
 	}
-	if (write_in_full(cat.in, cmd, strlen(cmd)) < 0 || !fgets(line, sizeof(line), out))
+	if (write_in_full(cat_file.in, cmd, strlen(cmd)) < 0 || !fgets(line, sizeof(line), cat_output))
 		reject(128, NULL, "git failed: 'git cat-file': it stopped");
+	free(cmd);
 	if (sscanf(line, "%47s %15s %zu", id, type, &n) != 3)
 		return NULL;
 	if (oid)
@@ -345,14 +377,27 @@ char *object(const char *name, int contents, char *oid, size_t *size)
 	if (!contents)
 		return xstrdup(type);
 	buf = xmallocz(n);
-	if (fread(buf, 1, n, out) != n || fgetc(out) != '\n')
+	if (fread(buf, 1, n, cat_output) != n || fgetc(cat_output) != '\n')
 		reject(128, NULL, "git failed: 'git cat-file': it stopped");
 	return buf;
 }
 
+int object_oid(const char *name, char *oid)
+{
+	char *type = object(name, 0, oid, NULL);
+	int found = type != NULL;
+
+	free(type);
+	return found;
+}
+
 int branch_tip(const char *name, char *oid)
 {
-	return !!object(xstrfmt("refs/heads/%s^{commit}", name), 0, oid, NULL);
+	char *ref = xstrfmt("refs/heads/%s^{commit}", name);
+	int found = object_oid(ref, oid);
+
+	free(ref);
+	return found;
 }
 
 /* S as one shell word for the commands hints give (v14 5.9a), quoted only where needed, as git shows a command */
@@ -411,10 +456,10 @@ static void setup(void)
 	const char *index_env = getenv("GIT_INDEX_FILE");
 
 	if (sscanf(git_run(NULL, NULL, &rc, "version"), "git version %d.%d", &major, &minor) != 2)
-		reject(128, "install git 2.38 or later", "cannot run git");
-	/* git merge-tree --write-tree came in 2.38 (git v2.53.0 Documentation/RelNotes/2.38.0.adoc) */
-	if (major < 2 || (major == 2 && minor < 38))
-		reject(128, "install git 2.38 or later", "git %d.%d is too old for ait", major, minor);
+		reject(128, "install git 2.53 or later", "cannot run git");
+	/* Git 2.53 is the supported and verified runtime (spec 6.1-1). */
+	if (major < 2 || (major == 2 && minor < 53))
+		reject(128, "install git 2.53 or later", "git %d.%d is too old for ait", major, minor);
 	string_list_split(&lines, git_run(NULL, NULL, &rc, "rev-parse", "--absolute-git-dir",
 		"--path-format=absolute", "--git-common-dir", "--show-object-format", "--show-toplevel"), "\n", -1);
 	if (lines.nr < 4)
@@ -436,7 +481,7 @@ static void setup(void)
 	top = lines.items[3].string;
 	for (i = 0; clear[i]; i++)
 		unsetenv(clear[i]);
-	if (object("HEAD^{commit}", 0, oid, NULL))
+	if (object_oid("HEAD^{commit}", oid))
 		head = xstrdup(oid);
 }
 
@@ -448,9 +493,15 @@ char *state_path(const char *name)
 
 static void state_dirs(void)
 {
-	mkdir(state_path(""), 0777);
-	mkdir(state_path("sessions"), 0777);
-	mkdir(state_path("worktrees"), 0777);
+	static const char *const dirs[] = { "", "sessions", "worktrees" };
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(dirs); i++) {
+		char *path = state_path(dirs[i]);
+
+		mkdir(path, 0777);
+		free(path);
+	}
 }
 
 static NORETURN void write_failure(const char *path, int listening)
@@ -504,6 +555,7 @@ void write_state(const char *path, const char *text)
 		errno = saved;
 		write_error(path);
 	}
+	free(tmp);
 }
 
 /* v14 4.6: the default-session pointer of the worktree WT */
@@ -516,14 +568,24 @@ static char *pointer_path(const char *wt)
 		hit = string_list_insert(&hashed, wt);
 		hit->util = line1(git_run(wt, NULL, NULL, "hash-object", "--stdin"));
 	}
-	return state_path(xstrfmt("worktrees/%s", (char *)hit->util));
+	{
+		char *name = xstrfmt("worktrees/%s", (char *)hit->util), *path = state_path(name);
+
+		free(name);
+		return path;
+	}
 }
 
 static char *default_of(const char *wt)
 {
 	struct strbuf sb = STRBUF_INIT;
+	char *path = pointer_path(wt), *value = NULL;
 
-	return strbuf_read_file(&sb, pointer_path(wt), 0) < 0 ? NULL : line1(strbuf_detach(&sb, NULL));
+	if (strbuf_read_file(&sb, path, 0) >= 0)
+		value = line1(strbuf_detach(&sb, NULL));
+	free(path);
+	strbuf_release(&sb);
+	return value;
 }
 
 /*
@@ -548,7 +610,10 @@ int lock_path(const char *path, int nowait)
 /* v14 4.2-4.5: the session S's files: SUFFIX "" its lines, ".lock", ".listen", ".seen" */
 char *session_path(const char *s, const char *suffix)
 {
-	return state_path(xstrfmt("sessions/%s%s", s, suffix));
+	char *name = xstrfmt("sessions/%s%s", s, suffix), *path = state_path(name);
+
+	free(name);
+	return path;
 }
 
 void session_lines(const char *s, struct string_list *lines)
@@ -556,8 +621,14 @@ void session_lines(const char *s, struct string_list *lines)
 	struct strbuf sb = STRBUF_INIT;
 
 	string_list_clear(lines, 0);
-	strbuf_read_file(&sb, session_path(s, ""), 0);
+	{
+		char *path = session_path(s, "");
+
+		strbuf_read_file(&sb, path, 0);
+		free(path);
+	}
 	string_list_split(lines, sb.buf, "\n", -1);
+	strbuf_release(&sb);
 }
 
 void session_write(const char *s, struct string_list *lines)
@@ -568,13 +639,24 @@ void session_write(const char *s, struct string_list *lines)
 	for_each_string_list_item(item, lines)
 		if (*item->string)
 			strbuf_addf(&sb, "%s\n", item->string);
-	write_state(session_path(s, ""), sb.buf);
+	{
+		char *path = session_path(s, "");
+
+		write_state(path, sb.buf);
+		free(path);
+	}
+	strbuf_release(&sb);
 }
 
 /* v14 4.6: the worktree WT's lock */
 static int hold_lock(const char *wt)
 {
-	return lock_path(xstrfmt("%s.lock", pointer_path(wt)), 0);
+	char *pointer = pointer_path(wt), *path = xstrfmt("%s.lock", pointer);
+	int fd = lock_path(path, 0);
+
+	free(pointer);
+	free(path);
+	return fd;
 }
 
 static struct string_list *worktrees(void)
@@ -602,16 +684,45 @@ static int gone(const char *wt)
 static char *session_read(const char *s, char *name)
 {
 	struct strbuf sb = STRBUF_INIT;
-	char *wt;
+	char *wt, *path, *result = NULL;
 
-	if (!id_ok(s, "S") || strbuf_read_file(&sb, session_path(s, ""), 0) < 0)
+	if (!id_ok(s, "S"))
 		return NULL;
+	path = session_path(s, "");
+	if (strbuf_read_file(&sb, path, 0) < 0)
+		goto out;
 	wt = strstr(sb.buf, "\nworktree ");
 	if (!starts_with(sb.buf, "agent ") || !wt)
-		return NULL;
+		goto out;
 	if (name)
 		snprintf(name, 72, "%.*s", (int)strcspn(sb.buf + 6, "\n"), sb.buf + 6);
-	return line1(wt + 10);
+	result = xstrdup(line1(wt + 10));
+out:
+	free(path);
+	strbuf_release(&sb);
+	return result;
+}
+
+static NORETURN void unknown_session(const char *s)
+{
+	reject(128, hint_command_for("-", "ait session list"), "no usable ait session: unknown session '%s'", s);
+}
+
+/*
+ * v14 4.4: the session S's lock, for reading and writing its file; the
+ * session is still there once it is held (a close may have come first)
+ */
+int lock_session(const char *s)
+{
+	char *path = session_path(s, ".lock"), *wt;
+	int fd = lock_path(path, 0);
+
+	free(path);
+	wt = session_read(s, NULL);
+	if (!wt)
+		unknown_session(s);
+	free(wt);
+	return fd;
 }
 
 /* v14 5.1: AIT_SESSION, else this worktree's default session; NEED 1 requires one */
@@ -634,12 +745,12 @@ const char *session(int need)
 			unlink(pointer_path(top));
 		close(fd);
 	} else if (env && !wt) {
-		reject(128, hint_command("ait session list"), "no usable ait session: unknown session '%s'", env);
+		unknown_session(env);
 	} else if (wt && strcmp(wt, top)) {
 		char *hint = gone(wt) ? xstrfmt("its worktree is gone; close it: '%s', then open a session "
 						"with the same name in the worktree of your branch: '%s'",
-						hint_command("ait session close %s", env),
-						hint_command("ait session open --agent %s", agent)) : xstrfmt("use it in its worktree '%s'", wt);
+						hint_command_for("-", "ait session close %s", env),
+						hint_command_for("-", "ait session open --agent %s", agent)) : xstrfmt("use it in its worktree '%s'", wt);
 
 		reject(128, hint, "no usable ait session: '%s' belongs to worktree '%s'", env, wt);
 	}
@@ -647,12 +758,16 @@ const char *session(int need)
 		reject(128, xstrfmt("find your session with '%s', or open one: '%s'",
 				    hint_command("ait session list"), hint_command("ait session open --agent <name>")),
 		       "no usable ait session: none for this worktree");
-	if (!wt)
+	if (!wt) {
+		free((char *)dflt);
 		return NULL;
+	}
 	snprintf(sid, sizeof(sid), "%s", env);
 	/* v14 5.9a: hints name the session when it is not this worktree's default */
 	if (!from_default && (!dflt || strcmp(env, dflt)))
 		cmd_prefix = xstrfmt("AIT_SESSION=%s ", env);
+	free(wt);
+	free((char *)dflt);
 	return sid;
 }
 
@@ -665,9 +780,13 @@ static void read_sessions(struct string_list *ids)
 {
 	struct dirent *de;
 	DIR *dir;
+	char *path;
 
 	state_dirs();
-	if (!(dir = opendir(state_path("sessions"))))
+	path = state_path("sessions");
+	dir = opendir(path);
+	free(path);
+	if (!dir)
 		return;
 	while ((de = readdir(dir))) {
 		struct session_file f;
@@ -685,8 +804,6 @@ static void session_open(struct string_list *ids, const char *name)
 	char *dflt, other[72];
 	int fd;
 
-	if (!agent_ok(name))
-		reject(129, NULL, "bad agent name '%s'", name);
 	newid(sid, 'S');
 	write_state(session_path(sid, ""), xstrfmt("agent %s\nworktree %s\n", name, top));
 	session_tips(sid, NULL, NULL, NULL);
@@ -750,11 +867,11 @@ static void session_close(struct string_list *ids, const char *s)
 	int fd;
 
 	if (!item)
-		reject(128, hint_command("ait session list"), "no usable ait session: unknown session '%s'", s);
+		unknown_session(s);
 	f = item->util;
 	/* v14 4.5: the worktree's lock, the session's, then the listener's tried */
 	fd = hold_lock(f->wt);
-	lock_path(session_path(s, ".lock"), 0);
+	lock_session(s);
 	if (lock_path(session_path(s, ".listen"), 1) < 0) {
 		struct strbuf pid = STRBUF_INIT;
 
@@ -774,16 +891,36 @@ static void session_close(struct string_list *ids, const char *s)
 static int cmd_session(int argc, const char **argv)
 {
 	struct string_list ids = STRING_LIST_INIT_DUP;
+	const char *current;
+	struct string_list_item *item;
+	enum { SESSION_OPEN, SESSION_LIST, SESSION_CLOSE } action;
 
-	read_sessions(&ids);
-	if (argc == 4 && !strcmp(argv[1], "open") && !strcmp(argv[2], "--agent"))
-		session_open(&ids, argv[3]);
-	else if (argc == 2 && !strcmp(argv[1], "list"))
-		session_list(&ids);
-	else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "close"))
-		session_close(&ids, argc == 3 ? argv[2] : session(1));
-	else
+	if (argc == 4 && !strcmp(argv[1], "open") && !strcmp(argv[2], "--agent")) {
+		if (!agent_ok(argv[3]))
+			reject(129, NULL, "bad agent name '%s'", argv[3]);
+		action = SESSION_OPEN;
+	} else if (argc == 2 && !strcmp(argv[1], "list")) {
+		action = SESSION_LIST;
+	} else if ((argc == 2 || argc == 3) && !strcmp(argv[1], "close")) {
+		action = SESSION_CLOSE;
+	} else {
 		reject(129, NULL, "unknown session command");
+	}
+	current = session(action == SESSION_CLOSE && argc == 2);
+	read_sessions(&ids);
+	if (action == SESSION_OPEN)
+		session_open(&ids, argv[3]);
+	else if (action == SESSION_LIST)
+		session_list(&ids);
+	else
+		session_close(&ids, argc == 3 ? argv[2] : current);
+	for_each_string_list_item(item, &ids) {
+		struct session_file *file = item->util;
+
+		free(file->wt);
+		free(file);
+	}
+	string_list_clear(&ids, 0);
 	return 0;
 }
 
@@ -813,40 +950,76 @@ void names_load(struct names *n)
 {
 	struct string_list refs = STRING_LIST_INIT_DUP;
 	struct string_list_item *ref;
+	char *text;
 
 	string_list_init_dup(&n->local);
 	string_list_init_dup(&n->remote);
 	string_list_init_dup(&n->remotes);
 	string_list_init_dup(&n->tips);
-	string_list_split(&n->remotes, git("remote"), "\n", -1);
-	string_list_split(&refs, git("for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/ait/",
-		"refs/remotes/"), "\n", -1);
+	text = git("remote");
+	string_list_split(&n->remotes, text, "\n", -1);
+	free(text);
+	text = git("for-each-ref", "--format=%(objectname) %(refname) %(upstream)", "refs/heads/ait/", "refs/remotes/");
+	string_list_split(&refs, text, "\n", -1);
+	free(text);
 	for_each_string_list_item(ref, &refs) {
 		const char *name = strchr(ref->string, ' ');
 		const char *rest;
 		const char *remote_name;
+		char *up;
 
 		if (!name)
 			continue;
 		name++;
+		up = strchr(name, ' ');
+		if (up)
+			*up++ = 0;
 		if (skip_prefix(name, "refs/heads/ait/", &rest) && *rest) {
-			string_list_insert(&n->local, xstrfmt("ait/%s", rest));
-			string_list_append(&n->tips, xstrfmt("tip %s", ref->string));
+			char *local = xstrfmt("ait/%s", rest);
+
+			string_list_insert(&n->local, local)->util = up && *up ? xstrdup(up) : NULL;
+			free(local);
+			string_list_append_nodup(&n->tips, xstrfmt("tip %s", ref->string));
 			continue;
 		}
 		remote_name = remote_ait_name(&n->remotes, name);
 		if (remote_name) {
 			struct string_list_item *item = string_list_insert(&n->remote, remote_name);
 
-			if (!item->util)
+			if (!item->util) {
 				item->util = xcalloc(1, sizeof(struct string_list));
+				string_list_init_dup(item->util);
+			}
 			string_list_append(item->util, name);
-			string_list_append(&n->tips, xstrfmt("tip %s", ref->string));
+			string_list_append_nodup(&n->tips, xstrfmt("tip %s", ref->string));
 		}
 	}
 	n->nr = n->local.nr;
 	for_each_string_list_item(ref, &n->remote)
 		n->nr += !string_list_has_string(&n->local, ref->string);
+	string_list_clear(&refs, 0);
+}
+
+/* Names and their upstream atoms come from the same for-each-ref/config read. */
+const char *names_upstream(struct names *n, const char *branch)
+{
+	struct string_list_item *item = string_list_lookup(&n->local, branch);
+
+	return item && item->util && remote_ait_name(&n->remotes, item->util) ? item->util : NULL;
+}
+
+void names_clear(struct names *n)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &n->remote) {
+		string_list_clear(item->util, 0);
+		free(item->util);
+	}
+	string_list_clear(&n->local, 1);
+	string_list_clear(&n->remote, 0);
+	string_list_clear(&n->remotes, 0);
+	string_list_clear(&n->tips, 0);
 }
 
 /*
@@ -946,11 +1119,16 @@ char *checkout_file(void)
 	return git_path("ait-branch");
 }
 
-static char *checkout_read(void)
+char *checkout_read(void)
 {
 	struct strbuf sb = STRBUF_INIT;
+	char *path = checkout_file(), *value = NULL;
 
-	return strbuf_read_file(&sb, checkout_file(), 0) < 0 ? NULL : line1(strbuf_detach(&sb, NULL));
+	if (strbuf_read_file(&sb, path, 0) >= 0)
+		value = line1(strbuf_detach(&sb, NULL));
+	free(path);
+	strbuf_release(&sb);
+	return value;
 }
 
 /* the "ait init" hint of 4.3: only when init can make a local branch */
@@ -968,10 +1146,9 @@ static const char *init_hint(struct names *n)
  * spec 4.2, 4.3 0-2: the contract branch this worktree works with; NULL with
  * the refusal in MSG and HINT (listen goes on after one, 6.8)
  */
-const char *branch_find(struct names *n, const char **msg, struct strbuf *hint, int *only)
+const char *branch_find(struct names *n, const char *chosen, const char **msg, struct strbuf *hint, int *only)
 {
 	struct string_list_item *item;
-	char *chosen;
 
 	if (only)
 		*only = 0;
@@ -982,7 +1159,6 @@ const char *branch_find(struct names *n, const char **msg, struct strbuf *hint, 
 			strbuf_addstr(hint, hint_command("ait init"));
 		return NULL;
 	}
-	chosen = checkout_read();
 	if (chosen && string_list_has_string(&n->local, chosen))
 		return chosen;
 	/* 2.1.2: one name, counting the remote-tracking names too, so a DWIM-made branch is not taken silently */
@@ -1011,7 +1187,7 @@ const char *branch_name(void)
 
 	if (!name) {
 		names_load(&n);
-		if (!(name = branch_find(&n, &msg, &hint, &only_branch)))
+		if (!(name = branch_find(&n, checkout_read(), &msg, &hint, &only_branch)))
 			reject(128, hint.len ? hint.buf : NULL, "%s", msg);
 	}
 	return name;
@@ -1068,7 +1244,207 @@ static char *head_branch(void)
 	return !rc && skip_prefix(ref, "refs/heads/", &name) ? xstrdup(name) : NULL;
 }
 
-const char *start(int how)
+/* spec 4.5: assembly, parser probes and diagnostics share these keys. */
+static const char *const trailer_keys[] = { "Ait-Request", "Ait-Agent", "Ait-Session" };
+
+static char *trailer_message(const char *msg, const char *rid, const char *who, const char *session_id)
+{
+	const char *values[] = { rid, who, session_id };
+	struct strbuf sb = STRBUF_INIT;
+	size_t i;
+
+	strbuf_addstr(&sb, msg);
+	strbuf_complete_line(&sb);
+	if (rid) {
+		strbuf_addch(&sb, '\n');
+		for (i = 0; i < ARRAY_SIZE(trailer_keys); i++)
+			strbuf_addf(&sb, "%s: %s\n", trailer_keys[i], values[i]);
+	}
+	return strbuf_detach(&sb, NULL);
+}
+
+/*
+ * Like Git's tmp_objdir_destroy(), own the entire private ODB, including
+ * interrupted loose writes. nftw avoids importing repository-aware dir.c.
+ */
+static char *message_directory;
+
+static int remove_message_entry(const char *path, const struct stat *st UNUSED,
+				int type UNUSED, struct FTW *walk UNUSED)
+{
+	return !remove(path) || errno == ENOENT ? 0 : -1;
+}
+
+/* Like builtin/clone.c:396-423, clean on exit and signals below child cleanup. */
+static void remove_message_directory(void)
+{
+	if (message_directory)
+		nftw(message_directory, remove_message_entry, 8, FTW_DEPTH | FTW_PHYS);
+}
+
+static void remove_message_on_signal(int signo)
+{
+	remove_message_directory();
+	sigchain_pop(signo);
+	raise(signo);
+}
+
+/*
+ * The same Git writer and history reader handle encoding and trailer config.
+ * Return the decoded body followed by the three values, each NUL-terminated.
+ */
+static char *read_message(const char *message)
+{
+	static int initialized;
+	struct tempfile *probe = mks_tempfile_dt("ait-message-XXXXXX", "owner");
+	struct strbuf format = STRBUF_INIT;
+	char *dir, *tree = NULL, *oid = NULL, *out = NULL;
+	const char *env[] = { NULL, "GIT_AUTHOR_NAME=ait", "GIT_AUTHOR_EMAIL=ait@invalid",
+		"GIT_AUTHOR_DATE=@0 +0000", "GIT_COMMITTER_NAME=ait", "GIT_COMMITTER_EMAIL=ait@invalid",
+		"GIT_COMMITTER_DATE=@0 +0000", NULL };
+	size_t i;
+	int rc, cleanup_rc, cleanup_errno;
+
+	if (!probe)
+		write_error("temporary message");
+	message_directory = dir = xstrdup(absolute_path(probe->directory));
+	if (!initialized) {
+		atexit(remove_message_directory);
+		sigchain_push_common(remove_message_on_signal);
+		initialized = 1;
+	}
+	/* Transfer directory ownership; tempfile still owns its anchor file. */
+	free(probe->directory);
+	probe->directory = NULL;
+	guard_git_children();
+	if (close_tempfile_gently(probe))
+		write_error(probe->filename.buf);
+	env[0] = xstrfmt("GIT_OBJECT_DIRECTORY=%s", message_directory);
+	tree = line1(git_argv_n("", 0, NULL, &rc, (const char *[]){ "mktree", NULL }, env, -1));
+	if (!rc)
+		oid = line1(git_argv_n(message, strlen(message), NULL, &rc,
+			(const char *[]){ "commit-tree", tree, NULL }, env, -1));
+	if (!rc) {
+		strbuf_addstr(&format, "--format=format:%B%x00");
+		for (i = 0; i < ARRAY_SIZE(trailer_keys); i++)
+			strbuf_addf(&format, "%%(trailers:key=%s,valueonly)%%x00", trailer_keys[i]);
+		out = git_argv_n(NULL, 0, NULL, &rc,
+			(const char *[]){ "log", "--no-walk", format.buf, oid, "--", NULL }, env, -1);
+	}
+	cleanup_rc = nftw(dir, remove_message_entry, 8, FTW_DEPTH | FTW_PHYS);
+	cleanup_errno = errno;
+	/* Deactivate the file even after a failed directory cleanup. */
+	delete_tempfile(&probe);
+	free(tree);
+	free(oid);
+	free((char *)env[0]);
+	strbuf_release(&format);
+	/* Cleanup must not replace the writer's original error with an IO hint. */
+	if (rc)
+		reject(128, NULL, "%s", git_failed());
+	if (cleanup_rc) {
+		errno = cleanup_errno;
+		write_error(dir);
+	}
+	message_directory = NULL;
+	free(dir);
+	return out;
+}
+
+/* spec 4.5: compare the exact three values using the same reader as history. */
+static void require_trailers(const char *found, const char *rid, const char *who, const char *session_id)
+{
+	const char *values[] = { rid, who, session_id };
+	const char *p = found;
+	struct strbuf missing = STRBUF_INIT, settings = STRBUF_INIT;
+	struct string_list names = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+	size_t i;
+	int rc;
+
+	for (i = 0; i < ARRAY_SIZE(trailer_keys); i++) {
+		char *expected = xstrfmt("%s\n", values[i]);
+
+		if (strcmp(p, expected))
+			strbuf_addf(&missing, "%s'%s'", missing.len ? ", " : "", trailer_keys[i]);
+		free(expected);
+		p += strlen(p) + 1;
+	}
+	if (!missing.len)
+		return;
+	git_records(&names, NULL, &rc, "config", "--null", "--name-only", "--get-regexp",
+		    "^(core\\.comment(char|string)|trailer\\.separators|trailer\\..*\\.key)$");
+	if (rc > 1)
+		reject(128, NULL, "%s", git_failed());
+	string_list_sort(&names);
+	string_list_remove_duplicates(&names, 0);
+	for_each_string_list_item(item, &names)
+		strbuf_addf(&settings, "%s'%s'", settings.len ? ", " : "", item->string);
+	reject(128, NULL, "git config hides the trailers: %s%s%s%s", missing.buf,
+	       settings.len ? " (" : "", settings.buf, settings.len ? ")" : "");
+}
+
+/* Git judges trailer visibility; its cutoff helper only supplies the rejected line. */
+static void message_usage(const char *message, const char *reference)
+{
+	char *parsed = git_run(message, NULL, NULL, "interpret-trailers", "--parse", "--no-divider");
+	char *expected = git_run(reference, NULL, NULL, "interpret-trailers", "--parse", "--no-divider");
+	size_t len = strlen(message), end;
+	int readable = *parsed && !strcmp(parsed, expected);
+
+	free(parsed);
+	free(expected);
+	if (readable)
+		return;
+	if (!comment_line_str) {
+		char *prefix = git_run("x\n", NULL, NULL, "stripspace", "--comment-lines");
+
+		if (!ends_with(prefix, " x\n"))
+			BUG("git stripspace: missing commented line");
+		prefix[git_out_len - 3] = 0;
+		comment_line_str = prefix;
+	}
+	end = wt_status_locate_end(message, len);
+	if (end < len)
+		reject(129, "remove that line from the message", "the message hides the trailers: '%s'",
+		       xstrndup(message + end, strcspn(message + end, "\n")));
+}
+
+static char *checked_message(const char *msg, const char *rid, const char *who, const char *session_id,
+			     int check_values)
+{
+	char *text = trailer_message(msg, rid, who, session_id);
+	char *reference = trailer_message("", rid, who, session_id);
+	char *view = read_message(text);
+
+	message_usage(view, reference);
+	if (check_values)
+		require_trailers(view + strlen(view) + 1, rid, who, session_id);
+	free(view);
+	free(reference);
+	return text;
+}
+
+char *request_message(const char *msg, int fulfilling)
+{
+	char *text = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", msg), *probe;
+	char nonce[16];
+
+	/* A body that quotes an earlier probe must not impersonate the appended block. */
+	newid(nonce, 'R');
+	probe = checked_message(text, nonce, nonce, nonce, 0);
+	free(probe);
+	return text;
+}
+
+void checkin_prepare(struct checkin *c)
+{
+	if (!*c->rid)
+		newid(c->rid, 'R');
+	c->record = checked_message(c->msg, c->rid, agent, sid, 1);
+}
+
+struct branch *start(int how)
 {
 	struct branch *b = branch_load(branch_name(), NULL, NULL);
 	char *on;
@@ -1081,20 +1457,15 @@ const char *start(int how)
 	if ((how & START_FULFILS) && *git("ls-files", "--unmerged"))
 		reject(1, NULL, "%s", refusal_words(UNMERGED, NULL, NULL, NULL));
 	session(!!(how & START_SESSION));
-	return b->name;
+	if (how & START_TRAILERS) {
+		/* The history formatter needs an inert subject before the trailer-only probe. */
+		char *probe = checked_message("ait", "R000000000000", agent, sid, 1);
+
+		free(probe);
+	}
+	return b;
 }
 
-/* the trailers of a checkin commit (spec 4.5, v14 5.4) */
-static char *checkin_message(struct checkin *c)
-{
-	struct strbuf sb = STRBUF_INIT;
-
-	strbuf_addstr(&sb, c->msg);
-	strbuf_complete_line(&sb);
-	if (!c->no_trailers)
-		strbuf_addf(&sb, "\nAit-Request: %s\nAit-Agent: %s\nAit-Session: %s\n", c->rid, agent, sid);
-	return strbuf_detach(&sb, NULL);
-}
 
 /*
  * the tree of TREEISH with the entries INFO ("update-index -z --index-info"
@@ -1147,7 +1518,10 @@ static void checkin_invariants(struct checkin *c, struct branch *now, const char
 		reject(1, c->violation_hint ? c->violation_hint(c, NULL) : NULL, "%s'%s': %s", c->refusal, after->errors.items[0].string,
 		       (char *)after->errors.items[0].util);
 	invariants(now, now, NULL, &before);
-	invariants(after, now, c->fulfilling, &then);
+	if (c->candidate)
+		invariants_view(c->candidate, now, c->fulfilling, &then);
+	else
+		invariants(after, now, c->fulfilling, &then);
 	for_each_string_list_item(v, &then)
 		if (!string_list_has_string(&before, v->string))
 			string_list_insert(&added, v->string)->util = v->util;
@@ -1155,8 +1529,9 @@ static void checkin_invariants(struct checkin *c, struct branch *now, const char
 		reject(1, c->violation_hint ? c->violation_hint(c, &added) : NULL, "%s%s",
 		       c->refusal ? c->refusal : "", violation_words(added.items[0].util));
 	string_list_clear(&added, 0);
-	string_list_clear(&before, 1);
-	string_list_clear(&then, 1);
+	violations_clear(&before);
+	violations_clear(&then);
+	branch_free(after);
 }
 
 /* spec 4.4-4 (E_MOVED): what the checkin read changed meanwhile */
@@ -1180,10 +1555,15 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
 {
 	struct branch *now;
 
-	string_list_clear(&c->put, 0);
+	string_list_clear(&c->put, 1);
+	branch_free(c->at);
+	free(c->tree);
+	free((char *)c->second_parent);
+	free((char *)c->ff);
 	c->tree = NULL;
 	c->second_parent = c->ff = NULL;
 	c->fulfilling = NULL;
+	c->candidate = NULL;
 	c->at = now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
 	/* a tip that a git commit or merge broke after start() (4.3-3) */
 	refuse_malformed(now, 0);
@@ -1197,6 +1577,18 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
 	return c->tree;
 }
 
+/* The checkin owns T and its assembled output until the caller has reported it. */
+void checkin_clear(struct checkin *c)
+{
+	branch_free(c->at);
+	c->at = NULL;
+	free(c->tree);
+	free((char *)c->second_parent);
+	free((char *)c->ff);
+	free((char *)c->record);
+	string_list_clear(&c->put, 1);
+}
+
 /*
  * spec 4.4: one checkin. JUDGE decides on T what to put; on a lost CAS the
  * whole command is judged again on the new tip, unless a file it puts moved.
@@ -1208,6 +1600,12 @@ char *checkin_run(struct checkin *c, judge_fn decide)
 	guard_git_children();
 	if (!*c->rid)
 		newid(c->rid, 'R');
+	if (!c->record) {
+		if (c->no_trailers)
+			c->record = trailer_message(c->msg, NULL, NULL, NULL);
+		else
+			checkin_prepare(c);
+	}
 	checkin_tip(c);
 	for (;;) {
 		char old[48], *tree = checkin_judge(c, decide);
@@ -1227,7 +1625,7 @@ char *checkin_run(struct checkin *c, judge_fn decide)
 				strvec_pushl(&args, "-p", c->tip, NULL);
 			if (c->second_parent)
 				strvec_pushl(&args, "-p", c->second_parent, NULL);
-			commit = line1(git_args(&args, checkin_message(c), NULL, NULL));
+			commit = line1(git_args(&args, c->record, NULL, NULL));
 			strvec_clear(&args);
 		}
 		/* 4.4-3: (a) no worktree uses the branch, judged by git; (b) the CAS */
@@ -1320,6 +1718,7 @@ static int cmd_init(int argc, const char **argv)
 
 	if (argc != 1)
 		reject(129, NULL, "init takes no arguments");
+	session(0);
 	strbuf_read_file(&exclude, path, 0);
 	if (!strstr(xstrfmt("\n%s", exclude.buf), "\n/.ait/\n")) {
 		leading_dirs(path);
@@ -1353,7 +1752,7 @@ static int cmd_init(int argc, const char **argv)
 
 			if (!*r->string)
 				continue;
-			out = git_run(NULL, NULL, &rc, "ls-remote", r->string, "refs/heads/ait/*");
+			out = git_run(NULL, NULL, &rc, "ls-remote", "--", r->string, "refs/heads/ait/*");
 			if (rc)
 				warning("cannot reach '%s'; skipped", r->string);
 			else if (*out)
@@ -1363,8 +1762,9 @@ static int cmd_init(int argc, const char **argv)
 		}
 		c.branch = xstrfmt("ait/%s", line1(git("var", "GIT_DEFAULT_BRANCH")));
 		string_list_init_dup(&c.put);
-		checkin_run(&c, NULL);
+		free(checkin_run(&c, NULL));
 		printf("branch %s\n", c.branch);
+		checkin_clear(&c);
 	}
 	return 0;
 }
@@ -1407,6 +1807,7 @@ static int cmd_checkout(int argc, const char **argv)
 	struct names n;
 	char *on;
 
+	session(0);
 	if (!contract_form(argc, argv, &n))
 		return pass_to_git("checkout", argv);
 	local_or_refuse(&n, argv[1]);
@@ -1429,6 +1830,7 @@ static int cmd_switch(int argc, const char **argv)
 	struct strvec args = STRVEC_INIT;
 	int rc;
 
+	session(0);
 	if (argc != 2 || !contract_form(argc, argv, &n))
 		return pass_to_git("switch", argv);
 	local_or_refuse(&n, argv[1]);

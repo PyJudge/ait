@@ -20,9 +20,9 @@ case $(uname -s) in Darwin) set -- "$@" -liconv ;; esac
 "$compiler" "$@" -o "$T/scopes-join" || exit 1
 
 run "$T/scopes-join" borrowed
-check_rc "scope serialization preserves borrowed items, order and ownership" 0
+check_rc "typed scope serialization preserves input storage and order" 0
 run "$T/scopes-join" owned
-check_rc "scope serialization preserves owned items, order and ownership" 0
+check_rc "copied scope values retain their own storage after source clear" 0
 run "$T/scopes-join" empty
 check_rc "empty scopes remain empty" 0
 

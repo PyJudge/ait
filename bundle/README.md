@@ -9,7 +9,7 @@ sh try.sh ~/ait-play     # 명세만 있는 실험 저장소와 에이전트 a, 
 sh ait-graph.sh          # (저장소 안에서) 계약 커밋의 그래프와, 커밋마다 바뀐 계약의 종류·상태
 ```
 
-- `bin/ait`: ait. git 2.36 이상이 필요하다.
+- `bin/ait`: ait. git 2.53 이상이 필요하다.
 - `skills/ait/`: 스킬. setup.sh와 try.sh는 그 저장소의 `.claude/skills/`에 넣는다. 모든 프로젝트에서 쓰려면 `~/.claude/skills/`에 복사한다.
 - 레코드 형식은 `.ait/init`의 `version 2`다. 옛 판(`version 1`)으로 시작한 저장소에서는 이 ait가 `.ait/init`을 고치라는 hint를 주며 멈춘다(계약이 없으면 그대로 따르면 된다).
 - setup.sh는 `ait init`으로 그 저장소의 현재 브랜치에 `.ait/init`을 커밋하고 hook 넷을 깐다. 스킬과 CLAUDE.md의 `## ait` 절은 커밋하지 않고 둔다.

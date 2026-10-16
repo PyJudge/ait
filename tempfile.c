@@ -103,6 +103,53 @@ struct tempfile *register_tempfile(const char *path)
 	return tempfile;
 }
 
+/* git v2.53.0 tempfile.c:205-249 */
+struct tempfile *mks_tempfile_dt(const char *directory_template,
+				 const char *filename)
+{
+	struct tempfile *tempfile;
+	const char *tmpdir;
+	struct strbuf sb = STRBUF_INIT;
+	int fd;
+	size_t directorylen;
+
+	if (!ends_with(directory_template, "XXXXXX")) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	tmpdir = getenv("TMPDIR");
+	if (!tmpdir)
+		tmpdir = "/tmp";
+
+	strbuf_addf(&sb, "%s/%s", tmpdir, directory_template);
+	directorylen = sb.len;
+	if (!mkdtemp(sb.buf)) {
+		int orig_errno = errno;
+		strbuf_release(&sb);
+		errno = orig_errno;
+		return NULL;
+	}
+
+	strbuf_addf(&sb, "/%s", filename);
+	fd = open(sb.buf, O_CREAT | O_EXCL | O_RDWR, 0600);
+	if (fd < 0) {
+		int orig_errno = errno;
+		strbuf_setlen(&sb, directorylen);
+		rmdir(sb.buf);
+		strbuf_release(&sb);
+		errno = orig_errno;
+		return NULL;
+	}
+
+	tempfile = new_tempfile();
+	strbuf_swap(&tempfile->filename, &sb);
+	tempfile->directory = xmemdupz(tempfile->filename.buf, directorylen);
+	tempfile->fd = fd;
+	activate_tempfile(tempfile);
+	return tempfile;
+}
+
 /* git v2.53.0 tempfile.c:298 */
 int close_tempfile_gently(struct tempfile *tempfile)
 {

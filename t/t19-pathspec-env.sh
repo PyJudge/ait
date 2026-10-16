@@ -24,9 +24,16 @@ run env GIT_GLOB_PATHSPECS=1 GIT_NOGLOB_PATHSPECS=1 GIT_ICASE_PATHSPECS=1 ait st
 check_rc "ait's common boundary also isolates conflicting inherited pathspec modes" 0
 check "combined caller modes do not change ait filename selection" "has out 'modified:.*src/name\*' && ! has out 'modified:.*src/nameX'"
 
+# Git versions differ when the pattern is also an existing literal filename.
+env GIT_GLOB_PATHSPECS=1 git checkout -- 'src/name*' || exit 1
+cp 'src/name*' "$T/git-glob-star"
+cp src/nameX "$T/git-glob-x"
+printf 'changed\n' > 'src/name*'
+printf 'changed\n' > src/nameX
 run env GIT_GLOB_PATHSPECS=1 ait checkout -- 'src/name*'
 check_rc "native Git retains caller glob mode" 0
-check "native glob checkout selects both matching paths" "grep -qx original 'src/name*' && grep -qx original src/nameX"
+check "native glob checkout selects the same paths as Git" \
+	"cmp -s '$T/git-glob-star' 'src/name*' && cmp -s '$T/git-glob-x' src/nameX"
 printf 'changed\n' > 'src/name*'
 printf 'changed\n' > src/nameX
 run env GIT_NOGLOB_PATHSPECS=1 ait checkout -- 'src/name*'
