@@ -168,9 +168,7 @@ static const char *condition_at_t(struct branch *at, const char *id)
 /* the contract ID as it stands after this request's changes so far */
 static struct contract *contract_after(struct request_result *r, const char *id)
 {
-	struct contract_view v = { r->at, &r->changed, &r->records };
-
-	return contract_lookup(&v, id);
+	return contract_lookup(&r->view, id);
 }
 
 /*
@@ -228,7 +226,6 @@ static int ended(struct contract *c)
 	return !live(c) || (*c->id == 'X' && c->fulfilled.nr);
 }
 
-/* A candidate owns its lists; no clause can mutate the state it is judged against. */
 /* K, an ID or an alias of this request, of a kind in KINDS ("DOX") */
 static struct contract *contract_arg(struct request_result *r, const char *k, const char *kinds)
 {
@@ -282,7 +279,6 @@ static const struct spec *condition_from_file(struct request_input *q, const cha
 	return s;
 }
 
-
 /* Repeated files count once; each candidate owns a copy of fixed input. */
 static void specs_from_files(struct request_input *q, struct contract *c, const char *files)
 {
@@ -302,8 +298,10 @@ static void specs_from_files(struct request_input *q, struct contract *c, const 
 	string_list_clear(&seen, 0);
 }
 
-/* scope arguments fixed at T (spec 3.2); "-" keeps what is there */
-/* Parse once, but preserve the command's state/ID/scope error ordering. */
+/*
+ * spec 3.2: a scope argument, parsed once; "-" keeps what is there. An error
+ * waits until the clause is applied, after the common and state checks.
+ */
 static void prepare_scopes(struct scope_input *input, const char *arg, int allow_new, int allow_abs)
 {
 	input->raw = arg;
@@ -326,18 +324,6 @@ static void scopes_arg(struct scope_list *into, const struct scope_input *input,
 	scopes_copy(into, &input->value);
 	if (scopes_pin(into, t, NULL, &err))
 		reject(128, NULL, "bad scope: %s", err);
-}
-
-/*
- * spec 2.3.3: the IDs a change of C from OLD takes: the condition-id when
- * its conditions changed (unless trivial), the change-id when a row did
- */
-static void stamp(struct request_input *q, struct contract *c, struct contract *old, int trivial)
-{
-	if ((!old || !contract_same(c, old, CONTRACT_CONDITIONS)) && (!trivial || !old))
-		replace_text(&c->condition_id, q->rid);
-	if (!old || !contract_same(c, old, CONTRACT_ROWS))
-		replace_text(&c->change_id, q->rid);
 }
 
 static struct contract *make(struct request_input *q, struct request_result *r, const char *kind)
@@ -436,13 +422,19 @@ static void validate_change(struct request_input *q, struct request_result *r,
 		refuse(q, why, c, old);
 }
 
-/* 2.3.3, C68: the final difference from T takes IDs according to its own clauses. */
+/*
+ * spec 2.3.3, C68: the IDs come from the final difference from T. A new or
+ * reopened contract takes the RID for both; otherwise the condition-id when
+ * its conditions differ from T and not only by trivial changes, and the
+ * change-id when a row differs from T.
+ */
 static void publish_change(struct request_input *q, struct request_result *r,
 			   struct contract *old, struct contract *c,
 			   enum change_action action, int trivial)
 {
 	struct contract *at = contract_get(r->at, c->id);
-	int trivial_conditions;
+	struct string_list_item *slot;
+	int reopened, trivial_conditions;
 
 	if (action == RESCOPE)
 		string_list_insert(&r->reopened, c->id);
@@ -450,22 +442,15 @@ static void publish_change(struct request_input *q, struct request_result *r,
 		string_list_remove(&r->normal_specs, c->id, 0);
 	else if (!trivial && old && !contract_same(c, old, CONTRACT_SPECS))
 		string_list_insert(&r->normal_specs, c->id);
+	reopened = !at || string_list_has_string(&r->reopened, c->id);
 	trivial_conditions = (action == DRAFT && trivial) ||
-		(at && !string_list_has_string(&r->normal_specs, c->id) &&
-		 contract_same(c, at, CONTRACT_REQUIREMENTS));
-	replace_text(&c->condition_id, at ? at->condition_id : "");
-	replace_text(&c->change_id, at ? at->change_id : "");
-	stamp(q, c, at, trivial_conditions);
-	if (string_list_has_string(&r->reopened, c->id)) {
-		replace_text(&c->condition_id, q->rid);
-		replace_text(&c->change_id, q->rid);
-	}
-	{
-		struct string_list_item *slot = string_list_insert(&r->changed, c->id);
-
-		contract_free(slot->util);
-		slot->util = c;
-	}
+		(at && !string_list_has_string(&r->normal_specs, c->id) && contract_same(c, at, CONTRACT_REQUIREMENTS));
+	replace_text(&c->condition_id, reopened || (!contract_same(c, at, CONTRACT_CONDITIONS) && !trivial_conditions) ?
+		     q->rid : at->condition_id);
+	replace_text(&c->change_id, reopened || !contract_same(c, at, CONTRACT_ROWS) ? q->rid : at->change_id);
+	slot = string_list_insert(&r->changed, c->id);
+	contract_free(slot->util);
+	slot->util = c;
 }
 
 /* Clauses validate immediately; staged drafts first publish the complete batch. */
@@ -1237,7 +1222,7 @@ static char *contract_names(struct string_list *ids)
 }
 
 /* the fulfilments of the covered set (spec 6.7.5-2) into C's files, from the code commit */
-static void record(struct request_input *q, struct request_result *r, struct checkin *ck UNUSED)
+static void record(struct request_input *q, struct request_result *r)
 {
 	struct string_list_item *item;
 
@@ -1337,7 +1322,7 @@ static void request_judge(struct checkin *ck)
 	if (q->fixed.nr && q->fixed.nr != r->covered.nr)
 		checkin_moved(ck);
 	if (q->code)
-		record(q, r, ck);
+		record(q, r);
 	/* A drop's final state effect is present at step zero, before 4.10 too. */
 	for_each_string_list_item(item, &r->covered) {
 		struct contract *c = contract_after(r, item->string);
@@ -1630,49 +1615,46 @@ static int contract_new_spec(const char *path, const char *engine)
 	return 0;
 }
 
-static int branch_has_id(const char *name, const char *id)
-{
-	struct branch *b = branch_load(name, NULL, NULL);
-	int found = contract_get(b, id) != NULL;
-
-	branch_free(b);
-	return found;
-}
-
 /* spec 6.5.2 */
 static int contract_new_draft(const char *kind, const char *group)
 {
 	struct contract *c;
 	char id[16];
 	struct names n;
-	struct spec s = { 0 };
 	struct strbuf hint = STRBUF_INIT, msg = STRBUF_INIT;
-	const char *chosen;
+	struct string_list branches = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
+	const char *chosen;
 	int taken;
 
 	if (!group_ok(group))
 		reject(129, NULL, "bad group '%s'", group);
 	session(0);
 	names_load(&n);
-	chosen = branch_find(&n, checkout_read(), &msg, &hint, NULL);
 	/* unique on the contract branch, or on every local one when none is chosen (6.5.2) */
+	if ((chosen = branch_find(&n, checkout_read(), &msg, &hint, NULL)))
+		string_list_append(&branches, chosen)->util = branch_load(chosen, NULL, NULL);
+	else
+		for_each_string_list_item(item, &n.local)
+			string_list_append(&branches, item->string)->util = branch_load(item->string, NULL, NULL);
 	do {
 		newid(id, kind_letter(kind));
-		taken = chosen && branch_has_id(chosen, id);
-		for_each_string_list_item(item, &n.local)
-			taken |= !chosen && branch_has_id(item->string, id);
+		taken = 0;
+		for_each_string_list_item(item, &branches)
+			taken |= contract_get(item->util, id) != NULL;
 	} while (taken);
+	for_each_string_list_item(item, &branches)
+		branch_free(item->util);
+	string_list_clear(&branches, 0);
 	c = contract_new(kind, group, id);
 	if (strcmp(kind, "drop")) {
 		scope_append(&c->provider, &(struct scope){ .kind = SCOPE_FILE, .path = (char *)"<scope>" });
 		if (!strcmp(kind, "demand"))
 			scope_append(&c->consumer, &(struct scope){ .kind = SCOPE_FILE, .path = (char *)"<scope>" });
-		s.body = (char *)"<condition>\n";
-		strvec_init(&s.command);
-		string_list_init_dup(&s.success);
 		c->specs = xcalloc(1, sizeof(*c->specs));
-		spec_copy(c->specs, &s);
+		c->specs->body = xstrdup("<condition>\n");
+		strvec_init(&c->specs->command);
+		string_list_init_dup(&c->specs->success);
 		c->nspecs = 1;
 	} else {
 		c->target = xstrdup("<ID>");
@@ -1687,6 +1669,7 @@ static int contract_new_draft(const char *kind, const char *group)
 	contract_free(c);
 	names_clear(&n);
 	strbuf_release(&hint);
+	strbuf_release(&msg);
 	return 0;
 }
 

@@ -1329,44 +1329,53 @@ static char *read_message(const char *message)
 	return out;
 }
 
-/* the keys git's history reader left unread in request_message's probe (4.5) */
-static struct strbuf hidden_trailers = STRBUF_INIT;
-
 /*
  * spec 4.5, v14 5.3: the trailers must read back through the reader history
- * uses, on a commit as git writes it. A cut line in the body git decodes is
- * E_USAGE here, before the common checks; otherwise an unread key is the
- * config's, E_CONFIG after them (start). The probe holds a fresh nonce: a
- * block quoted in MSG cannot pose as the appended one, and trailer.c's
- * find_separator stops at the key, so the request's own ASCII values
- * ([A-Za-z0-9._-], 1.11) read as the nonce does.
+ * uses, on a commit as git writes it. TEXT is probed with a fresh nonce as
+ * the values: a block quoted in TEXT cannot pose as the appended one, and
+ * trailer.c's find_separator stops at the key, so the request's own ASCII
+ * values ([A-Za-z0-9._-], 1.11) read as the nonce does. UNREAD gets the keys
+ * not read back; the body git decodes is returned.
  */
-char *request_message(const char *msg, int fulfilling)
+static char *trailer_probe(const char *text, struct strbuf *unread)
 {
-	char *text = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", msg);
 	char nonce[16], *probe, *view, *value, *expected;
-	size_t i, len, end;
+	size_t i;
 
 	newid(nonce, 'R');
 	probe = trailer_message(text, nonce, nonce, nonce);
 	view = read_message(probe);
-	free(probe);
 	expected = xstrfmt("%s\n", nonce);
 	value = view + strlen(view) + 1;
 	for (i = 0; i < ARRAY_SIZE(trailer_keys); value += strlen(value) + 1, i++)
 		if (strcmp(value, expected))
-			strbuf_addf(&hidden_trailers, "%s'%s'", hidden_trailers.len ? ", " : "", trailer_keys[i]);
+			strbuf_addf(unread, "%s'%s'", unread->len ? ", " : "", trailer_keys[i]);
+	free(expected);
+	free(probe);
+	return view;
+}
+
+/* the keys the probe of request_message left unread, once it ran (4.5) */
+static int message_probed;
+static struct strbuf hidden_trailers = STRBUF_INIT;
+
+/* spec 4.5: a cut line in the message is E_USAGE, before the common checks */
+char *request_message(const char *msg, int fulfilling)
+{
+	char *text = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", msg);
+	char *view = trailer_probe(text, &hidden_trailers);
+	size_t len = strlen(view), end;
+
+	message_probed = 1;
 	if (hidden_trailers.len) {
 		/* git resolves core.commentChar and core.commentString for its cut line */
 		comment_line_str = git_run("x\n", NULL, NULL, "stripspace", "--comment-lines");
 		((char *)comment_line_str)[git_out_len - 3] = 0;
-		len = strlen(view);
 		end = wt_status_locate_end(view, len);
 		if (end < len)
 			reject(129, "remove that line from the message", "the message hides the trailers: '%s'",
 			       xstrndup(view + end, strcspn(view + end, "\n")));
 	}
-	free(expected);
 	free(view);
 	return text;
 }
@@ -1404,6 +1413,9 @@ struct branch *start(int how)
 	if ((how & START_FULFILS) && *git("ls-files", "--unmerged"))
 		reject(1, NULL, "%s", refusal_words(UNMERGED, NULL, NULL, NULL));
 	session(!!(how & START_SESSION));
+	/* 4.5: the trailers alone, under an inert subject (a first paragraph is never trailers) */
+	if ((how & START_TRAILERS) && !message_probed)
+		free(trailer_probe("ait", &hidden_trailers));
 	if ((how & START_TRAILERS) && hidden_trailers.len)
 		refuse_hidden_trailers();
 	return b;
