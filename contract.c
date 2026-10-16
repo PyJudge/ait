@@ -552,6 +552,7 @@ static char *spec_read(struct ynode *map, struct spec *s)
 	struct string_list cmd = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	char *why;
+	size_t i;
 
 	if (map->kind != 'm')
 		return yaml_refusal(map, "a spec is not a map");
@@ -573,11 +574,12 @@ static char *spec_read(struct ynode *map, struct spec *s)
 	string_list_clear(&cmd, 0);
 	if (success && (why = yaml_list(success, "success", &s->success, 0)))
 		return why;
-	for_each_string_list_item(item, &s->success)
-		if (!*item->string || item->string[strspn(item->string, "0123456789")] ||
-		    (*item->string == '0' && item->string[1]))
-			return yaml_refusal(success->kids[item - s->success.items],
-					    "'success' holds '%s', not a decimal integer", item->string);
+	for (i = 0; success && i < success->nr; i++) {
+		const char *code = success->kids[i]->value;
+
+		if (!*code || code[strspn(code, "0123456789")] || (*code == '0' && code[1]))
+			return yaml_refusal(success->kids[i], "'success' holds '%s', not a decimal integer", code);
+	}
 	if (s->engine && !success)
 		string_list_append(&s->success, "0");
 	if (environment && !ystr(environment))
