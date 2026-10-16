@@ -1325,15 +1325,15 @@ static char *read_message(const char *message)
 
 /*
  * spec 4.5, v14 5.3: the trailers must read back through the reader history
- * uses, on a commit as git writes it. TEXT gets the values RID, WHO and
- * SESSION_ID appended; UNREAD gets the keys not read back as given. The body
- * git decodes is returned.
+ * uses, on a commit as git writes it. RECORD is a message with the values
+ * RID, WHO and SESSION_ID appended; UNREAD gets the keys not read back as
+ * given. The body git decodes is returned.
  */
-static char *trailer_probe(const char *text, const char *rid, const char *who, const char *session_id,
+static char *trailer_probe(const char *record, const char *rid, const char *who, const char *session_id,
 			   struct strbuf *unread)
 {
 	const char *values[] = { rid, who, session_id };
-	char *probe = trailer_message(text, rid, who, session_id), *view = read_message(probe), *value;
+	char *view = read_message(record), *value;
 	size_t i;
 
 	value = view + strlen(view) + 1;
@@ -1342,7 +1342,6 @@ static char *trailer_probe(const char *text, const char *rid, const char *who, c
 			strbuf_addf(unread, "%s'%s'", unread->len ? ", " : "", trailer_keys[i]);
 		value += strlen(value) + 1;
 	}
-	free(probe);
 	return view;
 }
 
@@ -1350,17 +1349,18 @@ static char *trailer_probe(const char *text, const char *rid, const char *who, c
  * spec 4.5: a line of the message that cuts the trailers off is E_USAGE,
  * judged before the common checks. A fresh nonce stands for the values, so
  * a block quoted in the message cannot pose as the appended one; whether the
- * config lets the real values read is trailers_read_back()'s.
+ * config lets the real values read is checked_record()'s.
  */
 char *request_message(const char *msg, int fulfilling)
 {
 	char *text = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", msg);
 	struct strbuf unread = STRBUF_INIT;
-	char nonce[16], *view;
+	char nonce[16], *probe, *view;
 	size_t len, end;
 
 	newid(nonce, 'R');
-	view = trailer_probe(text, nonce, nonce, nonce, &unread);
+	probe = trailer_message(text, nonce, nonce, nonce);
+	view = trailer_probe(probe, nonce, nonce, nonce, &unread);
 	len = strlen(view);
 	if (unread.len) {
 		/* git resolves core.commentChar and core.commentString for its cut line */
@@ -1376,26 +1376,29 @@ char *request_message(const char *msg, int fulfilling)
 			       xstrndup(view + end, strcspn(view + end, "\n")));
 	}
 	strbuf_release(&unread);
+	free(probe);
 	free(view);
 	return text;
 }
 
 /*
- * spec 4.5: E_CONFIG, after the common checks and the session: the trailers
- * this request commits (RID, the session's agent and SID) read back under an
- * inert subject (a first paragraph is never trailers), or the settings that
- * change what git's trailer parser reads are named
+ * spec 4.5, v14 5.3: E_CONFIG, after the common checks and the session: the
+ * message MSG as it is committed, with this request's RID and the session's
+ * agent and SID, reads its trailers back (the message itself counts: git
+ * decodes it by i18n.commitEncoding), or the settings that change what git's
+ * trailer parser reads are named. The committed text is returned.
  */
-void trailers_read_back(const char *rid)
+char *checked_record(const char *msg, const char *rid)
 {
 	struct string_list names = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	struct strbuf unread = STRBUF_INIT, settings = STRBUF_INIT;
+	char *record = trailer_message(msg, rid, agent, sid);
 	int rc;
 
-	free(trailer_probe("ait", rid, agent, sid, &unread));
+	free(trailer_probe(record, rid, agent, sid, &unread));
 	if (!unread.len)
-		return;
+		return record;
 	git_records(&names, NULL, &rc, "config", "--null", "--name-only", "--get-regexp",
 		    "^(core\\.comment(char|string)|trailer\\.separators|trailer\\..*\\.key)$");
 	if (rc > 1)
