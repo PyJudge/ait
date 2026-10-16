@@ -117,7 +117,7 @@ int cmd_status(int argc, const char **argv)
 	printf("On contract branch %s%s\n", name, branch_only() ? " (the only one)" : "");
 	x = index_tree();
 	h = head ? tree_load(head) : NULL;
-	view = (struct contract_view){ b, NULL, NULL };
+	view = (struct contract_view){ b, NULL };
 	judgment_init(&current, &view, x);
 	judgment_init(&original, &view, h);
 	positions = xcalloc(scopes.nr, sizeof(*positions));
@@ -141,7 +141,7 @@ int cmd_status(int argc, const char **argv)
 		goto out;
 	putchar('\n');
 	me = session(0) ? agent : NULL;
-	invariants(&view, b, NULL, &bad);
+	invariants(b, b, NULL, &bad);
 	for_each_string_list_item(item, &bad)
 		warning("%s", violation_words(item->util));
 	/* the contracts are in ID order, the order of the blocks */
@@ -578,17 +578,13 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 	struct event_reasons why;
 	struct strbuf reason_text = STRBUF_INIT, acts = STRBUF_INIT, refs = STRBUF_INIT;
 	enum reason_kind kind;
-	char *parent;
+	char *first_parent = xstrfmt("%s^1", e), *parent, *patch;
 	int rc, in_head = 1;
 
 	for (kind = 0; kind < REASON_NR; kind++)
 		string_list_init_dup(&why.values[kind]);
-	{
-		char *first_parent = xstrfmt("%s^1", e);
-
-		parent = line1(git_run(NULL, NULL, &rc, "rev-parse", "-q", "--verify", first_parent));
-		free(first_parent);
-	}
+	parent = line1(git_run(NULL, NULL, &rc, "rev-parse", "-q", "--verify", first_parent));
+	free(first_parent);
 	if (!rc)
 		before = branch_load(name, parent, parent);
 	git_records(&files, NULL, NULL, "diff-tree", "-r", "-z", "--root", "--name-only", "--no-commit-id",
@@ -632,13 +628,10 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 	}
 	strbuf_addf(payload, "ait-event 1\ncommit %s\nrecipient %s\n%s%sin-head %s\n%s\n", e, sid, refs.buf,
 		    reason_text.buf, in_head ? "yes" : "no", acts.buf);
-	{
-		char *patch = git("show", "--no-color", "--no-ext-diff", "--no-textconv", "--no-show-signature",
-		"--diff-merges=first-parent", "--format=fuller", "--stat", "--patch", e);
-
-		strbuf_addstr(payload, patch);
-		free(patch);
-	}
+	patch = git("show", "--no-color", "--no-ext-diff", "--no-textconv", "--no-show-signature",
+		    "--diff-merges=first-parent", "--format=fuller", "--stat", "--patch", e);
+	strbuf_addstr(payload, patch);
+	free(patch);
 	strbuf_addstr(payload, "ait-event-end\n");
 out:
 	free(parent);
@@ -684,7 +677,7 @@ static void deliver(int *warned)
 	struct strbuf in = STRBUF_INIT, seenbuf = STRBUF_INIT, skipped = STRBUF_INIT, hint = STRBUF_INIT,
 		      msg = STRBUF_INIT;
 	const char *name, *up, *tip;
-	char *listed;
+	char *listed, *ref, *seen_path;
 	int rc, fd;
 
 	/* Git's collect→consume pattern: V, refs and upstream are inputs to this round. */
@@ -698,12 +691,9 @@ static void deliver(int *warned)
 	*warned = !name;
 	if (!name)
 		goto out;
-	{
-		char *ref = xstrfmt("refs/heads/%s", name);
-
-		tip = watch_ref(&n, &watched, ref);
-		free(ref);
-	}
+	ref = xstrfmt("refs/heads/%s", name);
+	tip = watch_ref(&n, &watched, ref);
+	free(ref);
 	if (!tip)
 		BUG("captured local branch has no tip");
 	if ((up = names_upstream(&n, name)))
@@ -711,17 +701,14 @@ static void deliver(int *warned)
 	mine = branch_load(name, tip, tip);
 	h = tree_load(*v.head_oid ? v.head_oid : EMPTY_TREE);
 	subscriptions_read(&subs, &v.lines, h);
-	judgment_init(&judgments, &(struct contract_view){ mine, NULL, NULL }, h);
+	judgment_init(&judgments, &(struct contract_view){ mine, NULL }, h);
 	for_each_string_list_item(item, &v.lines) {
 		if (starts_with(item->string, "tip "))
 			strbuf_addf(&in, "^%.40s\n", item->string + 4);
 	}
-	{
-		char *path = session_path(sid, ".seen");
-
-		strbuf_read_file(&seenbuf, path, 0);
-		free(path);
-	}
+	seen_path = session_path(sid, ".seen");
+	strbuf_read_file(&seenbuf, seen_path, 0);
+	free(seen_path);
 	string_list_split(&seen, seenbuf.buf, "\n", -1);
 	string_list_sort(&seen);
 	for_each_string_list_item(item, &watched)

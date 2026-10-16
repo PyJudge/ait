@@ -29,4 +29,21 @@ req=$(sed -n 's/^request //p' "$T/out")
 check 'timeout_ms is written as an integer' "grep -qx '    timeout_ms: 321' '$req'"
 check 'an environment value is written as a string' "grep -qx '        COUNT: \"123\"' '$req'"
 check 'cwd is written as a string' "grep -qx '    cwd: \"src\"' '$req'"
+
+# YAML's null is no string, and a list is a list (empty values: spec 2.3.2's fulfilled only)
+printf 'body: c\nengine: exec\ncommand:\n- sh\n-\n' >nullarg.yaml
+run ait future offer src/stock.c nullarg.yaml -m 'null argv item'
+check 'a null item in command is a format refusal' "test $rc = 128 && has err \"bad format: 'nullarg.yaml'.* in line 5\$\""
+printf 'body: c\nengine: exec\ncommand:\n' >nullcmd.yaml
+run ait future offer src/stock.c nullcmd.yaml -m 'null command'
+check 'an empty command value is no list' "test $rc = 128 && has err \"bad format: 'nullcmd.yaml'\""
+printf 'body: c\nengine: exec\ncommand: [true]\nenvironment: nulls\n' >envnull.yaml
+printf 'env:\n  set:\n    A:\n' >specs/environments/nulls.yaml
+printf 'env:\n  inherit:\n  - PATH\n  -\n' >specs/environments/nullitem.yaml
+git add specs && git commit -qm nulls
+run ait offer src/stock.c envnull.yaml -m 'null set value'
+check 'a null env.set value is a format refusal' "test $rc = 128 && has err \"bad format: 'specs/environments/nulls.yaml'\""
+sed -i.bak 's/nulls/nullitem/' envnull.yaml
+run ait offer src/stock.c envnull.yaml -m 'null inherit item'
+check 'a null inherit item is a format refusal' "test $rc = 128 && has err \"bad format: 'specs/environments/nullitem.yaml'\""
 done_testing

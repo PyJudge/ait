@@ -193,8 +193,8 @@ static const char *yaml_add(struct ynode **stack, int *depth, struct ynode **roo
 	} else {
 		n->value = (char *)e->data.scalar.value;
 		e->data.scalar.value = NULL;
-		n->plain = e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE;
-		n->kind = n->plain && !*n->value ? '?' : 's';
+		n->style = e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE ? 'p' : '"';
+		n->kind = n->style == 'p' && !*n->value ? '?' : 's';
 	}
 	if (!parent) {
 		*root = n;
@@ -235,7 +235,7 @@ static const char *non_lf(const char *text)
 /* the map TEXT holds (an empty one for no document), or NULL with ERR */
 struct ynode *yaml_parse(const char *text, size_t len, char **err)
 {
-	struct ynode *stack[YAML_DEPTH], *root = NULL;
+	struct ynode *stack[YAML_DEPTH] = { NULL }, *root = NULL;
 	struct strbuf reason = STRBUF_INIT;
 	yaml_parser_t parser;
 	yaml_event_t e;
@@ -299,8 +299,14 @@ struct ynode *yget(struct ynode *map, const char *key)
 	return NULL;
 }
 
-/* N's text when N is a scalar, else NULL */
+/* N's text when N is a string; YAML's null (an empty plain value) is none */
 const char *ystr(struct ynode *n)
+{
+	return n && n->kind == 's' ? n->value : NULL;
+}
+
+/* N's text when N is a scalar, null as "": where the spec lets a value be empty */
+const char *ytext(struct ynode *n)
 {
 	return n && (n->kind == 's' || n->kind == '?') ? n->value : NULL;
 }
@@ -337,17 +343,18 @@ char *yaml_refusal(struct ynode *n, const char *fmt, ...)
 	return why;
 }
 
-/* the scalars of the list N, named NAME; an empty plain value is an empty list */
-static char *yaml_list(struct ynode *n, const char *name, struct string_list *out)
+/* the strings of the list N, named NAME, into OUT (when given); NONEMPTY wants one at least */
+char *yaml_list(struct ynode *n, const char *name, struct string_list *out, int nonempty)
 {
 	size_t i;
 
-	if (!n || (n->kind != 'l' && n->kind != '?'))
-		return yaml_refusal(n, "'%s' is not a list", name);
-	for (i = 0; n->kind == 'l' && i < n->nr; i++) {
+	if (!n || n->kind != 'l' || (nonempty && !n->nr))
+		return yaml_refusal(n, "'%s' is not a %slist of strings", name, nonempty ? "nonempty " : "");
+	for (i = 0; i < n->nr; i++) {
 		if (!ystr(n->kids[i]))
-			return yaml_refusal(n->kids[i], "an item of '%s' is not a scalar", name);
-		string_list_append(out, n->kids[i]->value);
+			return yaml_refusal(n->kids[i], "an item of '%s' is not a string", name);
+		if (out)
+			string_list_append(out, n->kids[i]->value);
 	}
 	return NULL;
 }
@@ -358,63 +365,7 @@ static int yaml_out(void *sb, unsigned char *buf, size_t n)
 	return 1;
 }
 
-/*
- * v14 8.2: a scalar inside two block sequences gives the four-space
- * indentation used by both specs and tasks. libyaml chooses escaping and
- * chomping too;
- * discard the synthetic "- - " prefix and document terminator only.
- */
-static void yaml_scalar(struct strbuf *sb, const char *s, yaml_scalar_style_t style)
-{
-	yaml_emitter_t emitter;
-	yaml_event_t event;
-	struct strbuf one = STRBUF_INIT;
-	int ok;
-
-	if (!yaml_emitter_initialize(&emitter))
-		die("out of memory");
-	yaml_emitter_set_output(&emitter, yaml_out, &one);
-	yaml_emitter_set_unicode(&emitter, 1);
-	yaml_emitter_set_width(&emitter, -1);
-	yaml_emitter_set_indent(&emitter, 2);
-	yaml_emitter_set_break(&emitter, YAML_LN_BREAK);
-	ok = yaml_stream_start_event_initialize(&event, YAML_UTF8_ENCODING) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_document_start_event_initialize(&event, NULL, NULL, NULL, 1) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_sequence_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_SEQUENCE_STYLE) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_sequence_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_SEQUENCE_STYLE) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_scalar_event_initialize(&event, NULL, NULL, (yaml_char_t *)s, strlen(s), 1, 1, style) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_sequence_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_sequence_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_document_end_event_initialize(&event, 1) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_stream_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event);
-	if (!ok)
-		BUG("libyaml cannot write a scalar: %s", emitter.problem ? emitter.problem : "event initialization failed");
-	yaml_emitter_delete(&emitter);
-	if (!starts_with(one.buf, "- - ") || !ends_with(one.buf, "\n"))
-		BUG("libyaml scalar has no wrapper");
-	if (ends_with(one.buf, "\n...\n"))
-		strbuf_setlen(&one, one.len - 4);
-	if (style == YAML_DOUBLE_QUOTED_SCALAR_STYLE)
-		strbuf_setlen(&one, one.len - 1);
-	strbuf_add(sb, one.buf + 4, one.len - 4);
-	strbuf_release(&one);
-}
-
-void yaml_out_scalar(struct strbuf *sb, const char *s)
-{
-	yaml_scalar(sb, s, YAML_DOUBLE_QUOTED_SCALAR_STYLE);
-}
-
-void yaml_out_body(struct strbuf *sb, const char *s)
-{
-	int quote = non_lf(s) != NULL;
-
-	/* YAML would emit LS/PS literally; ait's raw input remains LF-only. */
-	yaml_scalar(sb, s, quote ? YAML_DOUBLE_QUOTED_SCALAR_STYLE : YAML_LITERAL_SCALAR_STYLE);
-	if (quote)
-		strbuf_addch(sb, '\n');
-}
-
+/* N's events; a map's keys are written as they were read */
 static int yaml_node_events(yaml_emitter_t *emitter, struct ynode *n)
 {
 	yaml_event_t event;
@@ -423,29 +374,29 @@ static int yaml_node_events(yaml_emitter_t *emitter, struct ynode *n)
 
 	if (n->kind == 's' || n->kind == '?')
 		return yaml_scalar_event_initialize(&event, NULL, NULL, (yaml_char_t *)n->value, strlen(n->value), 1, 1,
-						   n->plain ? YAML_ANY_SCALAR_STYLE : YAML_DOUBLE_QUOTED_SCALAR_STYLE) &&
+						   n->style == 'p' ? YAML_ANY_SCALAR_STYLE :
+						   n->style == '|' ? YAML_LITERAL_SCALAR_STYLE : YAML_DOUBLE_QUOTED_SCALAR_STYLE) &&
 		       yaml_emitter_emit(emitter, &event);
 	ok = n->kind == 'm' ? yaml_mapping_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_MAPPING_STYLE) :
 		yaml_sequence_start_event_initialize(&event, NULL, NULL, 1, YAML_FLOW_SEQUENCE_STYLE);
 	ok = ok && yaml_emitter_emit(emitter, &event);
 	for (i = 0; ok && i < n->nr; i++)
 		ok = yaml_node_events(emitter, n->kids[i]);
-	return ok && (n->kind == 'm' ? yaml_mapping_end_event_initialize(&event) : yaml_sequence_end_event_initialize(&event)) &&
-	       yaml_emitter_emit(emitter, &event);
+	ok = ok && (n->kind == 'm' ? yaml_mapping_end_event_initialize(&event) : yaml_sequence_end_event_initialize(&event));
+	return ok && yaml_emitter_emit(emitter, &event);
 }
 
 /*
- * v14 8.2, spec 7.2: "  KEY:" and the value N in its order, written by
- * libyaml as the first key of a list item (the item's "- " becomes
- * indentation); a plain scalar stays plain where it can, the rest are quoted,
- * and lists flow
+ * v14 8.2: libyaml writes N as the item of DEPTH block lists, which gives
+ * it their indentation (two spaces each) and chooses escaping and chomping;
+ * the lists' "- " give way to INDENT, and the document's end marker goes
  */
-void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n)
+static void yaml_write(struct strbuf *sb, struct ynode *n, int depth, const char *indent)
 {
 	yaml_emitter_t emitter;
 	yaml_event_t event;
 	struct strbuf one = STRBUF_INIT;
-	int ok;
+	int i, ok;
 
 	if (!yaml_emitter_initialize(&emitter))
 		die("out of memory");
@@ -455,26 +406,54 @@ void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n)
 	yaml_emitter_set_indent(&emitter, 2);
 	yaml_emitter_set_break(&emitter, YAML_LN_BREAK);
 	ok = yaml_stream_start_event_initialize(&event, YAML_UTF8_ENCODING) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_document_start_event_initialize(&event, NULL, NULL, NULL, 1) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_sequence_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_SEQUENCE_STYLE) &&
-	     yaml_emitter_emit(&emitter, &event) &&
-	     yaml_mapping_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_MAPPING_STYLE) &&
-	     yaml_emitter_emit(&emitter, &event) &&
-	     yaml_scalar_event_initialize(&event, NULL, NULL, (yaml_char_t *)key, strlen(key), 1, 1, YAML_PLAIN_SCALAR_STYLE) &&
-	     yaml_emitter_emit(&emitter, &event) && yaml_node_events(&emitter, n) &&
-	     yaml_mapping_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_sequence_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event) &&
-	     yaml_document_end_event_initialize(&event, 1) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_document_start_event_initialize(&event, NULL, NULL, NULL, 1) && yaml_emitter_emit(&emitter, &event);
+	for (i = 0; ok && i < depth; i++)
+		ok = yaml_sequence_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_SEQUENCE_STYLE) &&
+		     yaml_emitter_emit(&emitter, &event);
+	ok = ok && yaml_node_events(&emitter, n);
+	for (i = 0; ok && i < depth; i++)
+		ok = yaml_sequence_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event);
+	ok = ok && yaml_document_end_event_initialize(&event, 1) && yaml_emitter_emit(&emitter, &event) &&
 	     yaml_stream_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event);
 	if (!ok)
-		BUG("libyaml cannot write a node: %s", emitter.problem ? emitter.problem : "event initialization failed");
+		BUG("libyaml cannot write: %s", emitter.problem ? emitter.problem : "event initialization failed");
 	yaml_emitter_delete(&emitter);
-	if (!starts_with(one.buf, "- "))
-		BUG("libyaml node has no wrapper");
+	if (one.len < 2 * (size_t)depth || strncmp(one.buf, "- - - - ", 2 * depth) || !ends_with(one.buf, "\n"))
+		BUG("libyaml wrote no list wrapper");
 	if (ends_with(one.buf, "\n...\n"))
 		strbuf_setlen(&one, one.len - 4);
-	strbuf_addf(sb, "  %s", one.buf + 2);
+	strbuf_addstr(sb, indent);
+	strbuf_add(sb, one.buf + 2 * depth, one.len - 2 * depth);
 	strbuf_release(&one);
+}
+
+/* v14 8.2: S as one "..." scalar at four-space indentation, its line ended by the caller */
+void yaml_out_scalar(struct strbuf *sb, const char *s)
+{
+	struct ynode n = { 's', '"', (char *)s };
+
+	yaml_write(sb, &n, 2, "");
+	strbuf_setlen(sb, sb->len - 1);
+}
+
+/* v14 8.2: a body as a "|" block, or quoted when it holds a break YAML would write literally */
+void yaml_out_body(struct strbuf *sb, const char *s)
+{
+	struct ynode n = { 's', non_lf(s) ? '"' : '|', (char *)s };
+
+	yaml_write(sb, &n, 2, "");
+}
+
+/*
+ * v14 8.2, spec 7.2: "  KEY:" and the value N, in its order and with each
+ * scalar's style, at the indentation of a task's keys
+ */
+void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n)
+{
+	struct ynode name = { 's', 'p', (char *)key }, *pair[] = { &name, n };
+	struct ynode map = { 'm', 0, NULL, 0, ARRAY_SIZE(pair), pair };
+
+	yaml_write(sb, &map, 1, "  ");
 }
 
 /* v14 3.1: repository-root path pieces; spec 3.1 permits .ait for condition files */
@@ -581,27 +560,26 @@ static char *spec_read(struct ynode *map, struct spec *s)
 	if (!body || body->kind != 's')
 		return yaml_refusal(body ? body : map, "'body' is missing or not a string");
 	s->body = xstrdup(body->value);
-	if (engine && !ystr(engine))
+	/* 2.3.2: no engine, or an empty one, is prompt */
+	if (engine && !ytext(engine))
 		return yaml_refusal(engine, "'engine' is not a string");
 	if (engine && *engine->value && strcmp(engine->value, "exec"))
 		return yaml_refusal(engine, "unknown engine '%s'", engine->value);
 	s->engine = engine && *engine->value ? xstrdup(engine->value) : NULL;
-	if (command && (why = yaml_list(command, "command", &cmd)))
+	if (command && (why = yaml_list(command, "command", &cmd, 0)))
 		return why;
 	for_each_string_list_item(item, &cmd)
 		strvec_push(&s->command, item->string);
 	string_list_clear(&cmd, 0);
-	if (success && success->kind != 'l')
-		return yaml_refusal(success, "'success' is not a list");
-	if (success && (why = yaml_list(success, "success", &s->success)))
+	if (success && (why = yaml_list(success, "success", &s->success, 0)))
 		return why;
-	if (s->engine && !success)
-		string_list_append(&s->success, "0");
 	for_each_string_list_item(item, &s->success)
 		if (!*item->string || item->string[strspn(item->string, "0123456789")] ||
 		    (*item->string == '0' && item->string[1]))
 			return yaml_refusal(success->kids[item - s->success.items],
 					    "'success' holds '%s', not a decimal integer", item->string);
+	if (s->engine && !success)
+		string_list_append(&s->success, "0");
 	if (environment && !ystr(environment))
 		return yaml_refusal(environment, "'environment' is not a string");
 	s->environment = environment ? xstrdup(environment->value) : NULL;
@@ -682,10 +660,7 @@ struct contract *contract_new(const char *kind, const char *group, const char *i
 	return c;
 }
 
-/*
- * spec 2.3: the contract at PATH (<group>/<ID>.yaml) from TEXT; DRAFT allows
- * the empty IDs and creator of a template (6.5.2). NULL with ERR when malformed.
- */
+/* spec 2.1.3: where the fulfilment of C by the request RID lives */
 char *fulfil_path(struct contract *c, const char *rid)
 {
 	return xstrfmt("%s%sfulfill/%s-%s.md", c->group, *c->group ? "/" : "", c->id, rid);
@@ -747,10 +722,17 @@ static char *contract_read(struct ynode *map, struct contract *c, int draft)
 		return why;
 	/* the IDs and the creator: plain values, empty only in a draft */
 	for (i = 0; i < ARRAY_SIZE(ids); i++) {
+		int valid;
+
 		n = yget(map, ids[i]);
-		if (ystr(n))
-			replace_text(fields[i], n->value);
-		if (!ystr(n) || (draft && !*n->value ? 0 : i < 2 ? !id_ok(n->value, "R") : !agent_ok(n->value)))
+		if (!ytext(n))
+			return yaml_refusal(n, "bad '%s'", ids[i]);
+		replace_text(fields[i], n->value);
+		if (draft && !*n->value)
+			valid = 1;
+		else
+			valid = i < 2 ? id_ok(n->value, "R") : agent_ok(n->value);
+		if (!valid)
 			return yaml_refusal(n, "bad '%s'", ids[i]);
 	}
 	n = yget(map, "state");
@@ -779,8 +761,8 @@ static char *contract_read(struct ynode *map, struct contract *c, int draft)
 	if (drop)
 		c->target = xstrdup(n->value);
 	if (!strcmp(c->kind, "offer") &&
-	    ((why = yaml_list(yget(map, "undertakes"), "undertakes", &c->undertakes)) ||
-	     (why = yaml_list(yget(map, "undertakes-partially"), "undertakes-partially", &c->partially))))
+	    ((why = yaml_list(yget(map, "undertakes"), "undertakes", &c->undertakes, 0)) ||
+	     (why = yaml_list(yget(map, "undertakes-partially"), "undertakes-partially", &c->partially, 0))))
 		return why;
 	for_each_string_list_item(item, &c->undertakes)
 		if (!id_ok(item->string, "D") || unsorted_string_list_has_string(&c->partially, item->string))
@@ -790,8 +772,9 @@ static char *contract_read(struct ynode *map, struct contract *c, int draft)
 		if (!id_ok(item->string, "D"))
 			return yaml_refusal(yget(map, "undertakes-partially")->kids[item - c->partially.items],
 					    "bad ID '%s' in 'undertakes-partially'", item->string);
+	/* 2.3.2: no fulfilment is the key alone */
 	n = yget(map, "fulfilled");
-	if ((why = yaml_list(n, "fulfilled", &c->fulfilled)))
+	if (n->kind != '?' && (why = yaml_list(n, "fulfilled", &c->fulfilled, 0)))
 		return why;
 	for_each_string_list_item(item, &c->fulfilled) {
 		struct ynode *entry = n->kids[item - c->fulfilled.items];
@@ -825,7 +808,7 @@ struct contract *contract_parse(const char *text, size_t len, const char *path, 
 	struct contract *c = NULL;
 
 	if (map && !id)
-		*err = yaml_refusal(map, "not a contract path");
+		*err = yaml_refusal_at(1, "not a contract path");
 	else if (map && (!ystr(kind) || !keys_of(kind->value) || kind_letter(kind->value) != *id))
 		*err = yaml_refusal(kind ? kind : map, "'kind' is missing or does not match the ID");
 	else if (map)
@@ -935,12 +918,11 @@ char *contract_text(struct contract *c)
 }
 
 /* A recorded tree entry is parsed once at the stored-fact boundary (2.5). */
-static struct recorded_code *parse_code(const struct scope *scope, const char *text)
+static int parse_code(const struct scope *scope, const char *text, struct recorded_code *code)
 {
 	struct string_list fields = STRING_LIST_INIT_DUP;
-	struct recorded_code *code = NULL;
 	const char *mode, *type, *oid, *end;
-	int first = 0, last = 0, range;
+	int first = 0, last = 0, range, parsed = 0;
 
 	range = scope->kind == SCOPE_RANGE;
 	string_list_split(&fields, text, " ", -1);
@@ -955,7 +937,7 @@ static struct recorded_code *parse_code(const struct scope *scope, const char *t
 	if (range && (strcmp(type, "blob") ||
 		      !(end = range_numbers(fields.items[3].string, &first, &last)) || *end))
 		goto done;
-	code = xcalloc(1, sizeof(*code));
+	parsed = 1;
 	snprintf(code->mode, sizeof(code->mode), "%s", mode);
 	snprintf(code->type, sizeof(code->type), "%s", type);
 	snprintf(code->oid, sizeof(code->oid), "%s", oid);
@@ -963,7 +945,7 @@ static struct recorded_code *parse_code(const struct scope *scope, const char *t
 	code->last = range ? last : 0;
 done:
 	string_list_clear(&fields, 0);
-	return code;
+	return parsed;
 }
 
 static char *code_text(struct recorded_code *code)
@@ -998,28 +980,25 @@ static char *fulfil_read(struct ynode *map, const char *body, const char *path, 
 	if (invalid)
 		return yaml_refusal(yget(map, invalid), "bad '%s' in the front matter", invalid);
 	if (!fulfil_path_ok(path, f->contract, NULL))
-		return yaml_refusal(map, "not a fulfilment path");
+		return yaml_refusal_at(1, "not a fulfilment path");
 	if ((*f->contract == 'X') != !strcmp(f->outcome, "withdrawn"))
 		return yaml_refusal(yget(map, "outcome"), "'outcome' does not match the contract kind");
 	for (i = 0; i < code->nr; i += 2) {
 		struct ynode *scope = code->kids[i], *entry = code->kids[i + 1];
-		struct recorded_code *value = NULL;
+		struct recorded_code value;
 		struct scope key;
 		char *scope_error;
 
 		if (!ystr(entry))
 			return yaml_refusal(entry, "a code entry is not a string");
 		scope_error = scope_parse(&key, scope->value, 0, 0, SCOPE_STORED);
-		if (!scope_error)
-			value = parse_code(&key, entry->value);
-		if (!value) {
+		if (scope_error || !parse_code(&key, entry->value, &value)) {
 			free(scope_error);
 			scope_clear(&key);
 			return yaml_refusal(entry, "bad code entry for '%s'", scope->value);
 		}
-		code_add(&f->code, &key, value);
+		code_add(&f->code, &key, &value);
 		scope_clear(&key);
-		free(value);
 	}
 	if (*f->contract == 'X' && f->code.nr)
 		return yaml_refusal(code, "a drop's code is not empty");
@@ -1073,10 +1052,14 @@ char *fulfil_text(struct fulfilment *f)
 	return strbuf_detach(&sb, NULL);
 }
 
-/*
- * spec 2.1.3, 2.3, 2.5: the contracts and fulfilments of the branch NAME at
- * TIP (or of the tree TREEISH); each malformed file is one error
- */
+struct contract *contract_get(struct branch *b, const char *id)
+{
+	struct string_list_item *item = string_list_lookup(&b->contracts, id);
+
+	return item ? item->util : NULL;
+}
+
+/* a malformed file at PATH: its one error */
 static void branch_error(struct branch *b, const char *path, char *reason)
 {
 	struct string_list_item *slot = string_list_insert(&b->errors, path);
@@ -1085,6 +1068,10 @@ static void branch_error(struct branch *b, const char *path, char *reason)
 	slot->util = reason;
 }
 
+/*
+ * spec 2.1.3, 2.3, 2.5: the contracts and fulfilments of the branch NAME at
+ * TIP (or of the tree TREEISH); each malformed file is one error
+ */
 struct branch *branch_load(const char *name, const char *tip, const char *treeish)
 {
 	struct string_list_item *item;
@@ -1178,50 +1165,39 @@ void branch_free(struct branch *b)
 	free(b);
 }
 
-struct contract *contract_get(struct branch *b, const char *id)
-{
-	struct string_list_item *item = string_list_lookup(&b->contracts, id);
-
-	return item ? item->util : NULL;
-}
-
 /* spec 1.4: a contract that has not ended */
 int live(struct contract *c)
 {
 	return c && !strcmp(c->state, "future");
 }
 
-/* spec 5.2: the fulfilments of C made with its condition-id */
-struct fulfilment *fulfilment_lookup(const struct contract_view *v, const char *path)
+/* spec 5.2: the fulfilment at PATH in B, when C made it with its condition-id */
+static struct fulfilment *valid_fulfilment(struct branch *b, struct contract *c, const char *path)
 {
-	struct string_list_item *item = v->fulfils ? string_list_lookup(v->fulfils, path) : NULL;
+	struct string_list_item *item = string_list_lookup(&b->fulfils, path);
+	struct fulfilment *f = item ? item->util : NULL;
 
-	if (!item)
-		item = string_list_lookup(&v->at->fulfils, path);
-	return item ? item->util : NULL;
+	return f && !strcmp(f->condition_id, c->condition_id) ? f : NULL;
 }
 
-static void valid_fulfilments(const struct contract_view *v, struct contract *c, struct string_list *out)
+static void valid_fulfilments(struct branch *b, struct contract *c, struct string_list *out)
+{
+	struct string_list_item *item;
+	struct fulfilment *f;
+
+	for_each_string_list_item(item, &c->fulfilled)
+		if ((f = valid_fulfilment(b, c, item->string)))
+			string_list_append(out, item->string)->util = f;
+}
+
+int has_valid_fulfilment(struct branch *b, struct contract *c)
 {
 	struct string_list_item *item;
 
-	for_each_string_list_item(item, &c->fulfilled) {
-		struct fulfilment *f = fulfilment_lookup(v, item->string);
-
-		if (f && !strcmp(f->condition_id, c->condition_id))
-			string_list_append(out, item->string)->util = f;
-	}
-}
-
-int has_valid_fulfilment(const struct contract_view *v, struct contract *c)
-{
-	struct string_list valid = STRING_LIST_INIT_DUP;
-	int found;
-
-	valid_fulfilments(v, c, &valid);
-	found = valid.nr > 0;
-	string_list_clear(&valid, 0);
-	return found;
+	for_each_string_list_item(item, &c->fulfilled)
+		if (valid_fulfilment(b, c, item->string))
+			return 1;
+	return 0;
 }
 
 static void hunk_part(const char *text, int *first, int *length)
@@ -1474,7 +1450,8 @@ struct recorded_code code_at(struct tree *t, const struct scope_location *where)
 }
 
 /* spec 5.3: the scope is in X as recorded; AT receives that verified entry in X. */
-static int scope_same(const struct scope *scope, const struct recorded_code *code, struct tree *x, struct recorded_code *at)
+static int scope_same(const struct scope *scope, const struct recorded_code *code, struct tree *x,
+		      struct recorded_code *at)
 {
 	struct entry *e = tree_get(x, scope->path);
 	int first = 0, last = 0, changed;
@@ -1494,14 +1471,6 @@ static int scope_same(const struct scope *scope, const struct recorded_code *cod
 		at->last = last;
 	}
 	return 1;
-}
-
-/* spec 5.3: the fulfilment F recorded SCOPE as X has it */
-static int recorded_same(struct fulfilment *f, const struct scope *scope, struct tree *x, struct recorded_code *at)
-{
-	const struct recorded_code *code = code_lookup(&f->code, scope);
-
-	return code && scope_same(scope, code, x, at);
 }
 
 /* v14 3.8: formatting reads a prepared position and cannot invoke Git. */
@@ -1693,7 +1662,7 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 		r->verdict = c->fulfilled.nr ? V_FULFILLED : V_FUTURE;
 		goto done;
 	}
-	valid_fulfilments(&j->view, c, &valid);
+	valid_fulfilments(j->view.at, c, &valid);
 	if (!valid.nr) {
 		r->verdict = V_FUTURE;
 		goto done;
@@ -1710,27 +1679,23 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 	/* Per-scope matches can come from different fulfilments; a whole witness cannot. */
 	r->matches_any = xcalloc(c->provider.nr, sizeof(*r->matches_any));
 	for_each_string_list_item(f, &valid) {
-		struct code_list code = { 0 };
+		struct recorded_code *code = xcalloc(c->provider.nr, sizeof(*code));
 		int all = 1;
 
 		for (i = 0; i < c->provider.nr; i++) {
 			const struct scope *s = &c->provider.items[i];
-			struct recorded_code at;
-			int same = recorded_same(f->util, s, j->tree, &at);
+			int same = scope_same(s, code_lookup(&((struct fulfilment *)f->util)->code, s), j->tree, &code[i]);
 
 			r->matches_any[i] |= same;
 			all &= same;
-			if (same)
-				code_add(&code, s, &at);
 		}
 		if (all) {
 			r->code = code;
 			break;
 		}
-		code_clear(&code);
+		free(code);
 	}
-	/* D and O have a provider, so a whole witness records code */
-	r->verdict = whole_ok && r->code.nr ? V_CURRENT : V_UNVERIFIED;
+	r->verdict = whole_ok && r->code ? V_CURRENT : V_UNVERIFIED;
 done:
 	string_list_clear(&valid, 0);
 	string_list_clear(&needs, 0);
@@ -1745,7 +1710,7 @@ void judgment_clear(struct judgment *j)
 	for_each_string_list_item(item, &j->done) {
 		struct judgment_result *r = item->util;
 
-		code_clear(&r->code);
+		free(r->code);
 		free(r->matches_any);
 		free(r);
 	}
@@ -1799,8 +1764,8 @@ int judgment_touched(struct judgment *h, struct contract *c, struct tree *x)
 
 	if (r->verdict != V_CURRENT)
 		return 0;
-	for (i = 0; i < r->code.nr; i++)
-		if (!scope_same(&r->code.items[i].scope, &r->code.items[i].value, x, NULL))
+	for (i = 0; i < c->provider.nr; i++)
+		if (!scope_same(&c->provider.items[i], &r->code[i], x, NULL))
 			return 1;
 	return 0;
 }
@@ -1840,27 +1805,22 @@ char *violation_words(struct violation *v)
 }
 
 /* Step zero checks the requested fulfilments before their files are written. */
-static int fulfilled_in(const struct contract_view *v, struct contract *c, const struct string_list *fulfilling)
+static int fulfilled_in(struct branch *b, struct contract *c, const struct string_list *fulfilling)
 {
-	return (fulfilling && string_list_has_string(fulfilling, c->id)) || has_valid_fulfilment(v, c);
+	return (fulfilling && string_list_has_string(fulfilling, c->id)) || has_valid_fulfilment(b, c);
 }
 
 /*
  * spec 4.10 (b) and (c): the violations of B. A mix is told from WAS:
  * what held the demand there is what it is "already" held by.
  */
-void invariants(const struct contract_view *v, struct branch *was, const struct string_list *fulfilling, struct string_list *out)
+void invariants(struct branch *b, struct branch *was, const struct string_list *fulfilling, struct string_list *out)
 {
-	struct contract_view old = { was, NULL, NULL };
-	struct string_list contracts = STRING_LIST_INIT_DUP;
+	struct contract_view view = { b, NULL }, old = { was, NULL };
+	const struct contract_view *v = &view;
 	struct string_list_item *item, *o;
 
-	for_each_string_list_item(item, &v->at->contracts)
-		string_list_insert(&contracts, item->string)->util = contract_lookup(v, item->string);
-	if (v->changed)
-		for_each_string_list_item(item, v->changed)
-			string_list_insert(&contracts, item->string)->util = item->util;
-	for_each_string_list_item(item, &contracts) {
+	for_each_string_list_item(item, &b->contracts) {
 		struct contract *d = item->util;
 		struct string_list whole = STRING_LIST_INIT_DUP, part = STRING_LIST_INIT_DUP, before = STRING_LIST_INIT_DUP;
 
@@ -1878,14 +1838,13 @@ void invariants(const struct contract_view *v, struct branch *was, const struct 
 		}
 		/* 1.8: what leans on an unfulfilled contract may not stand fulfilled on it */
 		for_each_string_list_item(o, &whole)
-			if (fulfilled_in(v, o->util, fulfilling) && !fulfilled_in(v, d, fulfilling))
+			if (fulfilled_in(b, o->util, fulfilling) && !fulfilled_in(b, d, fulfilling))
 				violation(out, PAIR, o->string, d->id);
 		for_each_string_list_item(o, &part)
-			if (fulfilled_in(v, d, fulfilling) && !fulfilled_in(v, o->util, fulfilling))
+			if (fulfilled_in(b, d, fulfilling) && !fulfilled_in(b, o->util, fulfilling))
 				violation(out, PAIR, d->id, o->string);
 		string_list_clear(&whole, 0);
 		string_list_clear(&part, 0);
 		string_list_clear(&before, 0);
 	}
-	string_list_clear(&contracts, 0);
 }

@@ -1,7 +1,7 @@
 /* Owned domain values follow Git remote.c:copy_ref's copy/free boundary. */
 #include "ait.h"
 
-char *xstrdup_null(const char *s)
+static char *xstrdup_null(const char *s)
 {
 	return s ? xstrdup(s) : NULL;
 }

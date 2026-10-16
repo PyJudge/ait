@@ -62,12 +62,10 @@ void names_load(struct names *n);
 void names_clear(struct names *n);
 const char *names_upstream(struct names *n, const char *branch);
 const char *branch_find(struct names *n, const char *chosen, struct strbuf *msg, struct strbuf *hint, int *only);
-const char *branch_name(void);
 int branch_only(void);
 enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8, START_TRAILERS = 16 };
 struct branch *start(int how);
 char *git_path(const char *name);
-void leading_dirs(const char *path);
 int is_ancestor(const char *a, const char *b);
 char *upstream_of(const char *branch);
 char *checkout_read(void);
@@ -255,7 +253,6 @@ enum contract_part {
 	CONTRACT_ROWS = CONTRACT_CONDITIONS | CONTRACT_DETAILS,
 	CONTRACT_ALL = CONTRACT_ROWS | CONTRACT_IDS | CONTRACT_STATE | CONTRACT_FULFILLED
 };
-char *xstrdup_null(const char *s);
 void replace_text(char **field, const char *text);
 void spec_clear(struct spec *s);
 void spec_copy(struct spec *out, const struct spec *s);
@@ -277,7 +274,6 @@ enum verdict { V_FUTURE, V_CURRENT, V_UNVERIFIED, V_FULFILLED, V_CANCELLED, V_WI
 struct contract_view {
 	struct branch *at;
 	struct string_list *changed;
-	struct string_list *fulfils; /* new typed fulfilments, then lookup falls back to T */
 };
 /* where a scope is (6.7.4): found, or why not */
 struct scope_location {
@@ -309,7 +305,7 @@ struct contract_geometry {
  */
 struct judgment_result {
 	enum verdict verdict;
-	struct code_list code;		/* the whole witness's code as it is in the tree */
+	struct recorded_code *code;	/* per provider scope, the whole witness's code as it is in the tree */
 	unsigned char *matches_any;
 };
 struct judgment {
@@ -332,9 +328,8 @@ void judgment_clear(struct judgment *j);
 int judgment_touched(struct judgment *h, struct contract *c, struct tree *x);
 
 struct contract *contract_lookup(const struct contract_view *v, const char *id);
-struct fulfilment *fulfilment_lookup(const struct contract_view *v, const char *path);
 int live(struct contract *c);
-int has_valid_fulfilment(const struct contract_view *v, struct contract *c);
+int has_valid_fulfilment(struct branch *b, struct contract *c);
 void undertakings(const struct contract_view *v, struct contract *c, int how, struct string_list *out);
 void dependencies(const struct contract_view *v, struct contract *c, struct string_list *out);
 const char *verdict_word(enum verdict v);
@@ -342,7 +337,7 @@ int promise(struct contract *c, enum verdict v);
 char *scope_display(const struct scope *scope, struct tree *x);
 char *violation_words(struct violation *v);
 void violations_clear(struct string_list *violations);
-void invariants(const struct contract_view *v, struct branch *was, const struct string_list *fulfilling, struct string_list *out);
+void invariants(struct branch *b, struct branch *was, const struct string_list *fulfilling, struct string_list *out);
 int scope_pin(struct scope *s, struct tree *t, char **err);
 int scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_list *was, char **err);
 struct recorded_code code_at(struct tree *t, const struct scope_location *where);
@@ -350,7 +345,7 @@ struct recorded_code code_at(struct tree *t, const struct scope_location *where)
 /* contract.c: the YAML subset (v14 2.5.1) as nodes, and its writing (v14 8.2) */
 struct ynode {
 	char kind;			/* 'm' a map, 'l' a list, 's' a scalar, '?' an empty plain scalar */
-	char plain;			/* a scalar written without quotes: YAML types it from its text */
+	char style;			/* a scalar's writing: 'p' plain where it can be, '"' quoted, '|' a block */
 	char *value;			/* a scalar's text */
 	int line;
 	size_t nr;
@@ -360,6 +355,8 @@ struct ynode *yaml_parse(const char *text, size_t len, char **err);
 void ynode_free(struct ynode *n);
 struct ynode *yget(struct ynode *map, const char *key);
 const char *ystr(struct ynode *n);
+const char *ytext(struct ynode *n);
+char *yaml_list(struct ynode *n, const char *name, struct string_list *out, int nonempty);
 char *yaml_refusal(struct ynode *n, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
 char *yaml_refusal_at(int line, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
 char *keys_refusal(struct ynode *map, const char *const *keys, int required);

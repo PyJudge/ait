@@ -90,7 +90,7 @@ static void request_result_reset(struct request_result *r, struct branch *at)
 	string_list_clear(&r->provider_words, 0);
 	string_list_clear(&r->covered, 0);
 	r->at = at;
-	r->view = (struct contract_view){ at, &r->changed, &r->records };
+	r->view = (struct contract_view){ at, &r->changed };
 }
 
 /* Fixed input outlives retries; none of its values is borrowed by candidates. */
@@ -707,7 +707,6 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 	struct request *req = ck->data;
 	struct request_input *q = &req->input;
 	struct request_result *r = &req->result;
-	struct contract_view at_t = { r->at, NULL, NULL };
 	struct string_list fixes = STRING_LIST_INIT_DUP, reopened = STRING_LIST_INIT_DUP;
 	struct strvec pending = STRVEC_INIT;
 	struct strbuf sb = STRBUF_INIT;
@@ -734,7 +733,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 				}
 				string_list_insert(&fixes, xstrfmt("release %s %s", request_name(r, v->a),
 							 request_name(r, o->string)));
-				if (v->kind == MIX_WHOLLY && (has_valid_fulfilment(&at_t, c) ||
+				if (v->kind == MIX_WHOLLY && (has_valid_fulfilment(r->at, c) ||
 				    string_list_has_string(&r->covered, c->id)))
 					strvec_push(&pending, c->id);
 			}
@@ -754,7 +753,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 		string_list_insert(&fixes, xstrfmt("future amend %s", request_name(r, c->id)));
 		undertakings(&r->view, c, !strcmp(c->kind, "demand") ? 'w' : 'p', &dependants);
 		for_each_string_list_item(o, &dependants)
-			if (has_valid_fulfilment(&at_t, o->util) || string_list_has_string(&r->covered, o->string))
+			if (has_valid_fulfilment(r->at, o->util) || string_list_has_string(&r->covered, o->string))
 				strvec_push(&pending, o->string);
 		string_list_clear(&dependants, 0);
 	}
@@ -786,20 +785,17 @@ done:
 	return hint;
 }
 
-/* spec 6.7.2: the covered set of K, judged in X */
-static void cover(struct request_result *r, struct tree *x, struct contract *k, struct string_list *out)
+/* spec 6.7.2: the covered set of K, judged in J */
+static void cover(struct request_result *r, struct judgment *j, struct contract *k, struct string_list *out)
 {
 	struct string_list needs = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct judgment j;
 
 	string_list_insert(out, k->id);
 	dependencies(&r->view, k, &needs);
-	judgment_init(&j, &r->view, x);
 	for_each_string_list_item(item, &needs)
-		if (!strcmp(k->kind, "offer") || judgment_get(&j, item->util)->verdict != V_CURRENT)
+		if (!strcmp(k->kind, "offer") || judgment_get(j, item->util)->verdict != V_CURRENT)
 			string_list_insert(out, item->string);
-	judgment_clear(&j);
 	string_list_clear(&needs, 0);
 }
 
@@ -817,19 +813,6 @@ static const char *task_id(struct request_result *r, const char *id)
 		if (!strcmp(r->order.items[i].string, id))
 			return xstrfmt("+%d", (int)i + 1);
 	return id;
-}
-
-/* a list of strings, nonempty when NONEMPTY (v14 2.5.3) */
-static char *string_list_refusal(struct ynode *n, const char *name, int nonempty)
-{
-	size_t i;
-
-	if (n->kind != 'l' || (nonempty && !n->nr))
-		return yaml_refusal(n, "'%s' %s", name, nonempty ? "is not a nonempty argv list" : "is not a string list");
-	for (i = 0; i < n->nr; i++)
-		if (!ystr(n->kids[i]))
-			return yaml_refusal(n->kids[i], "an item of '%s' is not a string", name);
-	return NULL;
 }
 
 /* v14 2.5.3: the schema of an environment definition; NULL, or why not */
@@ -852,9 +835,9 @@ static char *environment_refusal(struct ynode *map)
 		return yaml_refusal(env, "'env' is not a map");
 	if (env && (why = keys_refusal(env, env_keys, 0)))
 		return why;
-	if ((n = yget(env, "inherit")) && (why = string_list_refusal(n, "inherit", 0)))
+	if ((n = yget(env, "inherit")) && (why = yaml_list(n, "inherit", NULL, 0)))
 		return why;
-	if ((n = yget(env, "required")) && (why = string_list_refusal(n, "required", 0)))
+	if ((n = yget(env, "required")) && (why = yaml_list(n, "required", NULL, 0)))
 		return why;
 	if ((n = yget(env, "set")) && n->kind != 'm')
 		return yaml_refusal(n, "'set' is not a map of strings");
@@ -867,7 +850,7 @@ static char *environment_refusal(struct ynode *map)
 		if (n->kind != 'l')
 			return yaml_refusal(n, "'%s' is not a list of argv lists", commands[j]);
 		for (i = 0; i < n->nr; i++)
-			if ((why = string_list_refusal(n->kids[i], commands[j], 1)))
+			if ((why = yaml_list(n->kids[i], commands[j], NULL, 1)))
 				return why;
 	}
 	return NULL;
@@ -879,7 +862,7 @@ static void environment_types(struct ynode *n)
 	size_t i;
 
 	if (n->kind == 's' || n->kind == '?')
-		n->plain = 0;
+		n->style = '"';
 	for (i = n->kind == 'm'; i < n->nr; i += n->kind == 'm' ? 2 : 1)
 		environment_types(n->kids[i]);
 }
@@ -897,7 +880,7 @@ static char *environment_out(struct strbuf *sb, const char *name, struct tree *h
 	if ((map = yaml_parse(text, len, &err)) && !(err = environment_refusal(map))) {
 		environment_types(map);
 		if (yget(map, "timeout_ms"))
-			yget(map, "timeout_ms")->plain = 1;
+			yget(map, "timeout_ms")->style = 'p';
 		yaml_out_node(sb, "environment", map);
 	}
 	ynode_free(map);
@@ -939,12 +922,12 @@ static int template_same(struct request_result *r, struct ynode *map)
 	for_each_string_list_item(item, &r->covered) {
 		struct contract *c = contract_after(r, item->string);
 
-		for (n = 0; n < c->nspecs; n++, position++) {
+		for (n = 0; n < c->nspecs; n++) {
 			const char *task = position < results->nr ? ystr(yget(results->kids[position], "task")) : NULL;
 
-			if (!task || yget(results->kids[position], "task")->kind != 's' ||
-			    strcmp(task, task_of(task_id(r, c->id), n)))
+			if (!task || strcmp(task, task_of(task_id(r, c->id), n)))
 				return 0;
+			position++;
 		}
 	}
 	return position == results->nr;
@@ -1080,7 +1063,7 @@ static void check_results(struct request_input *q, struct request_result *r, str
 		if ((err = keys_refusal(result, fields, 0)))
 			result_bad(q, err);
 		for (n = 0; n + 1 < result->nr; n += 2)
-			if (!ystr(result->kids[n + 1]))
+			if (!ytext(result->kids[n + 1]))
 				result_bad(q, yaml_refusal(result->kids[n + 1], "'%s' is not a scalar", result->kids[n]->value));
 		if (!task || !string_list_has_string(&want, task) || string_list_has_string(&q->results, task))
 			result_bad(q, yaml_refusal(yget(result, "task") ? yget(result, "task") : result,
@@ -1241,6 +1224,7 @@ static void request_judge(struct checkin *ck)
 	struct request_result *r = &req->result;
 	struct string_list targets = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
+	struct judgment j;
 
 	request_result_reset(r, ck->at);
 	/* 2.1.3, 6.7.2: a retry keeps its new IDs, but cannot take an ID another checkin made. */
@@ -1260,11 +1244,11 @@ static void request_judge(struct checkin *ck)
 		scopes_arg(&c->provider, item->util, q->x);
 		accept_change(q, r, old, c, RESCOPE, 0);
 	}
-	for_each_string_list_item(item, &r->fulfil) {
-		struct contract *c = contract_after(r, item->string);
-
-		cover(r, q->x, c, &r->covered);
-	}
+	/* the clauses are applied: one view, one judgment in X for every covered set */
+	judgment_init(&j, &r->view, q->x);
+	for_each_string_list_item(item, &r->fulfil)
+		cover(r, &j, contract_after(r, item->string), &r->covered);
+	judgment_clear(&j);
 	for_each_string_list_item(item, &r->covered) {
 		struct contract *c = contract_after(r, item->string);
 
@@ -1581,6 +1565,7 @@ static int contract_new_draft(const char *kind, const char *group)
 	struct string_list branches = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	const char *chosen;
+	char *path, *text;
 	int taken;
 
 	if (!group_ok(group))
@@ -1615,13 +1600,11 @@ static int contract_new_draft(const char *kind, const char *group)
 	} else {
 		c->target = xstrdup("<ID>");
 	}
-	{
-		char *path = draft_path(c), *text = contract_text(c);
-
-		write_new_file(path, text);
-		free(path);
-		free(text);
-	}
+	path = draft_path(c);
+	text = contract_text(c);
+	write_new_file(path, text);
+	free(path);
+	free(text);
 	contract_free(c);
 	names_clear(&n);
 	strbuf_release(&hint);
@@ -1638,16 +1621,15 @@ static int contract_checkout(int argc, const char **argv)
 	b = start(0);
 	for (i = 1; i < argc; i++) {
 		struct contract *c = contract_get(b, argv[i]);
+		char *path, *text;
 
 		if (!c)
 			no_contract(argv[i]);
-		{
-			char *path = draft_path(c), *text = object(blob_at(b->tree, c->path), 1, NULL, NULL);
-
-			write_new_file(path, text);
-			free(path);
-			free(text);
-		}
+		path = draft_path(c);
+		text = object(blob_at(b->tree, c->path), 1, NULL, NULL);
+		write_new_file(path, text);
+		free(path);
+		free(text);
 	}
 	branch_free(b);
 	return 0;
@@ -1728,7 +1710,7 @@ static int contract_add(int argc, const char **argv)
 	strvec_pushl(&args, "update-index", "--add", NULL);
 	for_each_string_list_item(item, &paths) {
 		struct strbuf sb = STRBUF_INIT;
-		char *err, *oid;
+		char *err, *oid, *operand;
 		struct contract *c;
 
 		if (strbuf_read_file(&sb, xstrfmt("%s/.ait/%s", top, item->string), 0) < 0)
@@ -1737,12 +1719,9 @@ static int contract_add(int argc, const char **argv)
 			reject(128, NULL, "bad format: '%s': %s", item->string, err);
 		contract_free(c);
 		oid = line1(git_run(sb.buf, NULL, NULL, "hash-object", "-w", "--stdin"));
-		{
-			char *operand = xstrfmt("100644,%s,%s", oid, item->string);
-
-			strvec_pushl(&args, "--cacheinfo", operand, NULL);
-			free(operand);
-		}
+		operand = xstrfmt("100644,%s,%s", oid, item->string);
+		strvec_pushl(&args, "--cacheinfo", operand, NULL);
+		free(operand);
 		free(oid);
 		strbuf_release(&sb);
 	}
@@ -1903,18 +1882,16 @@ static int contract_push(int argc, const char **argv)
 {
 	const char *b, *remote;
 	struct strvec args = STRVEC_INIT;
+	int rc;
 
 	remote = remote_arg(argc, argv);
 	b = start_name(0);
 	strvec_pushl(&args, "push", "--", remote_of(b, "push", remote),
 		     xstrfmt("refs/heads/%s:refs/heads/%s", b, b), NULL);
-	{
-		int rc = git_pass(&args);
-
-		strvec_clear(&args);
-		free((char *)b);
-		return rc;
-	}
+	rc = git_pass(&args);
+	strvec_clear(&args);
+	free((char *)b);
+	return rc;
 }
 
 struct pull {
@@ -1936,16 +1913,12 @@ static void pull_judge(struct checkin *ck)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct strbuf paths = STRBUF_INIT;
-	char u[48];
+	char u[48], *expression = xstrfmt("%s^{commit}", ((struct pull *)ck->data)->upstream);
 	size_t i;
 	int rc;
 
-	{
-		char *expression = xstrfmt("%s^{commit}", ((struct pull *)ck->data)->upstream);
-
-		object_oid(expression, u);
-		free(expression);
-	}
+	object_oid(expression, u);
+	free(expression);
 	if (is_ancestor(u, ck->tip)) {
 		puts("Already up to date");
 		exit(0);

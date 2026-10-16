@@ -541,29 +541,34 @@ static char *pointer_path(const char *wt)
 {
 	static struct string_list hashed = STRING_LIST_INIT_DUP;
 	struct string_list_item *hit = string_list_lookup(&hashed, wt);
+	char *name, *path;
 
 	if (!hit) {
 		hit = string_list_insert(&hashed, wt);
 		hit->util = line1(git_run(wt, NULL, NULL, "hash-object", "--stdin"));
 	}
-	{
-		char *name = xstrfmt("worktrees/%s", (char *)hit->util), *path = state_path(name);
-
-		free(name);
-		return path;
-	}
+	name = xstrfmt("worktrees/%s", (char *)hit->util);
+	path = state_path(name);
+	free(name);
+	return path;
 }
 
-static char *default_of(const char *wt)
+/* the first line of the state file PATH, or NULL when there is none; PATH is freed */
+static char *state_line(char *path)
 {
 	struct strbuf sb = STRBUF_INIT;
-	char *path = pointer_path(wt), *value = NULL;
+	char *value = NULL;
 
 	if (strbuf_read_file(&sb, path, 0) >= 0)
 		value = line1(strbuf_detach(&sb, NULL));
 	free(path);
 	strbuf_release(&sb);
 	return value;
+}
+
+static char *default_of(const char *wt)
+{
+	return state_line(pointer_path(wt));
 }
 
 /*
@@ -597,14 +602,11 @@ char *session_path(const char *s, const char *suffix)
 void session_lines(const char *s, struct string_list *lines)
 {
 	struct strbuf sb = STRBUF_INIT;
+	char *path = session_path(s, "");
 
 	string_list_clear(lines, 0);
-	{
-		char *path = session_path(s, "");
-
-		strbuf_read_file(&sb, path, 0);
-		free(path);
-	}
+	strbuf_read_file(&sb, path, 0);
+	free(path);
 	string_list_split(lines, sb.buf, "\n", -1);
 	strbuf_release(&sb);
 }
@@ -613,16 +615,13 @@ void session_write(const char *s, struct string_list *lines)
 {
 	struct strbuf sb = STRBUF_INIT;
 	struct string_list_item *item;
+	char *path = session_path(s, "");
 
 	for_each_string_list_item(item, lines)
 		if (*item->string)
 			strbuf_addf(&sb, "%s\n", item->string);
-	{
-		char *path = session_path(s, "");
-
-		write_state(path, sb.buf);
-		free(path);
-	}
+	write_state(path, sb.buf);
+	free(path);
 	strbuf_release(&sb);
 }
 
@@ -1052,7 +1051,7 @@ char *upstream_of(const char *branch)
 }
 
 /* the directories that hold PATH, made as needed (git's safe_create_leading_directories) */
-void leading_dirs(const char *path)
+static void leading_dirs(const char *path)
 {
 	const char *slash;
 
@@ -1099,14 +1098,7 @@ static char *checkout_file(void)
 
 char *checkout_read(void)
 {
-	struct strbuf sb = STRBUF_INIT;
-	char *path = checkout_file(), *value = NULL;
-
-	if (strbuf_read_file(&sb, path, 0) >= 0)
-		value = line1(strbuf_detach(&sb, NULL));
-	free(path);
-	strbuf_release(&sb);
-	return value;
+	return state_line(checkout_file());
 }
 
 /* the "ait init" hint of 4.3: only when init can make a local branch */
@@ -1159,7 +1151,7 @@ const char *branch_find(struct names *n, const char *chosen, struct strbuf *msg,
 
 static int only_branch;
 
-const char *branch_name(void)
+static const char *branch_name(void)
 {
 	static const char *name;
 	struct names n;
@@ -1211,7 +1203,8 @@ static void refuse_malformed(struct branch *b, int warn)
 		else
 			reject(128, xstrfmt("fix '%s' in '%s' (enter it with '%s')", e->string,
 					    b->name, hint_command("ait switch %s", quoted(b->name))), "%s", line);
-	}}
+	}
+}
 
 /* the branch HEAD is on, for the hints of 6.2 */
 static char *head_branch(void)
@@ -1479,8 +1472,8 @@ static void checkin_invariants(struct checkin *c, struct branch *now, const char
 		reject(1, c->violation_hint ? c->violation_hint(c, NULL) : NULL, "%s'%s': %s", c->refusal, after->errors.items[0].string,
 		       (char *)after->errors.items[0].util);
 	/* the published tree is read back once; its invariants are judged on what was read */
-	invariants(&(struct contract_view){ now, NULL, NULL }, now, NULL, &before);
-	invariants(&(struct contract_view){ after, NULL, NULL }, now, c->fulfilling, &then);
+	invariants(now, now, NULL, &before);
+	invariants(after, now, c->fulfilling, &then);
 	for_each_string_list_item(v, &then)
 		if (!string_list_has_string(&before, v->string))
 			string_list_insert(&added, v->string)->util = v->util;
