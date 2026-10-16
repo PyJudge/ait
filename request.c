@@ -56,7 +56,7 @@ struct request_result {
 	struct contract_view view;	/* T (view.at) with this calculation's changed contracts */
 	struct string_list records; /* path -> owned typed fulfilment */
 	struct string_list changed;	/* ID -> struct contract: new and changed contracts */
-	struct string_list order;	/* the new contracts in order: "+1", "+2", ... (7.1) */
+	struct string_list order;	/* the new contracts in order -> their task names "+1", "+2", ... (7.1) */
 	struct string_list alias;	/* alias -> ID */
 	struct string_list fulfil;	/* the given contracts and those of the clauses */
 	struct string_list reopened;	/* explicit empty amends, retained while stamping against T */
@@ -81,7 +81,7 @@ static void request_result_reset(struct request_result *r, struct branch *at)
 		fulfilment_free(item->util);
 	string_list_clear(&r->records, 0);
 	string_list_clear(&r->changed, 0);
-	string_list_clear(&r->order, 0);
+	string_list_clear(&r->order, 1);
 	string_list_clear(&r->alias, 1);
 	string_list_clear(&r->fulfil, 0);
 	string_list_clear(&r->reopened, 0);
@@ -326,6 +326,14 @@ static void scopes_arg(struct scope_list *into, const struct scope_input *input,
 		reject(128, NULL, "bad scope: %s", err);
 }
 
+/* spec 7.1: ID is the next contract this request makes */
+static void made(struct request_result *r, const char *id)
+{
+	struct string_list_item *item = string_list_append(&r->order, id);
+
+	item->util = xstrfmt("+%d", (int)r->order.nr);
+}
+
 static struct contract *make(struct request_input *q, struct request_result *r, const char *kind)
 {
 	char id[16];
@@ -342,7 +350,7 @@ static struct contract *make(struct request_input *q, struct request_result *r, 
 		string_list_append(&q->made, id);
 	c = contract_new(kind, q->group ? q->group : "", id);
 	replace_text(&c->creator, agent);
-	string_list_append(&r->order, id);
+	made(r, id);
 	return c;
 }
 
@@ -805,12 +813,14 @@ static char *task_of(const char *id, size_t n)
 /* the name a contract has in the tasks: "+N" for one this request makes (7.1) */
 static const char *task_id(struct request_result *r, const char *id)
 {
-	size_t i;
+	struct string_list_item *item = unsorted_string_list_lookup(&r->order, id);
 
-	for (i = 0; i < r->order.nr; i++)
-		if (!strcmp(r->order.items[i].string, id))
-			return xstrfmt("+%d", (int)i + 1);
-	return id;
+	return item ? item->util : id;
+}
+
+static int is_made(struct request_result *r, const char *id)
+{
+	return unsorted_string_list_has_string(&r->order, id);
 }
 
 /* v14 2.5.3: the schema of an environment definition; NULL, or why not */
@@ -895,13 +905,13 @@ static int conditions_changed(struct request_result *r, struct ynode *ids)
 	for (i = 0; i < ids->nr; i += 2) {
 		const char *id = ids->kids[i]->value;
 
-		if (!string_list_has_string(&r->covered, id) || strcmp(task_id(r, id), id))
+		if (!string_list_has_string(&r->covered, id) || is_made(r, id))
 			return 1;
 	}
 	for_each_string_list_item(item, &r->covered) {
 		const char *got = ystr(yget(ids, item->string));
 
-		if (!strcmp(task_id(r, item->string), item->string) &&
+		if (!is_made(r, item->string) &&
 		    (!got || strcmp(got, condition_at_t(r->view.at, item->string))))
 			return 1;
 	}
@@ -946,7 +956,7 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 	int tasks = 0;
 
 	for_each_string_list_item(item, &r->covered)
-		if (!strcmp(task_id(r, item->string), item->string))
+		if (!is_made(r, item->string))
 			strbuf_addf(&ids, "  %s: \"%s\"\n", item->string, condition_at_t(r->view.at, item->string));
 	strbuf_addf(&req, "condition-ids:%s\n%stree: \"%s\"\ntasks:\n", ids.len ? "" : " {}", ids.buf, q->x->oid);
 	strbuf_addf(&res, "condition-ids:%s\n%sresults:\n", ids.len ? "" : " {}", ids.buf);
@@ -1377,13 +1387,10 @@ static void run_request(struct request *req, int fulfilling)
 	summary = checkin_run(&ck, request_judge);
 	not_recorded = NULL;
 	for_each_string_list_item(item, &r->order) {
-		struct string_list_item *a;
-		const char *name = "";
+		const char *name = request_name(r, item->string);
 
-		for_each_string_list_item(a, &r->alias)
-			if (!strcmp(a->util, item->string))
-				name = a->string;
-		printf("new %s%s%s\n", item->string, *name ? " " : "", name);
+		printf("new %s%s%s\n", item->string, strcmp(name, item->string) ? " " : "",
+		       strcmp(name, item->string) ? name : "");
 	}
 	for_each_string_list_item(item, &r->covered) {
 		printf("fulfilled %s\n", item->string);
@@ -1766,7 +1773,7 @@ static void commit_judge(struct checkin *ck)
 		pin_drafted(&d->provider, old ? &old->provider : NULL, q->h);
 		if (!old) {
 			replace_text(&d->creator, agent);
-			string_list_append(&r->order, d->id);
+			made(r, d->id);
 		} else {
 			if (strcmp(d->change_id, old->change_id))
 				reject(1, NULL, "%s",
@@ -1841,7 +1848,7 @@ static int contract_commit(int argc, const char **argv)
 	for_each_string_list_item(item, &st.drafts) {
 		char *id = contract_path_id(item->string);
 
-		printf("%s %s\n", unsorted_string_list_has_string(&st.q.result.order, id) ? "new" : "change", id);
+		printf("%s %s\n", is_made(&st.q.result, id) ? "new" : "change", id);
 	}
 	checkin_report(summary);
 	request_result_reset(&st.q.result, NULL);

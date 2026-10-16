@@ -53,6 +53,26 @@ char *scope_text(const struct scope *s, int with_base)
 	return xstrfmt("%s%s", s->kind == SCOPE_NEW ? "new:" : "", s->path);
 }
 
+/* Canonical positive line numbers, shared by scopes and stored code spans. */
+const char *range_numbers(const char *text, int *first, int *last)
+{
+	char *next;
+	long a, b;
+
+	if (*text < '1' || *text > '9')
+		return NULL;
+	errno = 0;
+	a = strtol(text, &next, 10);
+	if (*next++ != '-' || *next < '1' || *next > '9')
+		return NULL;
+	b = strtol(next, &next, 10);
+	if (errno || a > INT_MAX || b < a || b > INT_MAX)
+		return NULL;
+	*first = a;
+	*last = b;
+	return next;
+}
+
 /* Command, draft and stored permissions are decided only at this boundary. */
 char *scope_parse(struct scope *s, const char *text, int allow_new, int allow_abs, enum scope_form form)
 {

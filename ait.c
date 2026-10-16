@@ -401,6 +401,12 @@ int id_ok(const char *s, const char *letters)
 	return s && *s && strchr(letters, *s) && strlen(s) == 13 && !s[1 + strspn(s + 1, "0123456789abcdef")];
 }
 
+/* forty lowercase hex digits, a SHA-1 object name */
+int oid_ok(const char *s)
+{
+	return strlen(s) == 40 && !s[strspn(s, "0123456789abcdef")];
+}
+
 /* v14 7.2.1: an agent name, [A-Za-z0-9._-]{1,64} and not "unknown" */
 int agent_ok(const char *name)
 {

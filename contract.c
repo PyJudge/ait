@@ -494,31 +494,6 @@ static char *group_of(const char *path)
 	return slash ? xstrndup(path, slash - path) : xstrdup("");
 }
 
-/* Canonical positive line numbers, shared by scopes and stored code spans. */
-const char *range_numbers(const char *text, int *first, int *last)
-{
-	char *next;
-	long a, b;
-
-	if (*text < '1' || *text > '9')
-		return NULL;
-	errno = 0;
-	a = strtol(text, &next, 10);
-	if (*next++ != '-' || *next < '1' || *next > '9')
-		return NULL;
-	b = strtol(next, &next, 10);
-	if (errno || a > INT_MAX || b < a || b > INT_MAX)
-		return NULL;
-	*first = a;
-	*last = b;
-	return next;
-}
-
-int oid_ok(const char *s)
-{
-	return strlen(s) == 40 && !s[strspn(s, "0123456789abcdef")];
-}
-
 static int one_of(const char *w, const char *const *set)
 {
 	for (; *set; set++)

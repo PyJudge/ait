@@ -37,6 +37,12 @@ void suggest(const char *fmt, ...) __attribute__((format (printf, 1, 2)));
 NORETURN void reject(int code, const char *hint, const char *fmt, ...) __attribute__((format (printf, 3, 4)));
 void newid(char *out, int prefix);
 const char *session(int need);
+int lock_path(const char *path, int nowait);
+int lock_session(const char *s);
+int hook_installed(void);
+char *session_path(const char *s, const char *suffix);
+void session_lines(const char *s, struct string_list *lines);
+void session_write(const char *s, struct string_list *lines);
 void write_state(const char *path, const char *text);
 int create_file(const char *path, const char *text, mode_t mode);
 NORETURN void write_error(const char *path);
@@ -172,7 +178,7 @@ char *scope_text(const struct scope *s, int with_base);
 const struct scope **scope_order(const struct scope_list *list);
 char *scopes_text(const struct scope_list *list, int with_base);
 
-/* contract.c: contracts and fulfilments (spec 2.3, 2.5) */
+/* contract.c: contracts and fulfilments (spec 2.3, 2.5); values.c owns their copies, scope.c their code keys */
 struct spec {
 	char *body;
 	char *engine;			/* "exec", or NULL for prompt */
@@ -364,7 +370,7 @@ void yaml_out_body(struct strbuf *sb, const char *s);
 void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n);
 void spec_lists(struct strbuf *sb, struct spec *s);
 
-/* request.c, notify.c: the commands */
+/* request.c, notify.c: the commands; notify.c: the session's tip lines */
 int cmd_request(int argc, const char **argv);
 int cmd_contract(int argc, const char **argv);
 int cmd_fulfill(int argc, const char **argv);
@@ -372,12 +378,6 @@ int cmd_status(int argc, const char **argv);
 int cmd_sub(int argc, const char **argv);
 int cmd_unsub(int argc, const char **argv);
 int cmd_listen(int argc, const char **argv);
-int lock_path(const char *path, int nowait);
-int lock_session(const char *s);
-int hook_installed(void);
-char *session_path(const char *s, const char *suffix);
-void session_lines(const char *s, struct string_list *lines);
-void session_write(const char *s, struct string_list *lines);
 void session_tips(const char *s, const char *as_of, struct string_list *tips, const char *skipped);
 
 #endif
