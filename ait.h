@@ -68,7 +68,7 @@ void names_clear(struct names *n);
 const char *names_upstream(struct names *n, const char *branch);
 const char *branch_find(struct names *n, const char *chosen, struct strbuf *msg, struct strbuf *hint, int *only);
 int branch_only(void);
-enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8, START_TRAILERS = 16 };
+enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8 };
 struct branch *start(int how);
 char *git_path(const char *name);
 int is_ancestor(const char *a, const char *b);
@@ -125,6 +125,7 @@ struct checkin {
 };
 typedef void (*judge_fn)(struct checkin *c);
 char *request_message(const char *msg, int fulfilling);
+void trailers_read_back(const char *rid);
 void checkin_tip(struct checkin *c);
 void checkin_clear(struct checkin *c);
 char *checkin_judge(struct checkin *c, judge_fn decide);

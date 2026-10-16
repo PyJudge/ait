@@ -1325,45 +1325,44 @@ static char *read_message(const char *message)
 
 /*
  * spec 4.5, v14 5.3: the trailers must read back through the reader history
- * uses, on a commit as git writes it. TEXT is probed with a fresh nonce as
- * the values: a block quoted in TEXT cannot pose as the appended one, and
- * trailer.c's find_separator stops at the key, so the request's own ASCII
- * values ([A-Za-z0-9._-], 1.11) read as the nonce does. UNREAD gets the keys
- * not read back; the body git decodes is returned.
+ * uses, on a commit as git writes it. TEXT gets the values RID, WHO and
+ * SESSION_ID appended; UNREAD gets the keys not read back as given. The body
+ * git decodes is returned.
  */
-static char *trailer_probe(const char *text, struct strbuf *unread)
+static char *trailer_probe(const char *text, const char *rid, const char *who, const char *session_id,
+			   struct strbuf *unread)
 {
-	char nonce[16], *probe, *view, *value, *expected;
+	const char *values[] = { rid, who, session_id };
+	char *probe = trailer_message(text, rid, who, session_id), *view = read_message(probe), *value;
 	size_t i;
 
-	newid(nonce, 'R');
-	probe = trailer_message(text, nonce, nonce, nonce);
-	view = read_message(probe);
-	expected = xstrfmt("%s\n", nonce);
 	value = view + strlen(view) + 1;
 	for (i = 0; i < ARRAY_SIZE(trailer_keys); i++) {
-		if (strcmp(value, expected))
+		if (strncmp(value, values[i], strlen(values[i])) || strcmp(value + strlen(values[i]), "\n"))
 			strbuf_addf(unread, "%s'%s'", unread->len ? ", " : "", trailer_keys[i]);
 		value += strlen(value) + 1;
 	}
-	free(expected);
 	free(probe);
 	return view;
 }
 
-/* the keys the probe of request_message left unread, once it ran (4.5) */
-static int message_probed;
-static struct strbuf hidden_trailers = STRBUF_INIT;
-
-/* spec 4.5: a cut line in the message is E_USAGE, before the common checks */
+/*
+ * spec 4.5: a line of the message that cuts the trailers off is E_USAGE,
+ * judged before the common checks. A fresh nonce stands for the values, so
+ * a block quoted in the message cannot pose as the appended one; whether the
+ * config lets the real values read is trailers_read_back()'s.
+ */
 char *request_message(const char *msg, int fulfilling)
 {
 	char *text = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", msg);
-	char *view = trailer_probe(text, &hidden_trailers);
-	size_t len = strlen(view), end;
+	struct strbuf unread = STRBUF_INIT;
+	char nonce[16], *view;
+	size_t len, end;
 
-	message_probed = 1;
-	if (hidden_trailers.len) {
+	newid(nonce, 'R');
+	view = trailer_probe(text, nonce, nonce, nonce, &unread);
+	len = strlen(view);
+	if (unread.len) {
 		/* git resolves core.commentChar and core.commentString for its cut line */
 		char *prefix = git_run("x\n", NULL, NULL, "stripspace", "--comment-lines");
 
@@ -1376,18 +1375,27 @@ char *request_message(const char *msg, int fulfilling)
 			reject(129, "remove that line from the message", "the message hides the trailers: '%s'",
 			       xstrndup(view + end, strcspn(view + end, "\n")));
 	}
+	strbuf_release(&unread);
 	free(view);
 	return text;
 }
 
-/* spec 4.5: E_CONFIG names the settings that change what git's trailer parser reads */
-static void refuse_hidden_trailers(void)
+/*
+ * spec 4.5: E_CONFIG, after the common checks and the session: the trailers
+ * this request commits (RID, the session's agent and SID) read back under an
+ * inert subject (a first paragraph is never trailers), or the settings that
+ * change what git's trailer parser reads are named
+ */
+void trailers_read_back(const char *rid)
 {
 	struct string_list names = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct strbuf settings = STRBUF_INIT;
+	struct strbuf unread = STRBUF_INIT, settings = STRBUF_INIT;
 	int rc;
 
+	free(trailer_probe("ait", rid, agent, sid, &unread));
+	if (!unread.len)
+		return;
 	git_records(&names, NULL, &rc, "config", "--null", "--name-only", "--get-regexp",
 		    "^(core\\.comment(char|string)|trailer\\.separators|trailer\\..*\\.key)$");
 	if (rc > 1)
@@ -1396,7 +1404,7 @@ static void refuse_hidden_trailers(void)
 	string_list_remove_duplicates(&names, 0);
 	for_each_string_list_item(item, &names)
 		strbuf_addf(&settings, "%s'%s'", settings.len ? ", " : "", item->string);
-	reject(128, NULL, "git config hides the trailers: %s%s%s%s", hidden_trailers.buf,
+	reject(128, NULL, "git config hides the trailers: %s%s%s%s", unread.buf,
 	       settings.len ? " (" : "", settings.buf, settings.len ? ")" : "");
 }
 
@@ -1418,11 +1426,6 @@ struct branch *start(int how)
 	if ((how & START_FULFILS) && *git("ls-files", "--unmerged"))
 		reject(1, NULL, "%s", refusal_words(UNMERGED, NULL, NULL, NULL));
 	session(!!(how & START_SESSION));
-	/* 4.5: the trailers alone, under an inert subject (a first paragraph is never trailers) */
-	if ((how & START_TRAILERS) && !message_probed)
-		free(trailer_probe("ait", &hidden_trailers));
-	if ((how & START_TRAILERS) && hidden_trailers.len)
-		refuse_hidden_trailers();
 	return b;
 }
 

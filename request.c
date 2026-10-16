@@ -1328,8 +1328,9 @@ static void request_open(struct request *req, struct checkin *ck, int how)
 	struct request_input *q = &req->input;
 
 	ck->msg = request_message(q->msg.buf, !!(how & START_FULFILS));
-	ck->branch = start_name(START_SESSION | START_WRITES | START_TRAILERS | how);
+	ck->branch = start_name(START_SESSION | START_WRITES | how);
 	newid(ck->rid, 'R');
+	trailers_read_back(ck->rid);
 	q->rid = ck->rid;
 	q->x = index_tree();
 	q->h = tree_load(head ? head : EMPTY_TREE);
@@ -1962,7 +1963,9 @@ static int contract_pull(int argc, const char **argv)
 	const char *remote;
 
 	remote = remote_arg(argc, argv);
-	ck.branch = start_name(START_SESSION | START_WRITES | START_TRAILERS);
+	ck.branch = start_name(START_SESSION | START_WRITES);
+	newid(ck.rid, 'R');
+	trailers_read_back(ck.rid);
 	strvec_pushl(&args, "fetch", "-q", "--", remote_of(ck.branch, "upstream", remote), NULL);
 	if (git_pass(&args))
 		return 1;
@@ -1970,7 +1973,7 @@ static int contract_pull(int argc, const char **argv)
 		reject(128, NULL, "'%s' has no upstream", ck.branch);
 	p.name = line1(git("rev-parse", "--abbrev-ref", p.upstream));
 	string_list_init_dup(&ck.put);
-	/* ait's own words hold no cut line; start() read the trailers back alone */
+	/* ait's own words hold no cut line; the trailers were read back above */
 	ck.msg = xstrfmt("[CONTRACT] merge '%s'", p.name);
 	ck.refusal = xstrfmt("merging '%s' breaks contract rules: ", p.name);
 	ck.violation_hint = pull_hint;
