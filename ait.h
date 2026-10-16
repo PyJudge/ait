@@ -156,7 +156,6 @@ struct scope {
 	int first;
 	int last;
 	char base[48];
-	char *raw;			/* original spelling, for diagnostics only */
 };
 struct scope_list {
 	struct scope *items;
@@ -175,7 +174,7 @@ void scope_append(struct scope_list *out, const struct scope *s);
 int scope_equal(const struct scope *a, const struct scope *b, int with_base);
 char *scope_text(const struct scope *s, int with_base);
 const struct scope **scope_order(const struct scope_list *list);
-char *scopes_join(const struct scope_list *list);
+char *scopes_text(const struct scope_list *list, int with_base);
 
 /* contract.c: contracts and fulfilments (spec 2.3, 2.5) */
 struct spec {
@@ -340,7 +339,6 @@ void undertakings(const struct contract_view *v, struct contract *c, int how, st
 void dependencies(const struct contract_view *v, struct contract *c, struct string_list *out);
 const char *verdict_word(enum verdict v);
 int promise(struct contract *c, enum verdict v);
-char *scopes_bare(const struct scope_list *l);
 char *scope_display(const struct scope *scope, struct tree *x);
 char *violation_words(struct violation *v);
 void violations_clear(struct string_list *violations);

@@ -14,20 +14,15 @@ void replace_text(char **field, const char *text)
 	*field = copy;
 }
 
-static void list_copy(struct string_list *out, const struct string_list *from, int lines)
+/* a copy has no source lines: only reading a branch reports them (branch_load) */
+static void list_copy(struct string_list *out, const struct string_list *from)
 {
 	const struct string_list_item *item;
 
-	string_list_clear(out, lines);
+	string_list_clear(out, 1);
 	string_list_init_dup(out);
-	for_each_string_list_item(item, from) {
-		struct string_list_item *copy = string_list_append(out, item->string);
-
-		if (lines && item->util) {
-			copy->util = xmalloc(sizeof(int));
-			*(int *)copy->util = *(int *)item->util;
-		}
-	}
+	for_each_string_list_item(item, from)
+		string_list_append(out, item->string);
 }
 
 void spec_clear(struct spec *s)
@@ -49,7 +44,7 @@ void spec_copy(struct spec *out, const struct spec *s)
 	strvec_init(&out->command);
 	if (s->command.nr)
 		strvec_pushv(&out->command, s->command.v);
-	list_copy(&out->success, &s->success, 0);
+	list_copy(&out->success, &s->success);
 }
 
 void specs_clear(struct contract *c)
@@ -100,9 +95,9 @@ struct contract *contract_copy(const struct contract *c)
 	copy->target = xstrdup_null(c->target);
 	scopes_copy(&copy->consumer, &c->consumer);
 	scopes_copy(&copy->provider, &c->provider);
-	list_copy(&copy->undertakes, &c->undertakes, 0);
-	list_copy(&copy->partially, &c->partially, 0);
-	list_copy(&copy->fulfilled, &c->fulfilled, 1);
+	list_copy(&copy->undertakes, &c->undertakes);
+	list_copy(&copy->partially, &c->partially);
+	list_copy(&copy->fulfilled, &c->fulfilled);
 	copy->specs = xcalloc(c->nspecs, sizeof(*copy->specs));
 	copy->nspecs = c->nspecs;
 	for (i = 0; i < c->nspecs; i++)
@@ -112,7 +107,7 @@ struct contract *contract_copy(const struct contract *c)
 
 void contract_fulfilled_copy(struct contract *out, const struct contract *from)
 {
-	list_copy(&out->fulfilled, &from->fulfilled, 1);
+	list_copy(&out->fulfilled, &from->fulfilled);
 }
 
 static int text_same(const char *a, const char *b)

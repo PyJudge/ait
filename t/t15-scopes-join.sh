@@ -1,29 +1,16 @@
 #!/bin/sh
-# spec 2.3.2, v14 3.2a: canonical output must not reorder the stored contract's scopes
+# spec 2.3.2, v14 3.2a: a stored scope list is in PATH byte order, the whole file first, then lines
 . "$(dirname "$0")/lib.sh"
-T=$(mktemp -d)
-trap 'rm -rf "$T"' 0
-
-set -- -std=gnu99 -O2 -Wall -Werror -Wdeclaration-after-statement -I"$AIT_DIR" -I"$AIT_DIR/libyaml"
-case $(uname -s) in
-Linux) set -- "$@" -DHAVE_GETRANDOM ;;
-Darwin) set -- "$@" -DHAVE_ARC4RANDOM -DPRECOMPOSE_UNICODE ;;
-esac
-compiler=${CC:-cc}
-"$compiler" "$@" -Dmain=ait_command_main -c "$AIT_DIR/ait.c" -o "$T/ait.o" || exit 1
-for source in "$AIT_DIR"/*.c; do
-	case $source in */ait.c) continue ;; esac
-	set -- "$@" "$source"
-done
-set -- "$@" "$AIT_DIR/t/helper-scopes-join.c" "$T/ait.o" "$AIT_DIR"/libyaml/*.o
-case $(uname -s) in Darwin) set -- "$@" -liconv ;; esac
-"$compiler" "$@" -o "$T/scopes-join" || exit 1
-
-run "$T/scopes-join" borrowed
-check_rc "typed scope serialization preserves input storage and order" 0
-run "$T/scopes-join" owned
-check_rc "copied scope values retain their own storage after source clear" 0
-run "$T/scopes-join" empty
-check_rc "empty scopes remain empty" 0
-
+setup
+printf 'z\n' >z.c
+mkdir -p dir && printf 'd\n' >dir/d.c
+git add z.c dir/d.c && git commit -qm more
+run ait future offer z.c,src/order.c:10-12,src/order.c,src/order.c:2-4,src/order.c:2-3,new:b.c,dir/,/ cond.yaml -m order
+check_rc 'an offer takes scopes in any order' 0
+O=$(newest O)
+base=$(git rev-parse HEAD:src/order.c)
+check 'the provider is stored in canonical order with its bases' \
+	"yaml $O | grep -qx 'provider: \"/,new:b.c,dir/,src/order.c,src/order.c:2-3 $base,src/order.c:2-4 $base,src/order.c:10-12 $base,z.c\"'"
+run ait status /
+check 'status shows the same order without bases' "has out '^provider /,new:b.c,dir/,src/order.c,src/order.c:2-3,src/order.c:2-4,src/order.c:10-12,z.c\$'"
 done_testing

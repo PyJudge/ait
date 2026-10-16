@@ -72,7 +72,7 @@ static void block(struct branch *b, struct judgment *j, struct contract *c, cons
 		suggest("%s", hint_command("ait fulfill %s -m <why>", c->id));
 	if (demand && live(c) && !held)
 		suggest("%s", hint_command("ait future offer %s <files> as o undertake %s o -m <why>",
-					  quoted(scopes_bare(&c->provider)), c->id));
+					  quoted(scopes_text(&c->provider, 0)), c->id));
 }
 
 /* spec 6.3-4: a violation (4.10) names ID */

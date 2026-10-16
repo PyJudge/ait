@@ -4,7 +4,6 @@
 void scope_clear(struct scope *s)
 {
 	free(s->path);
-	free(s->raw);
 	memset(s, 0, sizeof(*s));
 }
 
@@ -12,7 +11,6 @@ static void scope_copy(struct scope *out, const struct scope *s)
 {
 	*out = *s;
 	out->path = xstrdup(s->path);
-	out->raw = s->raw ? xstrdup(s->raw) : NULL;
 }
 
 void scope_append(struct scope_list *out, const struct scope *s)
@@ -66,7 +64,6 @@ char *scope_parse(struct scope *s, const char *text, int allow_new, int allow_ab
 	len -= p - text;
 	colon = memchr(p, ':', len);
 	s->path = xstrndup(p, colon ? (size_t)(colon - p) : len);
-	s->raw = xstrdup(text);
 	if (colon) {
 		s->kind = SCOPE_RANGE;
 		end = range_numbers(colon + 1, &s->first, &s->last);
@@ -99,34 +96,36 @@ char *scope_parse(struct scope *s, const char *text, int allow_new, int allow_ab
 	return xstrfmt("'%s' is not a scope", text);
 }
 
+/* v14 3.2a: a list of scopes joined by ","; the same scope twice is an error */
 char *scopes_parse(struct scope_list *out, const char *text, int allow_new, int allow_abs, enum scope_form form)
 {
-	struct string_list words = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP;
+	struct string_list words = STRING_LIST_INIT_DUP;
 	struct string_list_item *word;
 	char *err = NULL;
 
 	if (*text)
 		string_list_split(&words, text, ",", -1);
 	for_each_string_list_item(word, &words) {
+		const struct scope *had;
 		struct scope s;
-		char *key;
 
 		if ((err = scope_parse(&s, word->string, allow_new, allow_abs, form)))
 			break;
-		key = scope_text(&s, 0);
-		if (string_list_has_string(&seen, key))
+		for_each_scope(had, out)
+			if (scope_equal(had, &s, 0))
+				break;
+		if (had && had < out->items + out->nr) {
+			char *key = scope_text(&s, 0);
+
 			err = xstrfmt("'%s' is given twice", key);
-		else {
-			string_list_insert(&seen, key);
-			scope_append(out, &s);
-		}
-		free(key);
-		scope_clear(&s);
-		if (err)
+			free(key);
+			scope_clear(&s);
 			break;
+		}
+		ALLOC_GROW(out->items, out->nr + 1, out->alloc);
+		out->items[out->nr++] = s;
 	}
 	string_list_clear(&words, 0);
-	string_list_clear(&seen, 0);
 	if (err)
 		scopes_clear(out);
 	return err;
@@ -157,14 +156,15 @@ const struct scope **scope_order(const struct scope_list *list)
 	return ordered;
 }
 
-char *scopes_join(const struct scope_list *list)
+/* v14 3.2a: the scope list as stored (WITH_BASE) or as hints repeat it */
+char *scopes_text(const struct scope_list *list, int with_base)
 {
 	const struct scope **ordered = scope_order(list);
 	struct strbuf out = STRBUF_INIT;
 	size_t i;
 
 	for (i = 0; i < list->nr; i++) {
-		char *text = scope_text(ordered[i], 1);
+		char *text = scope_text(ordered[i], with_base);
 
 		strbuf_addf(&out, "%s%s", i ? "," : "", text);
 		free(text);

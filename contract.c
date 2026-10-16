@@ -943,7 +943,7 @@ static void ids_out(struct strbuf *sb, const char *key, struct string_list *l)
 
 static void scope_line(struct strbuf *sb, const char *key, const struct scope_list *l)
 {
-	char *text = scopes_join(l);
+	char *text = scopes_text(l, 1);
 
 	strbuf_addf(sb, "%s: ", key);
 	yaml_out_scalar(sb, text);
@@ -1602,22 +1602,6 @@ char *scope_display(const struct scope *scope, struct tree *x)
 
 	scope_result_at(scope, x, &at);
 	return scope_result_text(scope, &at);
-}
-
-char *scopes_bare(const struct scope_list *l)
-{
-	struct strbuf out = STRBUF_INIT;
-	const struct scope **ordered = scope_order(l);
-	size_t i;
-
-	for (i = 0; i < l->nr; i++) {
-		char *text = scope_text(ordered[i], 0);
-
-		strbuf_addf(&out, "%s%s", i ? "," : "", text);
-		free(text);
-	}
-	free(ordered);
-	return strbuf_detach(&out, NULL);
 }
 
 void geometry_init(struct contract_geometry *g, const struct contract *c, struct tree *t)

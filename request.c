@@ -1196,7 +1196,7 @@ static char *locate_all(struct request_input *q, struct request_result *r, const
 		case NOBASE:
 			/* the provider given again at this code takes new base blobs */
 			*hint = hint_command("ait future amend %s %s%s - -m <why>", c->id, strcmp(c->kind, "demand") ? "" : "- ",
-					     quoted(scopes_bare(&c->provider)));
+					     quoted(scopes_text(&c->provider, 0)));
 			return xstrfmt("repository lacks the base blob of '%s' ('%s')", c->id, item->path);
 		default: {
 			char *text = scope_text(item, 1);
