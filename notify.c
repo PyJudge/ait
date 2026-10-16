@@ -224,7 +224,7 @@ struct receiving_state {
 
 static void receiving(const char *s, struct receiving_state *v)
 {
-	struct strbuf key = STRBUF_INIT, chosen = STRBUF_INIT;
+	struct strbuf key = STRBUF_INIT;
 	struct string_list_item *item;
 
 	memset(v, 0, sizeof(*v));
@@ -233,15 +233,8 @@ static void receiving(const char *s, struct receiving_state *v)
 	for_each_string_list_item(item, &v->lines)
 		if (starts_with(item->string, "sub "))
 			strbuf_addf(&key, "%s\n", item->string);
-	free(object("HEAD^{commit}", 0, v->head_oid, NULL));
-	{
-		char *path = checkout_file();
-
-		if (strbuf_read_file(&chosen, path, 0) >= 0)
-			v->checkout = strbuf_detach(&chosen, NULL);
-		free(path);
-	}
-	strbuf_release(&chosen);
+	object_oid("HEAD^{commit}", v->head_oid);
+	v->checkout = checkout_read();
 	/* Absence and an empty file have different branch-selection meanings. */
 	strbuf_addf(&key, "head %s\ncheckout %d %s", v->head_oid, !!v->checkout, v->checkout ? v->checkout : "");
 	v->version = strbuf_detach(&key, NULL);
@@ -711,27 +704,23 @@ static void deliver(int *warned)
 	struct judgment judgments = { 0 };
 	struct scope_result *positions = NULL;
 	size_t i;
-	FILE *candidates = NULL;
-	char *revision = NULL;
-	size_t revision_alloc = 0;
 	struct subscription_list subs = { 0 };
-	struct string_list seen = STRING_LIST_INIT_DUP,
-			   watched = STRING_LIST_INIT_DUP;
+	struct string_list seen = STRING_LIST_INIT_DUP, watched = STRING_LIST_INIT_DUP,
+			   candidates = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	struct strbuf in = STRBUF_INIT, seenbuf = STRBUF_INIT, skipped = STRBUF_INIT, hint = STRBUF_INIT;
-	const char *name, *up, *tip, *msg;
-	char *chosen;
+	struct strbuf in = STRBUF_INIT, seenbuf = STRBUF_INIT, skipped = STRBUF_INIT, hint = STRBUF_INIT,
+		      msg = STRBUF_INIT;
+	const char *name, *up, *tip;
 	int rc, fd;
 
 	/* Git's collect→consume pattern: V, refs and upstream are inputs to this round. */
 	fd = lock_session(sid);
 	receiving(sid, &v);
 	names_load(&n);
-	chosen = v.checkout ? line1(xstrdup(v.checkout)) : NULL;
-	name = branch_find(&n, chosen, &msg, &hint, NULL);
+	name = branch_find(&n, v.checkout, &msg, &hint, NULL);
 	close(fd);
 	if (!name && !*warned)
-		warning("%s", msg);
+		warning("%s", msg.buf);
 	*warned = !name;
 	if (!name)
 		goto out;
@@ -767,24 +756,25 @@ static void deliver(int *warned)
 	string_list_sort(&seen);
 	for_each_string_list_item(item, &watched)
 		strbuf_addf(&in, "%s\n", (char *)item->util);
-	candidates = git_spool(in.buf, (const char *[]){ "rev-list", "--reverse", "--topo-order",
-		"--ignore-missing", "--stdin", NULL });
-	while (getline(&revision, &revision_alloc, candidates) >= 0) {
+	string_list_split(&candidates, git_run(in.buf, NULL, NULL, "rev-list", "--reverse", "--topo-order",
+		"--ignore-missing", "--stdin"), "\n", -1);
+	for_each_string_list_item(item, &candidates) {
+		const char *revision = item->string;
 		struct strbuf keys = STRBUF_INIT, payload = STRBUF_INIT;
 		struct string_list new_keys = STRING_LIST_INIT_DUP;
+		struct string_list_item *key;
 		struct receiving_state now;
-		int abort = 0;
+		int stale = 0;
 		char *sender;
 
-		revision[strcspn(revision, "\n")] = 0;
 		if (!*revision)
 			continue;
 		event(&judgments, revision, &watched, &subs, positions, &seen, &keys, &payload);
 		/* a key goes out once, in this round too */
 		string_list_split(&new_keys, keys.buf, "\n", -1);
-		for_each_string_list_item(item, &new_keys)
-			if (*item->string)
-				string_list_insert(&seen, item->string);
+		for_each_string_list_item(key, &new_keys)
+			if (*key->string)
+				string_list_insert(&seen, key->string);
 		/* 9.4: the session's own request is skipped, its keys kept like any skipped event's (v14 9.5-3) */
 		sender = payload.len ? git("log", "-1", "--format=%(trailers:key=Ait-Session,valueonly)", revision) : NULL;
 		rc = sender && !strcmp(line1(sender), sid);
@@ -800,7 +790,7 @@ static void deliver(int *warned)
 		receiving_clear(&now);
 		close(fd);
 		if (rc) {
-			abort = 1;
+			stale = 1;
 			goto event_done;
 		}
 		/* 5.7: a reader gone ends listen as git ends on EPIPE; any other failure is a write error */
@@ -816,23 +806,18 @@ static void deliver(int *warned)
 		string_list_clear(&new_keys, 0);
 		strbuf_release(&keys);
 		strbuf_release(&payload);
-		if (abort)
+		if (stale)
 			goto out;
 	}
-	if (ferror(candidates))
-		write_error("temporary candidates");
 	session_tips(sid, v.version, &n.tips, skipped.buf);
 out:
 	judgment_clear(&judgments);
 	/* a round's blob pairs are not kept for the next (9.6) */
 	blob_pairs_clear();
 	free(positions);
-	if (candidates)
-		fclose(candidates);
-	free(revision);
+	string_list_clear(&candidates, 0);
 	branch_free(mine);
 	tree_free(h);
-	free(chosen);
 	receiving_clear(&v);
 	names_clear(&n);
 	subscriptions_clear(&subs);
@@ -842,6 +827,7 @@ out:
 	strbuf_release(&seenbuf);
 	strbuf_release(&skipped);
 	strbuf_release(&hint);
+	strbuf_release(&msg);
 }
 
 /* the listen loop (U51): a round when the hook adds a line to the wake file, and every EVERY seconds */
@@ -858,11 +844,24 @@ static void listen_loop(int fetch)
 		off_t size = stat(wake, &st) ? -1 : st.st_size;
 
 		if (fetch && time(NULL) - fetched >= fetch) {
-			struct strvec f = STRVEC_INIT;
+			struct string_list remotes = STRING_LIST_INIT_DUP;
+			struct string_list_item *r;
+			char *names = git("remote");
+			int rc;
 
-			strvec_pushl(&f, "fetch", "-q", "--all", NULL);
-			if (git_pass(&f))
-				warning("fetch failed: %s", git_error ? git_error : "");
+			/* spec 6.8: each remote on its own; one that fails does not stop the others */
+			string_list_split(&remotes, names, "\n", -1);
+			free(names);
+			for_each_string_list_item(r, &remotes) {
+				if (!*r->string)
+					continue;
+				free(git_run(NULL, NULL, &rc, "fetch", "-q", "--", r->string));
+				if (rc) {
+					warning("fetch failed: %s", git_error);
+					suggest("check the remotes");
+				}
+			}
+			string_list_clear(&remotes, 0);
 			fetched = time(NULL);
 		}
 		if (size != seen_wake || time(NULL) - polled >= every) {

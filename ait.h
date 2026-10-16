@@ -21,7 +21,6 @@ void git_records_argv(struct string_list *out, const char *index, int *rc, const
 	git_records_argv(out, index, rc, (const char *[]){ __VA_ARGS__, NULL })
 void guard_git_children(void);
 char *git_argv(const char *in, const char *index, int *rc, const char **argv);
-FILE *git_spool(const char *in, const char **argv);
 #define git_run(in, index, rc, ...) \
 	git_argv(in, index, rc, (const char *[]){ __VA_ARGS__, NULL })
 #define git(...) git_run(NULL, NULL, NULL, __VA_ARGS__)
@@ -62,7 +61,7 @@ struct names {
 void names_load(struct names *n);
 void names_clear(struct names *n);
 const char *names_upstream(struct names *n, const char *branch);
-const char *branch_find(struct names *n, const char *chosen, const char **msg, struct strbuf *hint, int *only);
+const char *branch_find(struct names *n, const char *chosen, struct strbuf *msg, struct strbuf *hint, int *only);
 const char *branch_name(void);
 int branch_only(void);
 enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8, START_TRAILERS = 16 };
@@ -71,7 +70,6 @@ char *git_path(const char *name);
 void leading_dirs(const char *path);
 int is_ancestor(const char *a, const char *b);
 char *upstream_of(const char *branch);
-char *checkout_file(void);
 char *checkout_read(void);
 
 /* spec 4.8: E_STATE reasons; the words are chosen once in refusal_words(). */

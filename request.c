@@ -1646,8 +1646,8 @@ static int contract_new_draft(const char *kind, const char *group)
 	char id[16];
 	struct names n;
 	struct spec s = { 0 };
-	struct strbuf hint = STRBUF_INIT;
-	const char *msg, *chosen;
+	struct strbuf hint = STRBUF_INIT, msg = STRBUF_INIT;
+	const char *chosen;
 	struct string_list_item *item;
 	int taken;
 

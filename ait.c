@@ -203,7 +203,7 @@ void guard_git_children(void)
 
 /* Git takes argv; IN feeds stdin, INDEX selects its index; without RC a failure is fatal (4.7). */
 static char *git_argv_n(const char *in, size_t in_len, const char *index, int *rc,
-			const char **argv, const char **env, int output_fd)
+			const char **argv, const char **env)
 {
 	struct child_process cmd = CHILD_PROCESS_INIT;
 	struct strbuf out = STRBUF_INIT, err = STRBUF_INIT;
@@ -221,9 +221,7 @@ static char *git_argv_n(const char *in, size_t in_len, const char *index, int *r
 	/* git's messages untranslated: ait's are English (v14 5.6) */
 	strvec_push(&cmd.env, "LANGUAGE=C");
 	cmd.clean_on_exit = cmd.wait_after_clean = git_children_guarded;
-	if (output_fd >= 0)
-		cmd.out = xdup(output_fd);
-	code = pipe_command(&cmd, in, in_len, output_fd >= 0 ? NULL : &out, 0, &err, 0);
+	code = pipe_command(&cmd, in, in_len, &out, 0, &err, 0);
 	free(git_error);
 	git_error = xstrndup(err.buf, strcspn(err.buf, "\n"));
 	if (skip_prefix(git_error, "fatal: ", &reason) || skip_prefix(git_error, "error: ", &reason))
@@ -242,12 +240,12 @@ static char *git_argv_n(const char *in, size_t in_len, const char *index, int *r
 
 char *git_args(struct strvec *args, const char *in, const char *index, int *rc)
 {
-	return git_argv_n(in, in ? strlen(in) : 0, index, rc, args->v, NULL, -1);
+	return git_argv_n(in, in ? strlen(in) : 0, index, rc, args->v, NULL);
 }
 
 char *git_argv(const char *in, const char *index, int *rc, const char **argv)
 {
-	return git_argv_n(in, in ? strlen(in) : 0, index, rc, argv, NULL, -1);
+	return git_argv_n(in, in ? strlen(in) : 0, index, rc, argv, NULL);
 }
 
 /* Git's -z records preserve path bytes; no caller decodes display quoting. */
@@ -260,30 +258,10 @@ void git_records_argv(struct string_list *out, const char *index, int *rc, const
 	free(bytes);
 }
 
-/* Finish Git before consuming candidates, without retaining the entire backlog. */
-FILE *git_spool(const char *in, const char **argv)
-{
-	struct tempfile *tmp = mks_tempfile_dt("ait-candidates-XXXXXX", "revisions");
-	FILE *stream;
-	char *out;
-
-	if (!tmp)
-		write_error("temporary candidates");
-	stream = xfdopen(xdup(tmp->fd), "w+");
-	if (delete_tempfile(&tmp))
-		write_error("temporary candidates");
-	fcntl(fileno(stream), F_SETFD, FD_CLOEXEC);
-	out = git_argv_n(in, in ? strlen(in) : 0, NULL, NULL, argv, NULL, fileno(stream));
-	free(out);
-	if (fseek(stream, 0, SEEK_SET))
-		write_error("temporary candidates");
-	return stream;
-}
-
 /* Binary index input retains its byte length, including NUL record separators. */
 static char *git_feed_argv(const struct strbuf *in, const char *index, int *rc, const char **argv)
 {
-	return git_argv_n(in->buf, in->len, index, rc, argv, NULL, -1);
+	return git_argv_n(in->buf, in->len, index, rc, argv, NULL);
 }
 #define git_feed(in, index, rc, ...) \
 	git_feed_argv(in, index, rc, (const char *[]){ __VA_ARGS__, NULL })
@@ -1052,7 +1030,7 @@ int is_ancestor(const char *a, const char *b)
 {
 	int rc;
 
-	git_run(NULL, NULL, &rc, "merge-base", "--is-ancestor", a, b);
+	free(git_run(NULL, NULL, &rc, "merge-base", "--is-ancestor", a, b));
 	return !rc;
 }
 
@@ -1114,7 +1092,7 @@ int create_file(const char *path, const char *text, mode_t mode)
 }
 
 /* spec 2.6.1: the worktree's checkout file */
-char *checkout_file(void)
+static char *checkout_file(void)
 {
 	return git_path("ait-branch");
 }
@@ -1146,15 +1124,16 @@ static const char *init_hint(struct names *n)
  * spec 4.2, 4.3 0-2: the contract branch this worktree works with; NULL with
  * the refusal in MSG and HINT (listen goes on after one, 6.8)
  */
-const char *branch_find(struct names *n, const char *chosen, const char **msg, struct strbuf *hint, int *only)
+const char *branch_find(struct names *n, const char *chosen, struct strbuf *msg, struct strbuf *hint, int *only)
 {
 	struct string_list_item *item;
 
 	if (only)
 		*only = 0;
+	strbuf_reset(msg);
 	strbuf_reset(hint);
 	if (!n->local.nr) {
-		*msg = n->remote.nr ? "no local ait branch" : "no ait branch";
+		strbuf_addstr(msg, n->remote.nr ? "no local ait branch" : "no ait branch");
 		if (!n->remote.nr || init_hint(n))
 			strbuf_addstr(hint, hint_command("ait init"));
 		return NULL;
@@ -1171,8 +1150,10 @@ const char *branch_find(struct names *n, const char *chosen, const char **msg, s
 		strbuf_addf(hint, "%s\n", hint_command("ait checkout %s", quoted(item->string)));
 	if (init_hint(n))
 		strbuf_addf(hint, "%s\n", hint_command("ait init"));
-	*msg = chosen ? xstrfmt("contract branch '%s' does not exist", chosen) :
-			"more than one ait branch; none is checked out";
+	if (chosen)
+		strbuf_addf(msg, "contract branch '%s' does not exist", chosen);
+	else
+		strbuf_addstr(msg, "more than one ait branch; none is checked out");
 	return NULL;
 }
 
@@ -1182,13 +1163,12 @@ const char *branch_name(void)
 {
 	static const char *name;
 	struct names n;
-	struct strbuf hint = STRBUF_INIT;
-	const char *msg;
+	struct strbuf hint = STRBUF_INIT, msg = STRBUF_INIT;
 
 	if (!name) {
 		names_load(&n);
 		if (!(name = branch_find(&n, checkout_read(), &msg, &hint, &only_branch)))
-			reject(128, hint.len ? hint.buf : NULL, "%s", msg);
+			reject(128, hint.len ? hint.buf : NULL, "%s", msg.buf);
 	}
 	return name;
 }
@@ -1322,13 +1302,13 @@ static char *read_message(const char *message)
 	env[0] = xstrfmt("GIT_OBJECT_DIRECTORY=%s", message_directory);
 	/* git knows the empty tree without its object (object-file.c) */
 	oid = line1(git_argv_n(message, strlen(message), NULL, &rc,
-		(const char *[]){ "commit-tree", EMPTY_TREE, NULL }, env, -1));
+		(const char *[]){ "commit-tree", EMPTY_TREE, NULL }, env));
 	if (!rc) {
 		strbuf_addstr(&format, "--format=format:%B%x00");
 		for (i = 0; i < ARRAY_SIZE(trailer_keys); i++)
 			strbuf_addf(&format, "%%(trailers:key=%s,valueonly)%%x00", trailer_keys[i]);
 		out = git_argv_n(NULL, 0, NULL, &rc,
-			(const char *[]){ "log", "--no-walk", format.buf, oid, "--", NULL }, env, -1);
+			(const char *[]){ "log", "--no-walk", format.buf, oid, "--", NULL }, env);
 	}
 	cleanup_rc = nftw(dir, remove_message_entry, 8, FTW_DEPTH | FTW_PHYS);
 	cleanup_errno = errno;
