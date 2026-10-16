@@ -864,7 +864,7 @@ int cmd_listen(int argc, const char **argv)
 	strvec_clear(&args);
 	/* v14 4.5: the listener's lock, taken and stamped with the pid under the session's lock */
 	sfd = lock_session(sid);
-	if ((fd = lock_path(session_path(sid, ".listen"), 1)) < 0)
+	if ((fd = listener_lock(sid)) < 0)
 		reject(128, NULL, "cannot run now: a listener is already running for session '%s'", sid);
 	if (ftruncate(fd, 0) == 0)
 		dprintf(fd, "%d\n", (int)getpid());

@@ -39,6 +39,7 @@ void newid(char *out, int prefix);
 const char *session(int need);
 int lock_path(const char *path, int nowait);
 int lock_session(const char *s);
+int listener_lock(const char *s);
 int hook_installed(void);
 char *session_path(const char *s, const char *suffix);
 void session_lines(const char *s, struct string_list *lines);

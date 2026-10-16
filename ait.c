@@ -621,6 +621,16 @@ void session_write(const char *s, struct string_list *lines)
 	strbuf_release(&sb);
 }
 
+/* v14 4.5: the listener's lock of the session S, taken without waiting; -1 while a listener holds it */
+int listener_lock(const char *s)
+{
+	char *path = session_path(s, ".listen");
+	int fd = lock_path(path, 1);
+
+	free(path);
+	return fd;
+}
+
 /* v14 4.6: the worktree WT's lock */
 static int hold_lock(const char *wt)
 {
@@ -815,7 +825,7 @@ static void session_list(struct string_list *ids)
 		struct string_list lines = STRING_LIST_INIT_DUP;
 		struct string_list_item *line;
 		const char *d = default_of(f->wt);
-		int fd = lock_path(session_path(item->string, ".listen"), 1), n = 0, listening = fd < 0;
+		int fd = listener_lock(item->string), n = 0, listening = fd < 0;
 
 		if (fd >= 0)
 			close(fd);
@@ -845,7 +855,7 @@ static void session_close(struct string_list *ids, const char *s)
 	/* v14 4.5: the worktree's lock, the session's, then the listener's tried */
 	fd = hold_lock(f->wt);
 	lock_session(s);
-	if (lock_path(session_path(s, ".listen"), 1) < 0) {
+	if (listener_lock(s) < 0) {
 		struct strbuf pid = STRBUF_INIT;
 
 		strbuf_read_file(&pid, session_path(s, ".listen"), 0);

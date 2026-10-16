@@ -1318,6 +1318,32 @@ static char *start_name(int how)
 	return name;
 }
 
+/*
+ * spec 4.3-4.6: a request's checkin opened: its message read back (4.5), the
+ * common checks (start), its RID, and the trees X and HEAD it is fixed at
+ */
+static void request_open(struct request *req, struct checkin *ck, int how)
+{
+	struct request_input *q = &req->input;
+
+	ck->msg = request_message(q->msg.buf, !!(how & START_FULFILS));
+	ck->branch = start_name(START_SESSION | START_WRITES | START_TRAILERS | how);
+	newid(ck->rid, 'R');
+	q->rid = ck->rid;
+	q->x = index_tree();
+	q->h = tree_load(head ? head : EMPTY_TREE);
+	string_list_init_dup(&ck->put);
+	ck->data = req;
+}
+
+static void request_close(struct request *req, struct checkin *ck)
+{
+	request_result_reset(&req->result, NULL);
+	request_input_clear(&req->input);
+	checkin_clear(ck);
+	free((char *)ck->branch);
+}
+
 /* spec 6.7.5: judge first, commit the staged code, then check in */
 static void run_request(struct request *req, int fulfilling)
 {
@@ -1329,16 +1355,9 @@ static void run_request(struct request *req, int fulfilling)
 	char *summary, *scope_error = NULL, *scope_hint = NULL, *err;
 	int rc, stale = 0;
 
-	ck.msg = request_message(q->msg.buf, fulfilling);
-	ck.branch = start_name(START_SESSION | START_WRITES | START_TRAILERS | (fulfilling ? START_FULFILS : 0));
-	newid(ck.rid, 'R');
-	q->x = index_tree();
-	q->h = tree_load(head ? head : EMPTY_TREE);
-	string_list_init_dup(&ck.put);
+	request_open(req, &ck, fulfilling ? START_FULFILS : 0);
 	ck.violation_hint = violation_hint;
 	ck.retry_hint = retry;
-	ck.data = req;
-	q->rid = ck.rid;
 	if (fulfilling) {
 		/* step 0: everything judged on T as a checkin judges it (4.10 too), nothing changed */
 		checkin_tip(&ck);
@@ -1397,10 +1416,7 @@ static void run_request(struct request *req, int fulfilling)
 			printf("withdrawn %s\n", contract_after(r, item->string)->target);
 	}
 	checkin_report(summary);
-	request_result_reset(r, NULL);
-	request_input_clear(q);
-	checkin_clear(&ck);
-	free((char *)ck.branch);
+	request_close(req, &ck);
 	ynode_free(result_input);
 }
 
@@ -1809,12 +1825,8 @@ static int contract_commit(int argc, const char **argv)
 	options(&st.q.input, argc - 1, argv + 1, &rest);
 	if (rest.nr || st.q.input.result || st.q.input.group)
 		reject(129, NULL, "contract commit takes -m, -F and --force");
-	ck.msg = request_message(st.q.input.msg.buf, 0);
-	ck.branch = start_name(START_SESSION | START_WRITES | START_TRAILERS);
-	newid(ck.rid, 'R');
-	st.q.input.x = index_tree();
-	st.q.input.h = tree_load(head ? head : EMPTY_TREE);
-	st.q.input.rid = ck.rid;
+	request_open(&st.q, &ck, 0);
+	ck.data = &st;
 	index = stage_index();
 	lock = lock_stage(index);
 	git_records(&lines, index, NULL, "ls-files", "-s", "-z");
@@ -1838,8 +1850,6 @@ static int contract_commit(int argc, const char **argv)
 	}
 	if (!st.drafts.nr)
 		reject(1, hint_command("ait contract add <path>..."), "nothing staged");
-	string_list_init_dup(&ck.put);
-	ck.data = &st;
 	summary = checkin_run(&ck, commit_judge);
 	if (unlink(index))
 		write_error(index);
@@ -1850,15 +1860,12 @@ static int contract_commit(int argc, const char **argv)
 		printf("%s %s\n", is_made(&st.q.result, id) ? "new" : "change", id);
 	}
 	checkin_report(summary);
-	request_result_reset(&st.q.result, NULL);
-	request_input_clear(&st.q.input);
+	request_close(&st.q, &ck);
 	for_each_string_list_item(item, &st.drafts)
 		contract_free(item->util);
 	string_list_clear(&st.drafts, 0);
 	string_list_clear(&lines, 0);
 	strvec_clear(&rest);
-	checkin_clear(&ck);
-	free((char *)ck.branch);
 	return 0;
 }
 
