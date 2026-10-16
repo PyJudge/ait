@@ -347,19 +347,26 @@ int scope_pin(struct scope *s, struct tree *t, char **err);
 int scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_list *was, char **err);
 struct recorded_code code_at(struct tree *t, const struct scope_location *where);
 
-/* contract.c: the YAML subset (v14 2.5.1) and its writing (v14 8.2) */
-void yaml_out_scalar(struct strbuf *sb, const char *s);
-int yaml_parse(const char *text, size_t len, struct string_list *kv, char **err);
-void yaml_clear(struct string_list *kv);
-const char *yget(struct string_list *kv, const char *key);
-char *yaml_key_decode(const char *key);
-char ykind(struct string_list *kv, const char *key);
-int yline(struct string_list *kv, const char *key);
-char *yaml_refusal(struct string_list *kv, const char *key, const char *fmt, ...) __attribute__((format (printf, 3, 4)));
+/* contract.c: the YAML subset (v14 2.5.1) as nodes, and its writing (v14 8.2) */
+struct ynode {
+	char kind;			/* 'm' a map, 'l' a list, 's' a scalar, '?' an empty plain scalar */
+	char plain;			/* a scalar written without quotes: YAML types it from its text */
+	char *value;			/* a scalar's text */
+	int line;
+	size_t nr;
+	struct ynode **kids;		/* a list's items; a map's keys and values, alternating (libyaml's pairs) */
+};
+struct ynode *yaml_parse(const char *text, size_t len, char **err);
+void ynode_free(struct ynode *n);
+struct ynode *yget(struct ynode *map, const char *key);
+const char *ystr(struct ynode *n);
+char *yaml_refusal(struct ynode *n, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
 char *yaml_refusal_at(int line, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
-char *keys_refusal(struct string_list *kv, const char *prefix, const char *const *keys, int required);
-struct spec *spec_from(struct string_list *kv, const char *prefix, char **err);
+char *keys_refusal(struct ynode *map, const char *const *keys, int required);
+struct spec *spec_from(struct ynode *map, char **err);
+void yaml_out_scalar(struct strbuf *sb, const char *s);
 void yaml_out_body(struct strbuf *sb, const char *s);
+void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n);
 void spec_lists(struct strbuf *sb, struct spec *s);
 
 /* request.c, notify.c: the commands */

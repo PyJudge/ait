@@ -246,23 +246,25 @@ static void require_condition_path(const char *path)
 }
 
 /* Conditions and results cross the same length-aware file/YAML boundary (6.4.2, 7.3). */
-static void read_yaml_file(const char *path, const char *what, struct string_list *kv, const char *read_hint)
+static struct ynode *read_yaml_file(const char *path, const char *what, const char *read_hint)
 {
 	struct strbuf sb = STRBUF_INIT;
+	struct ynode *map;
 	char *err;
 
 	if (strbuf_read_file(&sb, path, 0) < 0)
 		reject(128, read_hint, "could not read '%s'", what);
-	if (yaml_parse(sb.buf, sb.len, kv, &err))
+	if (!(map = yaml_parse(sb.buf, sb.len, &err)))
 		reject(128, NULL, "bad format: '%s': %s", what, err);
 	strbuf_release(&sb);
+	return map;
 }
 
 /* 6.4.2, 6.7.5: overlapping FILES lists and later judgments share each path's first read. */
 static const struct spec *condition_from_file(struct request_input *q, const char *path)
 {
 	struct string_list_item *read = string_list_lookup(&q->files, path);
-	struct string_list kv = STRING_LIST_INIT_DUP;
+	struct ynode *map;
 	struct spec *s;
 	char *err;
 
@@ -270,11 +272,11 @@ static const struct spec *condition_from_file(struct request_input *q, const cha
 		return read->util;
 	/* The template hint only applies to a path the template can be written at. */
 	require_condition_path(path);
-	read_yaml_file(xstrfmt("%s/%s", top, path), path, &kv,
-		       hint_command("ait contract new spec %s exec|prompt", quoted(path)));
-	if (!(s = spec_from(&kv, "", &err)))
+	map = read_yaml_file(xstrfmt("%s/%s", top, path), path,
+			     hint_command("ait contract new spec %s exec|prompt", quoted(path)));
+	if (!(s = spec_from(map, &err)))
 		reject(128, NULL, "bad format: '%s': %s", path, err);
-	yaml_clear(&kv);
+	ynode_free(map);
 	string_list_insert(&q->files, path)->util = s;
 	return s;
 }
@@ -817,152 +819,91 @@ static const char *task_id(struct request_result *r, const char *id)
 	return id;
 }
 
-/* Environment strings and argv share one flow-list writer and scalar boundary. */
-static char *environment_list(struct strbuf *sb, struct string_list *kv, const char *key, int nonempty)
+/* a list of strings, nonempty when NONEMPTY (v14 2.5.3) */
+static char *string_list_refusal(struct ynode *n, const char *name, int nonempty)
 {
 	size_t i;
 
-	if (ykind(kv, key) != 'l' || (nonempty && !yget(kv, xstrfmt("%s.0", key))))
-		return yaml_refusal(kv, key, "'%s' %s", key, nonempty ? "is not a nonempty argv list" : "is not a string list");
-	strbuf_addch(sb, '[');
-	for (i = 0; yget(kv, xstrfmt("%s.%d", key, (int)i)); i++) {
-		char *element = xstrfmt("%s.%d", key, (int)i);
-
-		if (ykind(kv, element))
-			return yaml_refusal(kv, element, "'%s' is not a string", element);
-		if (i)
-			strbuf_addstr(sb, ", ");
-		yaml_out_scalar(sb, yget(kv, element));
-	}
-	strbuf_addstr(sb, "]\n");
+	if (n->kind != 'l' || (nonempty && !n->nr))
+		return yaml_refusal(n, "'%s' %s", name, nonempty ? "is not a nonempty argv list" : "is not a string list");
+	for (i = 0; i < n->nr; i++)
+		if (!ystr(n->kids[i]))
+			return yaml_refusal(n->kids[i], "an item of '%s' is not a string", name);
 	return NULL;
 }
 
-static char *environment_commands(struct strbuf *sb, struct string_list *kv, const char *key)
-{
-	size_t i;
-	char *err;
-
-	if (!yget(kv, key))
-		return NULL;
-	if (ykind(kv, key) != 'l')
-		return yaml_refusal(kv, key, "'%s' is not a list of argv lists", key);
-	strbuf_addf(sb, "    %s:%s\n", key, yget(kv, xstrfmt("%s.0", key)) ? "" : " []");
-	for (i = 0; yget(kv, xstrfmt("%s.%d", key, (int)i)); i++) {
-		strbuf_addstr(sb, "    - ");
-		if ((err = environment_list(sb, kv, xstrfmt("%s.%d", key, (int)i), 1)))
-			return err;
-	}
-	return NULL;
-}
-
-/* spec 7.2 and v14 2.5.3: validate HEAD's environment and emit its parsed values. */
-static char *environment_out(struct strbuf *sb, const char *name, struct tree *h)
+/* v14 2.5.3: the schema of an environment definition; NULL, or why not */
+static char *environment_refusal(struct ynode *map)
 {
 	static const char *const keys[] = { "cwd", "timeout_ms", "env", "prepare", "cleanup", NULL };
 	static const char *const env_keys[] = { "inherit", "set", "required", NULL };
-	char *path = xstrfmt("specs/environments/%s.yaml", name), *text, *err;
-	struct string_list kv = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	const char *value;
+	static const char *const commands[] = { "prepare", "cleanup" };
+	struct ynode *n, *env = yget(map, "env");
+	size_t i, j;
+	char *why;
+
+	if ((why = keys_refusal(map, keys, 0)))
+		return why;
+	if ((n = yget(map, "cwd")) && n->kind != 's')
+		return yaml_refusal(n, "'cwd' is not a string");
+	if ((n = yget(map, "timeout_ms")) && (!ystr(n) || !*n->value || n->value[strspn(n->value, "0123456789")]))
+		return yaml_refusal(n, "'timeout_ms' is not a decimal integer");
+	if (env && env->kind != 'm')
+		return yaml_refusal(env, "'env' is not a map");
+	if (env && (why = keys_refusal(env, env_keys, 0)))
+		return why;
+	if ((n = yget(env, "inherit")) && (why = string_list_refusal(n, "inherit", 0)))
+		return why;
+	if ((n = yget(env, "required")) && (why = string_list_refusal(n, "required", 0)))
+		return why;
+	if ((n = yget(env, "set")) && n->kind != 'm')
+		return yaml_refusal(n, "'set' is not a map of strings");
+	for (i = 0; n && i < n->nr; i += 2)
+		if (!ystr(n->kids[i + 1]))
+			return yaml_refusal(n->kids[i + 1], "'%s' is not a string", n->kids[i]->value);
+	for (j = 0; j < ARRAY_SIZE(commands); j++) {
+		if (!(n = yget(map, commands[j])))
+			continue;
+		if (n->kind != 'l')
+			return yaml_refusal(n, "'%s' is not a list of argv lists", commands[j]);
+		for (i = 0; i < n->nr; i++)
+			if ((why = string_list_refusal(n->kids[i], commands[j], 1)))
+				return why;
+	}
+	return NULL;
+}
+
+/* spec 7.2 and v14 2.5.3: HEAD's environment NAME, checked, written as it was read */
+static char *environment_out(struct strbuf *sb, const char *name, struct tree *h)
+{
+	char *path = xstrfmt("specs/environments/%s.yaml", name), *text, *err = NULL;
 	const char *oid = head ? blob_at(h, path) : NULL;
+	struct ynode *map;
 	size_t len;
-	int i;
 
 	if (!oid || !(text = object(oid, 1, NULL, &len)))
 		return xstrfmt("could not read '%s' at HEAD", path);
-	if (yaml_parse(text, len, &kv, &err))
-		goto bad_format;
-	if ((err = keys_refusal(&kv, "", keys, 0)))
-		goto bad_format;
-	strbuf_addf(sb, "  environment:%s\n", kv.nr == 1 ? " {}" : "");
-	if ((value = yget(&kv, "cwd"))) {
-		if (ykind(&kv, "cwd")) {
-			err = yaml_refusal(&kv, "cwd", "'cwd' is not a string");
-			goto bad_format;
-		}
-		strbuf_addstr(sb, "    cwd: ");
-		yaml_out_scalar(sb, value);
-		strbuf_addch(sb, '\n');
-	}
-	if ((value = yget(&kv, "timeout_ms"))) {
-		if (ykind(&kv, "timeout_ms") || !*value || value[strspn(value, "0123456789")]) {
-			err = yaml_refusal(&kv, "timeout_ms", "'timeout_ms' is not a decimal integer");
-			goto bad_format;
-		}
-		strbuf_addf(sb, "    timeout_ms: %s\n", value);
-	}
-	if (yget(&kv, "env")) {
-		if (ykind(&kv, "env") != 'm') {
-			err = yaml_refusal(&kv, "env", "'env' is not a map");
-			goto bad_format;
-		}
-		if ((err = keys_refusal(&kv, "env", env_keys, 0)))
-			goto bad_format;
-		strbuf_addf(sb, "    env:%s\n", yget(&kv, "env.inherit") || yget(&kv, "env.set") || yget(&kv, "env.required") ? "" : " {}");
-		for (i = 0; env_keys[i]; i++) {
-			char *key = xstrfmt("env.%s", env_keys[i]);
-
-			if (!yget(&kv, key))
-				continue;
-			if (strcmp(env_keys[i], "set")) {
-				strbuf_addf(sb, "      %s: ", env_keys[i]);
-				if ((err = environment_list(sb, &kv, key, 0)))
-					goto bad_format;
-				continue;
-			}
-			if (ykind(&kv, key) != 'm') {
-				err = yaml_refusal(&kv, key, "'%s' is not a map of strings", key);
-				goto bad_format;
-			}
-			strbuf_addstr(sb, "      set:");
-			value = NULL;
-			for_each_string_list_item(item, &kv) {
-				const char *encoded;
-				char *decoded;
-
-				if (!skip_prefix(item->string, "env.set.", &encoded))
-					continue;
-				if (ykind(&kv, item->string)) {
-					err = yaml_refusal(&kv, item->string, "'%s' is not a string", item->string);
-					goto bad_format;
-				}
-				if (!value)
-					strbuf_addch(sb, '\n');
-				value = yget(&kv, item->string);
-				decoded = yaml_key_decode(encoded);
-				strbuf_addstr(sb, "        ");
-				yaml_out_scalar(sb, decoded);
-				strbuf_addstr(sb, ": ");
-				yaml_out_scalar(sb, value);
-				strbuf_addch(sb, '\n');
-				free(decoded);
-			}
-			if (!value)
-				strbuf_addstr(sb, " {}\n");
-		}
-	}
-	if ((err = environment_commands(sb, &kv, "prepare")) || (err = environment_commands(sb, &kv, "cleanup")))
-		goto bad_format;
-	return NULL;
-bad_format:
-	return xstrfmt("bad format: '%s': %s", path, err);
+	if ((map = yaml_parse(text, len, &err)) && !(err = environment_refusal(map)))
+		yaml_out_node(sb, "environment", map);
+	ynode_free(map);
+	free(text);
+	return err ? xstrfmt("bad format: '%s': %s", path, err) : NULL;
 }
 
 /* spec 7.3: the existing covered contracts have exactly these condition-ids at T. */
-static int conditions_changed(struct request_result *r, struct string_list *kv)
+static int conditions_changed(struct request_result *r, struct ynode *ids)
 {
 	struct string_list_item *item;
+	size_t i;
 
-	for_each_string_list_item(item, kv) {
-		const char *id;
+	for (i = 0; i < ids->nr; i += 2) {
+		const char *id = ids->kids[i]->value;
 
-		if (skip_prefix(item->string, "condition-ids.", &id) &&
-		    (!string_list_has_string(&r->covered, id) || strcmp(task_id(r, id), id)))
+		if (!string_list_has_string(&r->covered, id) || strcmp(task_id(r, id), id))
 			return 1;
 	}
 	for_each_string_list_item(item, &r->covered) {
-		const char *got = yget(kv, xstrfmt("condition-ids.%s", item->string));
+		const char *got = ystr(yget(ids, item->string));
 
 		if (!strcmp(task_id(r, item->string), item->string) &&
 		    (!got || strcmp(got, condition_at_t(r->at, item->string))))
@@ -972,34 +913,35 @@ static int conditions_changed(struct request_result *r, struct string_list *kv)
 }
 
 /* spec 7.4: map order is irrelevant, but task positions remain part of the template identity. */
-static int template_same(struct request_result *r, struct string_list *kv)
+static int template_same(struct request_result *r, struct ynode *map)
 {
+	struct ynode *ids = yget(map, "condition-ids"), *results = yget(map, "results");
 	struct string_list_item *item;
 	size_t n, position = 0;
 
-	if (ykind(kv, "condition-ids") != 'm' || conditions_changed(r, kv) || ykind(kv, "results") != 'l')
+	if (!ids || ids->kind != 'm' || conditions_changed(r, ids) || !results || results->kind != 'l')
 		return 0;
 	for_each_string_list_item(item, &r->covered) {
 		struct contract *c = contract_after(r, item->string);
 
-		for (n = 0; n < c->nspecs; n++) {
-			char *key = xstrfmt("results.%d.task", (int)position++);
-			const char *task = yget(kv, key);
+		for (n = 0; n < c->nspecs; n++, position++) {
+			const char *task = position < results->nr ? ystr(yget(results->kids[position], "task")) : NULL;
 
-			if (!task || ykind(kv, key) || strcmp(task, task_of(task_id(r, c->id), n)))
+			if (!task || yget(results->kids[position], "task")->kind != 's' ||
+			    strcmp(task, task_of(task_id(r, c->id), n)))
 				return 0;
 		}
 	}
-	return !yget(kv, xstrfmt("results.%d", (int)position));
+	return position == results->nr;
 }
 
 /* spec 7.2: the check request and the result template, unless the template is already this one */
-static char *write_check_files(struct request_input *q, struct request_result *r, struct string_list *input)
+static char *write_check_files(struct request_input *q, struct request_result *r, struct ynode *input)
 {
 	struct strbuf req = STRBUF_INIT, res = STRBUF_INIT, ids = STRBUF_INIT, old = STRBUF_INIT;
 	struct strbuf task_lines = STRBUF_INIT;
-	struct string_list environments = STRING_LIST_INIT_DUP, previous = STRING_LIST_INIT_DUP;
-	struct string_list *existing = &previous;
+	struct string_list environments = STRING_LIST_INIT_DUP;
+	struct ynode *existing = NULL;
 	struct string_list_item *item;
 	char *dir = worktree_state_dir(), *rq = xstrfmt("%s/check-request.yaml", dir),
 	     *rs = xstrfmt("%s/check-result.yaml", dir), *err;
@@ -1064,8 +1006,8 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 	if (input && !stat(q->result, &supplied) && !stat(rs, &stored) &&
 	    supplied.st_dev == stored.st_dev && supplied.st_ino == stored.st_ino)
 		existing = input;
-	else if (strbuf_read_file(&old, rs, 0) < 0 || yaml_parse(old.buf, old.len, &previous, &err))
-		existing = NULL;
+	else if (strbuf_read_file(&old, rs, 0) >= 0)
+		existing = yaml_parse(old.buf, old.len, &err);
 	if (!existing || !template_same(r, existing))
 		write_state(rs, res.buf);
 	fputs(task_lines.buf, stdout);
@@ -1081,24 +1023,26 @@ static NORETURN void result_bad(struct request_input *q, const char *why)
 }
 
 /* spec 7.3, v14 8.4: read once, then compare input identity before providers or task contents. */
-static int read_result_input(struct request_input *q, struct request_result *r, struct string_list *kv)
+static int read_result_input(struct request_input *q, struct request_result *r, struct ynode **map)
 {
-	read_yaml_file(q->result, q->result, kv, NULL);
-	if (ykind(kv, "condition-ids") != 'm')
-		result_bad(q, yaml_refusal(kv, "condition-ids", "'condition-ids' is missing or not a map"));
-	return conditions_changed(r, kv);
+	struct ynode *ids;
+
+	*map = read_yaml_file(q->result, q->result, NULL);
+	if (!(ids = yget(*map, "condition-ids")) || ids->kind != 'm')
+		result_bad(q, yaml_refusal(ids ? ids : *map, "'condition-ids' is missing or not a map"));
+	return conditions_changed(r, ids);
 }
 
 /* v14 8.4: after matching input and located providers, retain each task's accepted result. */
-static void check_results(struct request_input *q, struct request_result *r, struct string_list *kv)
+static void check_results(struct request_input *q, struct request_result *r, struct ynode *map)
 {
 	static const char *const keys[] = { "condition-ids", "results", NULL },
 		*const fields[] = { "task", "outcome", "basis", "reason", NULL };
 	struct string_list want = STRING_LIST_INIT_DUP, failed = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
+	struct ynode *results = yget(map, "results");
 	char *err;
-	size_t n;
-	int i;
+	size_t i, n;
 
 	for_each_string_list_item(item, &r->covered) {
 		struct contract *c = contract_after(r, item->string);
@@ -1106,35 +1050,32 @@ static void check_results(struct request_input *q, struct request_result *r, str
 		for (n = 0; n < c->nspecs; n++)
 			string_list_insert(&want, task_of(task_id(r, c->id), n));
 	}
-	if ((err = keys_refusal(kv, "", keys, 0)))
+	if ((err = keys_refusal(map, keys, 0)))
 		result_bad(q, err);
-	if (ykind(kv, "results") != 'l')
-		result_bad(q, yaml_refusal(kv, "results", "'results' is missing or not a list"));
-	for (i = 0; yget(kv, xstrfmt("results.%d", i)); i++) {
-		char *prefix = xstrfmt("results.%d", i);
-		const char *task = yget(kv, xstrfmt("results.%d.task", i)),
-			   *outcome = yget(kv, xstrfmt("results.%d.outcome", i)),
-			   *basis = yget(kv, xstrfmt("results.%d.basis", i)),
-			   *reason = yget(kv, xstrfmt("results.%d.reason", i));
+	if (!results || results->kind != 'l')
+		result_bad(q, yaml_refusal(results ? results : map, "'results' is missing or not a list"));
+	for (i = 0; i < results->nr; i++) {
+		struct ynode *result = results->kids[i];
+		const char *task = ystr(yget(result, "task")), *outcome = ystr(yget(result, "outcome")),
+			   *basis = ystr(yget(result, "basis")), *reason = ystr(yget(result, "reason"));
 		struct strbuf block = STRBUF_INIT;
 
-		if (ykind(kv, prefix) != 'm')
-			result_bad(q, yaml_refusal(kv, prefix, "a result is not a map"));
-		if ((err = keys_refusal(kv, prefix, fields, 0)))
+		if (result->kind != 'm')
+			result_bad(q, yaml_refusal(result, "a result is not a map"));
+		if ((err = keys_refusal(result, fields, 0)))
 			result_bad(q, err);
-		for (n = 0; fields[n]; n++) {
-			char *key = xstrfmt("%s.%s", prefix, fields[n]);
-			char kind = ykind(kv, key);
-
-			if (yget(kv, key) && kind && kind != '?')
-				result_bad(q, yaml_refusal(kv, key, "'%s' is not a scalar", fields[n]));
-		}
+		for (n = 0; n + 1 < result->nr; n += 2)
+			if (!ystr(result->kids[n + 1]))
+				result_bad(q, yaml_refusal(result->kids[n + 1], "'%s' is not a scalar", result->kids[n]->value));
 		if (!task || !string_list_has_string(&want, task) || string_list_has_string(&q->results, task))
-			result_bad(q, yaml_refusal(kv, xstrfmt("%s.task", prefix), "task '%s' is unknown or given twice", task ? task : ""));
+			result_bad(q, yaml_refusal(yget(result, "task") ? yget(result, "task") : result,
+						   "task '%s' is unknown or given twice", task ? task : ""));
 		if (!outcome || (strcmp(outcome, "pass") && strcmp(outcome, "fail") && strcmp(outcome, "unknown")))
-			result_bad(q, yaml_refusal(kv, xstrfmt("%s.outcome", prefix), "task '%s' has no valid outcome", task));
+			result_bad(q, yaml_refusal(yget(result, "outcome") ? yget(result, "outcome") : result,
+						   "task '%s' has no valid outcome", task));
 		if (!strcmp(outcome, "pass") && (!basis || !*basis))
-			result_bad(q, yaml_refusal(kv, xstrfmt("%s.basis", prefix), "task '%s' has no basis", task));
+			result_bad(q, yaml_refusal(yget(result, "basis") ? yget(result, "basis") : result,
+						   "task '%s' has no basis", task));
 		if (strcmp(outcome, "pass"))
 			string_list_append(&failed, task);
 		strbuf_addf(&block, "  outcome: %s\n  basis: ", outcome);
@@ -1147,7 +1088,7 @@ static void check_results(struct request_input *q, struct request_result *r, str
 	}
 	for_each_string_list_item(item, &want)
 		if (!string_list_has_string(&q->results, item->string))
-			result_bad(q, yaml_refusal(kv, "results", "task '%s' is missing", item->string));
+			result_bad(q, yaml_refusal(results, "task '%s' is missing", item->string));
 	if (failed.nr) {
 		for_each_string_list_item(item, &failed)
 			fprintf(stderr, "%s\n", item->string);
@@ -1377,7 +1318,7 @@ static void run_request(struct request *req, int fulfilling)
 	struct checkin ck = { .msg = NULL };
 	struct request_input *q = &req->input;
 	struct request_result *r = &req->result;
-	struct string_list result_input = STRING_LIST_INIT_DUP;
+	struct ynode *result_input = NULL;
 	struct string_list_item *item;
 	char *summary, *scope_error = NULL, *scope_hint = NULL, *err;
 	int rc, stale = 0;
@@ -1410,7 +1351,7 @@ static void run_request(struct request *req, int fulfilling)
 		if (stale) {
 			/* 7.3 wins; v14 8.4 only emits a template when its code and environment are available. */
 			if (!scope_error)
-				write_check_files(q, r, &result_input);
+				write_check_files(q, r, result_input);
 			reject(1, NULL, "check results required: condition-ids differ");
 		}
 		if (scope_error)
@@ -1418,7 +1359,7 @@ static void run_request(struct request *req, int fulfilling)
 		if (!q->result && !q->force && (err = write_check_files(q, r, NULL)))
 			reject(128, NULL, "%s", err);
 		if (q->result)
-			check_results(q, r, &result_input);
+			check_results(q, r, result_input);
 		for_each_string_list_item(item, &r->covered)
 			string_list_insert(&q->fixed, item->string)->util = xstrdup(condition_at_t(r->at, item->string));
 		/* step 1: the staged code, committed by git */
@@ -1457,7 +1398,7 @@ static void run_request(struct request *req, int fulfilling)
 	request_input_clear(q);
 	checkin_clear(&ck);
 	free((char *)ck.branch);
-	yaml_clear(&result_input);
+	ynode_free(result_input);
 }
 
 /* Keep source positions while removing options; later hints use the parsed word's identity. */

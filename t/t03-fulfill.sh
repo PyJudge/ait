@@ -94,7 +94,7 @@ check "the message" "has err \"could not read 'specs/environments/node.yaml' at 
 mkdir -p specs/environments; printf 'cwd: src\nenv:\n  set:\n    A: "1"\n' > specs/environments/node.yaml
 git add specs; git commit -qm env
 run ait fulfill "$D5" -m x
-check "the environment's set value is under environment: (7.2)" "grep -A5 '^  environment:\$' .git/ait/check-request.yaml | grep -qx '        \"A\": \"1\"'"
+check "the environment's set value is under environment: (7.2)" "grep -A5 '^  environment:\$' .git/ait/check-request.yaml | grep -qx '        A: \"1\"'"
 
 git checkout -q -b side; sed -i.bak 's/^o3$/side/' src/order.c; git commit -qam side
 git checkout -q master; sed -i.bak 's/^o3$/main/' src/order.c; git commit -qam main

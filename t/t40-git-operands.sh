@@ -94,7 +94,7 @@ for spelling in normal 'space name' 'line\nbreak' 'tab\tname'; do
 	check_rc "environment path case $number is read before requesting results" 1
 	req=$(sed -n 's/^request //p' "$T/out")
 	check "environment path case $number contributes its exact file values" \
-		"test -n \"$req\" && grep -Fq 'cwd: \"environment-$number\"' \"$req\" && grep -Fq 'timeout_ms: 17' \"$req\""
+		"test -n \"$req\" && grep -Fq 'cwd: environment-$number' \"$req\" && grep -Fq 'timeout_ms: 17' \"$req\""
 	check 'requesting results changes neither code nor the contract ref' \
 		"test \"\$(git rev-parse HEAD)\" = $code && test \"\$(git rev-parse ait/master)\" = $tip"
 done

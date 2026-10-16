@@ -6,13 +6,6 @@
 #include <yaml.h>
 
 
-/* git's "return error(...)" for the parsers: ERR says why, NULL is returned */
-static void *bad(char **err, char *why)
-{
-	*err = why;
-	return NULL;
-}
-
 static int cmp_entry(const void *a, const void *b)
 {
 	return strcmp(((const struct entry *)a)->path, ((const struct entry *)b)->path);
@@ -108,41 +101,20 @@ struct tree *index_tree(void)
 	return x;
 }
 
-/* the YAML subset of v14 2.5.1, read by libyaml (moved from v14 record.c) */
-#define ROOT "\\"
+/* the YAML subset of v14 2.5.1: libyaml's events composed into nodes */
 #define YAML_DEPTH 16
 
-struct yval {
-	char *s;
-	char kind;		/* 'l' a list, 'm' a map, '?' a key with nothing under it, 0 a scalar */
-	int line;
-};
-
-static char *yaml_path(const char *path, const char *key)
+void ynode_free(struct ynode *n)
 {
-	struct strbuf sb = STRBUF_INIT;
+	size_t i;
 
-	if (path)
-		strbuf_addf(&sb, "%s.", path);
-	for (; *key; key++) {
-		if (*key == '.' || *key == '\\')
-			strbuf_addch(&sb, '\\');
-		strbuf_addch(&sb, *key);
-	}
-	return strbuf_detach(&sb, NULL);
-}
-
-/* Decode one scalar key component escaped by yaml_path(). */
-char *yaml_key_decode(const char *key)
-{
-	struct strbuf sb = STRBUF_INIT;
-
-	for (; *key; key++)
-		if (*key != '\\' || !key[1])
-			strbuf_addch(&sb, *key);
-		else
-			strbuf_addch(&sb, *++key);
-	return strbuf_detach(&sb, NULL);
+	if (!n)
+		return;
+	for (i = 0; i < n->nr; i++)
+		ynode_free(n->kids[i]);
+	free(n->kids);
+	free(n->value);
+	free(n);
 }
 
 static const char *decorated(const yaml_char_t *anchor, const yaml_char_t *tag)
@@ -150,6 +122,7 @@ static const char *decorated(const yaml_char_t *anchor, const yaml_char_t *tag)
 	return anchor ? "an anchor" : tag ? "a tag" : NULL;
 }
 
+/* what v14 2.5.1 leaves out of the subset */
 static const char *yaml_outside(yaml_event_t *e, int docs)
 {
 	switch (e->type) {
@@ -174,110 +147,54 @@ static const char *yaml_outside(yaml_event_t *e, int docs)
 	}
 }
 
-void yaml_clear(struct string_list *kv)
+/*
+ * As libyaml's loader.c composes (yaml_parser_load_node_add): the node of
+ * event E joins the open node on STACK; a map holds key and value nodes in
+ * turn, so an odd count waits for a value. The node takes the event's
+ * scalar text. The root must be a map, and keys plain or quoted scalars
+ * that a map holds once. NULL, or why not.
+ */
+static const char *yaml_add(struct ynode **stack, int *depth, struct ynode **root, yaml_event_t *e,
+			    struct strbuf *reason)
 {
-	struct string_list_item *item;
+	struct ynode *parent = *depth ? stack[*depth - 1] : NULL, *n;
+	int key = parent && parent->kind == 'm' && !(parent->nr % 2);
+	size_t i;
 
-	for_each_string_list_item(item, kv) {
-		struct yval *v = item->util;
-
-		free(v->s);
-		free(v);
-	}
-	string_list_clear(kv, 0);
-}
-
-struct yframe {
-	char *path, *key;
-	int n;
-	char kind;
-};
-
-static char *yaml_place(struct yframe *frame, yaml_event_t *e, const char **why)
-{
-	char *path;
-
-	if (!frame) {
-		if (e->type != YAML_MAPPING_START_EVENT)
-			*why = "no key";
-		return NULL;
-	}
-	if (frame->kind == 'l') {
-		char index[32];
-
-		snprintf(index, sizeof(index), "%d", frame->n++);
-		return yaml_path(frame->path, index);
-	}
-	if (frame->key) {
-		path = yaml_path(frame->path, frame->key);
-		free(frame->key);
-		frame->key = NULL;
-		return path;
-	}
-	if (e->type == YAML_SCALAR_EVENT && e->data.scalar.style != YAML_LITERAL_SCALAR_STYLE)
-		frame->key = xstrdup((char *)e->data.scalar.value);
-	else
-		*why = "a key that is not a scalar";
-	return NULL;
-}
-
-static char yaml_kind(yaml_event_t *e)
-{
-	if (e->type == YAML_MAPPING_START_EVENT)
-		return 'm';
-	if (e->type == YAML_SEQUENCE_START_EVENT)
-		return 'l';
-	return e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE && !e->data.scalar.length ? '?' : 0;
-}
-
-static const char *yaml_event(struct string_list *kv, struct yframe *stack, int *depth, yaml_event_t *e, struct strbuf *reason)
-{
-	const char *why = NULL;
-	char *path;
-
-	if (e->type == YAML_MAPPING_END_EVENT || e->type == YAML_SEQUENCE_END_EVENT) {
-		(*depth)--;
-		free(stack[*depth].path);
-		free(stack[*depth].key);
-		memset(&stack[*depth], 0, sizeof(stack[*depth]));
-	}
-	if (e->type != YAML_SCALAR_EVENT && e->type != YAML_MAPPING_START_EVENT && e->type != YAML_SEQUENCE_START_EVENT)
-		return NULL;
 	if (e->type == YAML_SCALAR_EVENT && strlen((char *)e->data.scalar.value) != e->data.scalar.length)
 		return "a NUL character";
-	path = yaml_place(*depth ? &stack[*depth - 1] : NULL, e, &why);
-	if (why)
-		return why;
-	if (!*depth)
-		path = xstrdup(ROOT);
-	if (path && unsorted_string_list_has_string(kv, path)) {
-		strbuf_addf(reason, "duplicate key '%s'", path);
-		free(path);
-		return reason->buf;
+	if (!parent && e->type != YAML_MAPPING_START_EVENT)
+		return "no key";
+	if (key && (e->type != YAML_SCALAR_EVENT || e->data.scalar.style == YAML_LITERAL_SCALAR_STYLE))
+		return "a key that is not a scalar";
+	for (i = 0; key && i < parent->nr; i += 2)
+		if (!strcmp(parent->kids[i]->value, (char *)e->data.scalar.value)) {
+			strbuf_addf(reason, "duplicate key '%s'", parent->kids[i]->value);
+			return reason->buf;
+		}
+	n = xcalloc(1, sizeof(*n));
+	n->line = e->start_mark.line + 1;
+	if (e->type == YAML_MAPPING_START_EVENT) {
+		n->kind = 'm';
+	} else if (e->type == YAML_SEQUENCE_START_EVENT) {
+		n->kind = 'l';
+	} else {
+		n->value = (char *)e->data.scalar.value;
+		e->data.scalar.value = NULL;
+		n->plain = e->data.scalar.style == YAML_PLAIN_SCALAR_STYLE;
+		n->kind = n->plain && !*n->value ? '?' : 's';
 	}
-	if (path) {
-		struct yval *v = xcalloc(1, sizeof(*v));
-
-		v->s = xstrdup(e->type == YAML_SCALAR_EVENT ? (char *)e->data.scalar.value : "");
-		v->kind = yaml_kind(e);
-		v->line = e->start_mark.line + 1;
-		string_list_append(kv, path)->util = v;
+	if (!parent) {
+		*root = n;
+	} else {
+		REALLOC_ARRAY(parent->kids, parent->nr + 1);
+		parent->kids[parent->nr++] = n;
 	}
-	if (e->type == YAML_SCALAR_EVENT) {
-		free(path);
+	if (n->kind == 's' || n->kind == '?')
 		return NULL;
-	}
-	if (*depth == YAML_DEPTH) {
-		free(path);
+	if (*depth == YAML_DEPTH)
 		return "nested too deeply";
-	}
-	stack[*depth].path = strcmp(path, ROOT) ? path : NULL;
-	if (!stack[*depth].path)
-		free(path);
-	stack[*depth].key = NULL;
-	stack[*depth].n = 0;
-	stack[*depth].kind = yaml_kind(e);
-	(*depth)++;
+	stack[(*depth)++] = n;
 	return NULL;
 }
 
@@ -303,25 +220,25 @@ static const char *non_lf(const char *text)
 	return first;
 }
 
-int yaml_parse(const char *text, size_t len, struct string_list *kv, char **err)
+/* the map TEXT holds (an empty one for no document), or NULL with ERR */
+struct ynode *yaml_parse(const char *text, size_t len, char **err)
 {
-	struct yframe stack[YAML_DEPTH] = { 0 };
+	struct ynode *stack[YAML_DEPTH], *root = NULL;
 	struct strbuf reason = STRBUF_INIT;
 	yaml_parser_t parser;
 	yaml_event_t e;
-	const char *why = NULL;
+	const char *why = NULL, *nul = memchr(text, 0, len);
 	int depth = 0, docs = 0, done = 0;
 	size_t line = 0;
-	const char *nul = memchr(text, 0, len);
 
 	*err = NULL;
 	if (nul) {
 		*err = xstrfmt("a NUL character in line %d", (int)line_at(text, nul - text) + 1);
-		return -1;
+		return NULL;
 	}
 	if ((why = non_lf(text))) {
 		*err = xstrfmt("a line break other than LF in line %d", (int)line_at(text, why - text) + 1);
-		return -1;
+		return NULL;
 	}
 	yaml_parser_initialize(&parser);
 	yaml_parser_set_encoding(&parser, YAML_UTF8_ENCODING);
@@ -329,9 +246,13 @@ int yaml_parse(const char *text, size_t len, struct string_list *kv, char **err)
 	while (!done && !why && yaml_parser_parse(&parser, &e)) {
 		line = e.start_mark.line;
 		docs += e.type == YAML_DOCUMENT_START_EVENT;
-		why = yaml_outside(&e, docs > 1);
-		if (!why)
-			why = yaml_event(kv, stack, &depth, &e, &reason);
+		if (!(why = yaml_outside(&e, docs > 1))) {
+			if (e.type == YAML_MAPPING_END_EVENT || e.type == YAML_SEQUENCE_END_EVENT)
+				depth--;
+			else if (e.type == YAML_SCALAR_EVENT || e.type == YAML_MAPPING_START_EVENT ||
+				 e.type == YAML_SEQUENCE_START_EVENT)
+				why = yaml_add(stack, &depth, &root, &e, &reason);
+		}
 		done = e.type == YAML_STREAM_END_EVENT;
 		yaml_event_delete(&e);
 	}
@@ -343,51 +264,33 @@ int yaml_parse(const char *text, size_t len, struct string_list *kv, char **err)
 		*err = xstrfmt("%s in line %d", why, (int)line + 1);
 	yaml_parser_delete(&parser);
 	strbuf_release(&reason);
-	while (depth) {
-		free(stack[--depth].path);
-		free(stack[depth].key);
+	if (why) {
+		ynode_free(root);
+		return NULL;
 	}
-	return why ? -1 : 0;
-}
-
-const char *yget(struct string_list *kv, const char *key)
-{
-	struct string_list_item *item = unsorted_string_list_lookup(kv, key);
-
-	return item ? ((struct yval *)item->util)->s : NULL;
-}
-
-char ykind(struct string_list *kv, const char *key)
-{
-	struct string_list_item *item = unsorted_string_list_lookup(kv, key);
-
-	return item ? ((struct yval *)item->util)->kind : -1;
-}
-
-int yline(struct string_list *kv, const char *key)
-{
-	struct string_list_item *item = NULL;
-	char *parent, *p, *dot;
-
-	if (!key)
-		return 1;
-	parent = xstrdup(key);
-	while (!(item = unsorted_string_list_lookup(kv, parent))) {
-		dot = NULL;
-		for (p = parent; *p; p++)
-			if (*p == '\\' && p[1])
-				p++;
-			else if (*p == '.')
-				dot = p;
-		if (!dot)
-			break;
-		*dot = '\0';
+	if (!root) {
+		root = xcalloc(1, sizeof(*root));
+		root->kind = 'm';
+		root->line = 1;
 	}
-	free(parent);
+	return root;
+}
 
-	if (!item)
-		item = unsorted_string_list_lookup(kv, ROOT);
-	return item ? ((struct yval *)item->util)->line : 1;
+/* the value of KEY in the map MAP, or NULL */
+struct ynode *yget(struct ynode *map, const char *key)
+{
+	size_t i;
+
+	for (i = 0; map && map->kind == 'm' && i + 1 < map->nr; i += 2)
+		if (!strcmp(map->kids[i]->value, key))
+			return map->kids[i + 1];
+	return NULL;
+}
+
+/* N's text when N is a scalar, else NULL */
+const char *ystr(struct ynode *n)
+{
+	return n && (n->kind == 's' || n->kind == '?') ? n->value : NULL;
 }
 
 static char *yaml_vrefusal(int line, const char *fmt, va_list ap)
@@ -410,38 +313,31 @@ char *yaml_refusal_at(int line, const char *fmt, ...)
 	return why;
 }
 
-/* Schema callers know the node; syntax errors already carry their parser mark. */
-char *yaml_refusal(struct string_list *kv, const char *key, const char *fmt, ...)
+/* why the node N (a missing node's map) is refused, at N's line */
+char *yaml_refusal(struct ynode *n, const char *fmt, ...)
 {
 	char *why;
 	va_list ap;
 
 	va_start(ap, fmt);
-	why = yaml_vrefusal(yline(kv, key), fmt, ap);
+	why = yaml_vrefusal(n ? n->line : 1, fmt, ap);
 	va_end(ap);
 	return why;
 }
 
-/* The scalars KEY.0, KEY.1, ...; a child refusal keeps its own position. */
-static char *yaml_list(struct string_list *kv, const char *key, struct string_list *out)
+/* the scalars of the list N, named NAME; an empty plain value is an empty list */
+static char *yaml_list(struct ynode *n, const char *name, struct string_list *out)
 {
-	char k = ykind(kv, key);
-	int i;
+	size_t i;
 
-	if (k != 'l' && k != '?')
-		return yaml_refusal(kv, key, "'%s' is not a list", key);
-	for (i = 0; ; i++) {
-		char *child = xstrfmt("%s.%d", key, i), *why = NULL;
-		const char *value = yget(kv, child);
-
-		if (value && ykind(kv, child))
-			why = yaml_refusal(kv, child, "'%s' is not a scalar", child);
-		if (value && !why)
-			string_list_append(out, value);
-		free(child);
-		if (why || !value)
-			return why;
+	if (!n || (n->kind != 'l' && n->kind != '?'))
+		return yaml_refusal(n, "'%s' is not a list", name);
+	for (i = 0; n->kind == 'l' && i < n->nr; i++) {
+		if (!ystr(n->kids[i]))
+			return yaml_refusal(n->kids[i], "an item of '%s' is not a scalar", name);
+		string_list_append(out, n->kids[i]->value);
 	}
+	return NULL;
 }
 
 static int yaml_out(void *sb, unsigned char *buf, size_t n)
@@ -507,6 +403,68 @@ void yaml_out_body(struct strbuf *sb, const char *s)
 		strbuf_addch(sb, '\n');
 }
 
+static int yaml_node_events(yaml_emitter_t *emitter, struct ynode *n)
+{
+	yaml_event_t event;
+	size_t i;
+	int ok;
+
+	/* a plain scalar stays plain where libyaml can keep it so, which keeps its YAML type */
+	if (n->kind == 's' || n->kind == '?')
+		return yaml_scalar_event_initialize(&event, NULL, NULL, (yaml_char_t *)n->value, strlen(n->value), 1, 1,
+						   n->plain ? YAML_ANY_SCALAR_STYLE : YAML_DOUBLE_QUOTED_SCALAR_STYLE) &&
+		       yaml_emitter_emit(emitter, &event);
+	ok = n->kind == 'm' ? yaml_mapping_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_MAPPING_STYLE) :
+		yaml_sequence_start_event_initialize(&event, NULL, NULL, 1, YAML_FLOW_SEQUENCE_STYLE);
+	ok = ok && yaml_emitter_emit(emitter, &event);
+	for (i = 0; ok && i < n->nr; i++)
+		ok = yaml_node_events(emitter, n->kids[i]);
+	return ok && (n->kind == 'm' ? yaml_mapping_end_event_initialize(&event) : yaml_sequence_end_event_initialize(&event)) &&
+	       yaml_emitter_emit(emitter, &event);
+}
+
+/*
+ * v14 8.2, spec 7.2: "  KEY:" and the value N as it was read (its order and
+ * its plain or quoted scalars), written by libyaml as the first key of a list
+ * item; the item's "- " becomes indentation
+ */
+void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n)
+{
+	yaml_emitter_t emitter;
+	yaml_event_t event;
+	struct strbuf one = STRBUF_INIT;
+	int ok;
+
+	if (!yaml_emitter_initialize(&emitter))
+		die("out of memory");
+	yaml_emitter_set_output(&emitter, yaml_out, &one);
+	yaml_emitter_set_unicode(&emitter, 1);
+	yaml_emitter_set_width(&emitter, -1);
+	yaml_emitter_set_indent(&emitter, 2);
+	yaml_emitter_set_break(&emitter, YAML_LN_BREAK);
+	ok = yaml_stream_start_event_initialize(&event, YAML_UTF8_ENCODING) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_document_start_event_initialize(&event, NULL, NULL, NULL, 1) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_sequence_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_SEQUENCE_STYLE) &&
+	     yaml_emitter_emit(&emitter, &event) &&
+	     yaml_mapping_start_event_initialize(&event, NULL, NULL, 1, YAML_BLOCK_MAPPING_STYLE) &&
+	     yaml_emitter_emit(&emitter, &event) &&
+	     yaml_scalar_event_initialize(&event, NULL, NULL, (yaml_char_t *)key, strlen(key), 1, 1, YAML_PLAIN_SCALAR_STYLE) &&
+	     yaml_emitter_emit(&emitter, &event) && yaml_node_events(&emitter, n) &&
+	     yaml_mapping_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_sequence_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_document_end_event_initialize(&event, 1) && yaml_emitter_emit(&emitter, &event) &&
+	     yaml_stream_end_event_initialize(&event) && yaml_emitter_emit(&emitter, &event);
+	if (!ok)
+		BUG("libyaml cannot write a node: %s", emitter.problem ? emitter.problem : "event initialization failed");
+	yaml_emitter_delete(&emitter);
+	if (!starts_with(one.buf, "- "))
+		BUG("libyaml node has no wrapper");
+	if (ends_with(one.buf, "\n...\n"))
+		strbuf_setlen(&one, one.len - 4);
+	strbuf_addf(sb, "  %s", one.buf + 2);
+	strbuf_release(&one);
+}
+
 /* v14 3.1: repository-root path pieces; spec 3.1 permits .ait for condition files */
 int worktree_path_ok(const char *p, int allow_ait)
 {
@@ -569,12 +527,6 @@ int oid_ok(const char *s)
 	return strlen(s) == 40 && !s[strspn(s, "0123456789abcdef")];
 }
 
-/* the key NAME under PREFIX ("specs.N"), or NAME itself at the root of a condition file ("") */
-static char *pk(const char *prefix, const char *name)
-{
-	return *prefix ? xstrfmt("%s.%s", prefix, name) : xstrdup(name);
-}
-
 static int one_of(const char *w, const char *const *set)
 {
 	for (; *set; set++)
@@ -584,110 +536,81 @@ static int one_of(const char *w, const char *const *set)
 }
 
 /*
- * spec 2.3.1: every key of KV under PREFIX ("" the root) is one of KEYS, and
- * all of KEYS are there when REQUIRED; NULL, or why not
+ * spec 2.3.1: every key of the map MAP is one of KEYS, and all of KEYS are
+ * there when REQUIRED; NULL, or why not
  */
-char *keys_refusal(struct string_list *kv, const char *prefix, const char *const *keys, int required)
+char *keys_refusal(struct ynode *map, const char *const *keys, int required)
 {
-	struct string_list_item *item;
-	size_t plen = *prefix ? strlen(prefix) + 1 : 0;
+	size_t i;
 
-	for_each_string_list_item(item, kv) {
-		const char *k = item->string;
-
-		if (!strcmp(k, ROOT) || (plen && (strncmp(k, prefix, plen - 1) || k[plen - 1] != '.')))
-			continue;
-		{
-			char *component = xstrndup(k + plen, strcspn(k + plen, "."));
-			int known = one_of(component, keys);
-
-			free(component);
-			if (!known)
-				return yaml_refusal(kv, k, "unknown key '%s'", k);
-		}
-	}
-	for (; required && *keys; keys++) {
-		char *key = pk(prefix, *keys), *why = NULL;
-
-		if (!unsorted_string_list_has_string(kv, key))
-			why = yaml_refusal(kv, key, "'%s' is missing", *keys);
-		free(key);
-		if (why)
-			return why;
-	}
+	for (i = 0; i < map->nr; i += 2)
+		if (!one_of(map->kids[i]->value, keys))
+			return yaml_refusal(map->kids[i], "unknown key '%s'", map->kids[i]->value);
+	for (; required && *keys; keys++)
+		if (!yget(map, *keys))
+			return yaml_refusal(map, "'%s' is missing", *keys);
 	return NULL;
 }
 
-/* v14 2.5.2 without inputs: a spec under PREFIX of KV; NULL with ERR */
-static struct spec *spec_read(struct string_list *kv, const char *prefix, char **err,
-			      struct spec *s, struct string_list *cmd, const char *const *fields)
+/* v14 2.5.2 without inputs: the spec of the map MAP into S; NULL, or why not */
+static char *spec_read(struct ynode *map, struct spec *s)
 {
 	static const char *const keys[] = { "body", "engine", "command", "success", "environment", NULL };
+	struct ynode *body = yget(map, "body"), *engine = yget(map, "engine"), *command = yget(map, "command"),
+		     *success = yget(map, "success"), *environment = yget(map, "environment");
+	struct string_list cmd = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
-	const char *body_key = fields[0], *engine_key = fields[1],
-		   *command_key = fields[2], *success_key = fields[3],
-		   *environment_key = fields[4], *engine = yget(kv, engine_key),
-		   *success = yget(kv, success_key);
+	char *why;
+
+	if (map->kind != 'm')
+		return yaml_refusal(map, "a spec is not a map");
+	if ((why = keys_refusal(map, keys, 0)))
+		return why;
+	if (!body || body->kind != 's')
+		return yaml_refusal(body ? body : map, "'body' is missing or not a string");
+	s->body = xstrdup(body->value);
+	if (engine && !ystr(engine))
+		return yaml_refusal(engine, "'engine' is not a string");
+	if (engine && *engine->value && strcmp(engine->value, "exec"))
+		return yaml_refusal(engine, "unknown engine '%s'", engine->value);
+	s->engine = engine && *engine->value ? xstrdup(engine->value) : NULL;
+	if (command && (why = yaml_list(command, "command", &cmd)))
+		return why;
+	for_each_string_list_item(item, &cmd)
+		strvec_push(&s->command, item->string);
+	string_list_clear(&cmd, 0);
+	if (success && success->kind != 'l')
+		return yaml_refusal(success, "'success' is not a list");
+	if (success && (why = yaml_list(success, "success", &s->success)))
+		return why;
+	if (s->engine && !success)
+		string_list_append(&s->success, "0");
+	for_each_string_list_item(item, &s->success)
+		if (!*item->string || item->string[strspn(item->string, "0123456789")] ||
+		    (*item->string == '0' && item->string[1]))
+			return yaml_refusal(success->kids[item - s->success.items],
+					    "'success' holds '%s', not a decimal integer", item->string);
+	if (environment && !ystr(environment))
+		return yaml_refusal(environment, "'environment' is not a string");
+	s->environment = environment ? xstrdup(environment->value) : NULL;
+	if (s->engine && !s->command.nr)
+		return yaml_refusal(command ? command : map, "an exec spec needs 'command'");
+	if (!s->engine && (command || success || environment))
+		return yaml_refusal(command ? command : success ? success : environment, "a prompt spec takes only 'body'");
+	return NULL;
+}
+
+struct spec *spec_from(struct ynode *map, char **err)
+{
+	struct spec *s = xcalloc(1, sizeof(*s));
 
 	strvec_init(&s->command);
 	string_list_init_dup(&s->success);
-	if ((*err = keys_refusal(kv, prefix, keys, 0)))
-		return NULL;
-	s->body = xstrdup_null(yget(kv, body_key));
-	if (!s->body || ykind(kv, body_key))
-		return bad(err, yaml_refusal(kv, body_key, "'%s' is missing or not a string", body_key));
-	if (engine && ykind(kv, engine_key) != 0 && ykind(kv, engine_key) != '?')
-		return bad(err, yaml_refusal(kv, engine_key, "'%s' is not a string", engine_key));
-	if (engine && *engine && strcmp(engine, "exec"))
-		return bad(err, yaml_refusal(kv, engine_key, "unknown engine '%s'", engine));
-	s->engine = engine && *engine ? xstrdup(engine) : NULL;
-	if (yget(kv, command_key) && (*err = yaml_list(kv, command_key, cmd)))
-		return NULL;
-	if (success && ykind(kv, success_key) != 'l')
-		return bad(err, yaml_refusal(kv, success_key, "'%s' is not a list", success_key));
-	if (success && (*err = yaml_list(kv, success_key, &s->success)))
-		return NULL;
-	if (s->engine && !success)
-		string_list_append(&s->success, "0");
-	for_each_string_list_item(item, cmd)
-		strvec_push(&s->command, item->string);
-	for_each_string_list_item(item, &s->success)
-		if (!*item->string || item->string[strspn(item->string, "0123456789")] ||
-		    (*item->string == '0' && item->string[1])) {
-			char *key = xstrfmt("%s.%d", success_key, (int)(item - s->success.items));
-
-			*err = yaml_refusal(kv, key, "'success' holds '%s', not a decimal integer", item->string);
-			free(key);
-			return NULL;
-		}
-	s->environment = xstrdup_null(yget(kv, environment_key));
-	if (s->environment && ykind(kv, environment_key) != 0 && ykind(kv, environment_key) != '?')
-		return bad(err, yaml_refusal(kv, environment_key, "'%s' is not a string", environment_key));
-	if (s->engine && !s->command.nr)
-		return bad(err, yaml_refusal(kv, command_key, "an exec spec needs 'command'"));
-	if (!s->engine && (yget(kv, command_key) || success || s->environment))
-		return bad(err, yaml_refusal(kv, yget(kv, command_key) ? command_key : success ? success_key : environment_key,
-					     "a prompt spec takes only 'body'"));
-	return s;
-}
-
-struct spec *spec_from(struct string_list *kv, const char *prefix, char **err)
-{
-	struct spec *s = xcalloc(1, sizeof(*s)), *parsed;
-	struct string_list cmd = STRING_LIST_INIT_DUP;
-	const char *fields[] = { pk(prefix, "body"), pk(prefix, "engine"), pk(prefix, "command"),
-				 pk(prefix, "success"), pk(prefix, "environment") };
-	size_t i;
-
-	parsed = spec_read(kv, prefix, err, s, &cmd, fields);
-	string_list_clear(&cmd, 0);
-	for (i = 0; i < ARRAY_SIZE(fields); i++)
-		free((char *)fields[i]);
-	if (!parsed) {
-		spec_clear(s);
-		free(s);
-	}
-	return parsed;
+	if (!(*err = spec_read(map, s)))
+		return s;
+	spec_clear(s);
+	free(s);
+	return NULL;
 }
 
 static const char *const demand_keys[] = { "condition-id", "change-id", "kind", "creator", "consumer", "provider",
@@ -793,134 +716,115 @@ out:
 	return valid;
 }
 
-static struct contract *contract_read(const char *text, size_t len, const char *path, int draft, char **err,
-				      struct string_list *kv, struct contract **owned)
+/*
+ * spec 2.3: the contract at PATH (<group>/<ID>.yaml) in the map MAP into C;
+ * DRAFT allows the empty IDs and creator of a template (6.5.2). NULL, or why not.
+ */
+static char *contract_read(struct ynode *map, struct contract *c, int draft)
 {
 	static const char *const states_do[] = { "future", "cancelled", "withdrawn", NULL };
 	static const char *const states_x[] = { "future", "cancelled", NULL };
+	static const char *const ids[] = { "condition-id", "change-id", "creator" };
 	struct string_list_item *item;
-	struct contract *c;
-	const char *const *keys, *v;
-	char *id = contract_path_id(path);
-	int i, demand, offer, drop;
+	struct ynode *n;
+	char *why, **fields[] = { &c->condition_id, &c->change_id, &c->creator };
+	int demand = !strcmp(c->kind, "demand"), drop = !strcmp(c->kind, "drop");
+	size_t i;
 
-	if (yaml_parse(text, len, kv, err)) {
-		free(id);
-		return NULL;
+	if ((why = keys_refusal(map, keys_of(c->kind), 1)))
+		return why;
+	/* the IDs and the creator: plain values, empty only in a draft */
+	for (i = 0; i < ARRAY_SIZE(ids); i++) {
+		n = yget(map, ids[i]);
+		if (ystr(n))
+			replace_text(fields[i], n->value);
+		if (!ystr(n) || (draft && !*n->value ? 0 : i < 2 ? !id_ok(n->value, "R") : !agent_ok(n->value)))
+			return yaml_refusal(n, "bad '%s'", ids[i]);
 	}
-	*err = NULL;
-	if (!id)
-		return bad(err, yaml_refusal(kv, NULL, "not a contract path"));
-	v = yget(kv, "kind");
-	if (!v || !(keys = keys_of(v)) || kind_letter(v) != *id) {
-		free(id);
-		return bad(err, yaml_refusal(kv, "kind", "'kind' is missing or does not match the ID"));
-	}
-	{
-		char *group = group_of(path);
-
-		c = contract_new(v, group, id);
-		free(group);
-		free(id);
-	}
-	*owned = c;
-	demand = !strcmp(v, "demand");
-	offer = !strcmp(v, "offer");
-	drop = !strcmp(v, "drop");
-	if ((*err = keys_refusal(kv, "", keys, 1)))
-		return NULL;
-	replace_text(&c->condition_id, yget(kv, "condition-id"));
-	replace_text(&c->change_id, yget(kv, "change-id"));
-	replace_text(&c->creator, yget(kv, "creator"));
-	replace_text(&c->state, yget(kv, "state"));
-	if ((ykind(kv, "condition-id") != 0 && ykind(kv, "condition-id") != '?') ||
-	    (draft && !*c->condition_id ? 0 : !id_ok(c->condition_id, "R")))
-		return bad(err, yaml_refusal(kv, "condition-id", "bad 'condition-id'"));
-	if ((ykind(kv, "change-id") != 0 && ykind(kv, "change-id") != '?') ||
-	    (draft && !*c->change_id ? 0 : !id_ok(c->change_id, "R")))
-		return bad(err, yaml_refusal(kv, "change-id", "bad 'change-id'"));
-	if ((ykind(kv, "creator") != 0 && ykind(kv, "creator") != '?') ||
-	    (draft && !*c->creator ? 0 : !agent_ok(c->creator)))
-		return bad(err, yaml_refusal(kv, "creator", "bad 'creator'"));
-	if (!one_of(c->state, drop ? states_x : states_do))
-		return bad(err, yaml_refusal(kv, "state", "bad 'state'"));
+	n = yget(map, "state");
+	if (!ystr(n) || !one_of(n->value, drop ? states_x : states_do))
+		return yaml_refusal(n, "bad 'state'");
+	replace_text(&c->state, n->value);
 	for (i = !demand; !drop && i < 2; i++) {
 		const char *field = i ? "provider" : "consumer";
-		char *why = scopes_parse(i ? &c->provider : &c->consumer, yget(kv, field), 1, i,
-					draft ? SCOPE_DRAFT : SCOPE_STORED);
+		struct scope_list *scopes = i ? &c->provider : &c->consumer;
 
-		if (why) {
-			*err = yaml_refusal(kv, field, "bad scope in '%s': %s", field, why);
+		n = yget(map, field);
+		if (!ystr(n))
+			return yaml_refusal(n, "'%s' is not a string", field);
+		if ((why = scopes_parse(scopes, n->value, 1, i, draft ? SCOPE_DRAFT : SCOPE_STORED))) {
+			char *refusal = yaml_refusal(n, "bad scope in '%s': %s", field, why);
+
 			free(why);
-			return NULL;
+			return refusal;
 		}
+		if (!scopes->nr)
+			return yaml_refusal(n, "a scope list is empty");
 	}
-	if (!drop && (!c->provider.nr || (demand && !c->consumer.nr)))
-		return bad(err, yaml_refusal(kv, !c->provider.nr ? "provider" : "consumer", "a scope list is empty"));
-	if (drop && !id_ok(c->target = xstrdup(yget(kv, "target")), "DO"))
-		return bad(err, yaml_refusal(kv, "target", "bad 'target'"));
-	if (offer && ((*err = yaml_list(kv, "undertakes", &c->undertakes)) ||
-		      (*err = yaml_list(kv, "undertakes-partially", &c->partially))))
-		return NULL;
-	for_each_string_list_item(item, &c->undertakes) {
-		char key[64];
-
-		snprintf(key, sizeof(key), "undertakes.%d", (int)(item - c->undertakes.items));
+	n = yget(map, "target");
+	if (drop && (!ystr(n) || !id_ok(n->value, "DO")))
+		return yaml_refusal(n, "bad 'target'");
+	if (drop)
+		c->target = xstrdup(n->value);
+	if (!strcmp(c->kind, "offer") &&
+	    ((why = yaml_list(yget(map, "undertakes"), "undertakes", &c->undertakes)) ||
+	     (why = yaml_list(yget(map, "undertakes-partially"), "undertakes-partially", &c->partially))))
+		return why;
+	for_each_string_list_item(item, &c->undertakes)
 		if (!id_ok(item->string, "D") || unsorted_string_list_has_string(&c->partially, item->string))
-			return bad(err, yaml_refusal(kv, key, "bad ID '%s' in 'undertakes'", item->string));
-	}
-	for_each_string_list_item(item, &c->partially) {
-		char key[64];
-
-		snprintf(key, sizeof(key), "undertakes-partially.%d", (int)(item - c->partially.items));
+			return yaml_refusal(yget(map, "undertakes")->kids[item - c->undertakes.items],
+					    "bad ID '%s' in 'undertakes'", item->string);
+	for_each_string_list_item(item, &c->partially)
 		if (!id_ok(item->string, "D"))
-			return bad(err, yaml_refusal(kv, key, "bad ID '%s' in 'undertakes-partially'", item->string));
-	}
-	if ((*err = yaml_list(kv, "fulfilled", &c->fulfilled)))
-		return NULL;
+			return yaml_refusal(yget(map, "undertakes-partially")->kids[item - c->partially.items],
+					    "bad ID '%s' in 'undertakes-partially'", item->string);
+	n = yget(map, "fulfilled");
+	if ((why = yaml_list(n, "fulfilled", &c->fulfilled)))
+		return why;
 	for_each_string_list_item(item, &c->fulfilled) {
-		char key[64];
-		int *source_line;
-
-		snprintf(key, sizeof(key), "fulfilled.%d", (int)(item - c->fulfilled.items));
+		struct ynode *entry = n->kids[item - c->fulfilled.items];
 
 		if (!fulfil_path_ok(item->string, c->id, c->group))
-			return bad(err, yaml_refusal(kv, key, "bad path '%s' in 'fulfilled'", item->string));
-		source_line = xmalloc(sizeof(*source_line));
-		*source_line = yline(kv, key);
-		item->util = source_line;
+			return yaml_refusal(entry, "bad path '%s' in 'fulfilled'", item->string);
+		/* its line, for branch_load to point at an entry with no file */
+		item->util = xmemdupz(&entry->line, sizeof(entry->line));
 	}
 	if (drop)
-		return c;
-	if (ykind(kv, "specs") != 'l' || !yget(kv, "specs.0"))
-		return bad(err, yaml_refusal(kv, "specs", "'specs' is no list of specs"));
-	for (i = 0; ; i++) {
-		char key[64];
-		struct spec *s;
+		return NULL;
+	n = yget(map, "specs");
+	if (n->kind != 'l' || !n->nr)
+		return yaml_refusal(n, "'specs' is no list of specs");
+	c->specs = xcalloc(n->nr, sizeof(*c->specs));
+	for (i = 0; i < n->nr; i++) {
+		struct spec *spec = &c->specs[c->nspecs++];
 
-		snprintf(key, sizeof(key), "specs.%d", i);
-		if (!yget(kv, key))
-			break;
-		s = spec_from(kv, key, err);
-
-		if (!s)
-			return NULL;
-		REALLOC_ARRAY(c->specs, c->nspecs + 1);
-		c->specs[c->nspecs++] = *s;
-		free(s);
+		strvec_init(&spec->command);
+		string_list_init_dup(&spec->success);
+		if ((why = spec_read(n->kids[i], spec)))
+			return why;
 	}
-	return c;
+	return NULL;
 }
 
 struct contract *contract_parse(const char *text, size_t len, const char *path, int draft, char **err)
 {
-	struct string_list kv = STRING_LIST_INIT_DUP;
-	struct contract *owned = NULL;
-	struct contract *c = contract_read(text, len, path, draft, err, &kv, &owned);
+	struct ynode *map = yaml_parse(text, len, err), *kind = yget(map, "kind");
+	char *id = contract_path_id(path), *group = group_of(path);
+	struct contract *c = NULL;
 
-	yaml_clear(&kv);
-	if (!c)
-		contract_free(owned);
+	if (map && !id)
+		*err = yaml_refusal(map, "not a contract path");
+	else if (map && (!ystr(kind) || !keys_of(kind->value) || kind_letter(kind->value) != *id))
+		*err = yaml_refusal(kind ? kind : map, "'kind' is missing or does not match the ID");
+	else if (map)
+		c = contract_new(kind->value, group, id);
+	if (c && (*err = contract_read(map, c, draft))) {
+		contract_free(c);
+		c = NULL;
+	}
+	ynode_free(map);
+	free(id);
+	free(group);
 	return c;
 }
 
@@ -1056,88 +960,80 @@ static char *code_text(struct recorded_code *code)
 		xstrfmt("%s %s %s", code->mode, code->type, code->oid);
 }
 
-/* spec 2.5: the fulfilment at PATH from TEXT, or NULL with ERR */
-static struct fulfilment *fulfil_read(const char *text, const char *path, char **err,
-				     struct string_list *kv, struct fulfilment **owned)
+/* spec 2.5: the fulfilment at PATH from its front matter MAP and BODY into F; NULL, or why not */
+static char *fulfil_read(struct ynode *map, const char *body, const char *path, struct fulfilment *f)
 {
 	static const char *const keys[] = { "contract", "condition-id", "by", "session", "commit", "outcome", "code", NULL };
-	struct string_list_item *item;
-	struct fulfilment *f = xcalloc(1, sizeof(*f));
-	const char *end, *invalid;
-	char *front;
+	char **fields[] = { &f->contract, &f->condition_id, &f->by, &f->session, &f->commit, &f->outcome };
+	struct ynode *code = yget(map, "code");
+	const char *invalid;
+	char *why;
+	size_t i;
 
-	*owned = f;
-	*err = NULL;
-	if (!starts_with(text, "---\n") || !(end = strstr(text + 3, "\n---\n")))
-		return bad(err, yaml_refusal(kv, NULL, "no front matter"));
-	front = xstrndup(text, end + 1 - text);
-	if (yaml_parse(front, end + 1 - text, kv, err)) {
-		free(front);
-		return NULL;
+	if ((why = keys_refusal(map, keys, 1)))
+		return why;
+	for (i = 0; i < ARRAY_SIZE(fields); i++) {
+		if (!ystr(yget(map, keys[i])))
+			return yaml_refusal(yget(map, keys[i]), "bad '%s' in the front matter", keys[i]);
+		*fields[i] = xstrdup(yget(map, keys[i])->value);
 	}
-	free(front);
-	if ((*err = keys_refusal(kv, "", keys, 1)))
-		return NULL;
 	f->path = xstrdup(path);
-	f->contract = xstrdup(yget(kv, "contract"));
-	f->condition_id = xstrdup(yget(kv, "condition-id"));
-	f->by = xstrdup(yget(kv, "by"));
-	f->session = xstrdup(yget(kv, "session"));
-	f->commit = xstrdup(yget(kv, "commit"));
-	f->outcome = xstrdup(yget(kv, "outcome"));
-	f->body = xstrdup(end + 5);
+	f->body = xstrdup(body);
 	invalid = !id_ok(f->contract, "DOX") ? "contract" : !id_ok(f->condition_id, "R") ? "condition-id" :
 		!agent_ok(f->by) ? "by" : !id_ok(f->session, "S") ? "session" : !oid_ok(f->commit) ? "commit" :
 		!one_of(f->outcome, (const char *const[]){ "pass", "forced", "withdrawn", NULL }) ? "outcome" :
-		ykind(kv, "code") != 'm' ? "code" : NULL;
+		code->kind != 'm' ? "code" : NULL;
 	if (invalid)
-		return bad(err, yaml_refusal(kv, invalid, "bad '%s' in the front matter", invalid));
+		return yaml_refusal(yget(map, invalid), "bad '%s' in the front matter", invalid);
 	if (!fulfil_path_ok(path, f->contract, NULL))
-		return bad(err, yaml_refusal(kv, NULL, "not a fulfilment path"));
+		return yaml_refusal(map, "not a fulfilment path");
 	if ((*f->contract == 'X') != !strcmp(f->outcome, "withdrawn"))
-		return bad(err, yaml_refusal(kv, "outcome", "'outcome' does not match the contract kind"));
-	for_each_string_list_item(item, kv) {
-		const char *scope;
+		return yaml_refusal(yget(map, "outcome"), "'outcome' does not match the contract kind");
+	for (i = 0; i < code->nr; i += 2) {
+		struct ynode *scope = code->kids[i], *entry = code->kids[i + 1];
+		struct recorded_code *value = NULL;
+		struct scope key;
+		char *scope_error;
 
-		if (skip_prefix(item->string, "code.", &scope)) {
-			char *unescaped = yaml_key_decode(scope), *scope_error;
-			struct recorded_code *code;
-			struct scope key;
-
-			if (((struct yval *)item->util)->kind) {
-				free(unescaped);
-				return bad(err, yaml_refusal(kv, item->string, "a code entry is not a string"));
-			}
-			scope_error = scope_parse(&key, unescaped, 0, 0, SCOPE_STORED);
-			code = scope_error ? NULL : parse_code(&key, ((struct yval *)item->util)->s);
-			if (!code) {
-				char *why = yaml_refusal(kv, item->string, "bad code entry for '%s'", unescaped);
-
-				free(scope_error);
-				scope_clear(&key);
-				free(unescaped);
-				return bad(err, why);
-			}
-			code_add(&f->code, &key, code);
+		if (!ystr(entry))
+			return yaml_refusal(entry, "a code entry is not a string");
+		scope_error = scope_parse(&key, scope->value, 0, 0, SCOPE_STORED);
+		if (!scope_error)
+			value = parse_code(&key, entry->value);
+		if (!value) {
+			free(scope_error);
 			scope_clear(&key);
-			free(code);
-			free(unescaped);
+			return yaml_refusal(entry, "bad code entry for '%s'", scope->value);
 		}
+		code_add(&f->code, &key, value);
+		scope_clear(&key);
+		free(value);
 	}
 	if (*f->contract == 'X' && f->code.nr)
-		return bad(err, yaml_refusal(kv, "code", "a drop's code is not empty"));
-	return f;
+		return yaml_refusal(code, "a drop's code is not empty");
+	return NULL;
 }
 
 static struct fulfilment *fulfil_parse(const char *text, const char *path, char **err)
 {
-	struct string_list kv = STRING_LIST_INIT_DUP;
-	struct fulfilment *owned = NULL;
-	struct fulfilment *f = fulfil_read(text, path, err, &kv, &owned);
+	struct fulfilment *f = NULL;
+	struct ynode *map = NULL;
+	const char *end;
+	char *front;
 
-	yaml_clear(&kv);
-	if (!f)
-		fulfilment_free(owned);
+	if (!starts_with(text, "---\n") || !(end = strstr(text + 3, "\n---\n"))) {
+		*err = yaml_refusal_at(1, "no front matter");
+		return NULL;
+	}
+	front = xstrndup(text, end + 1 - text);
+	if ((map = yaml_parse(front, end + 1 - text, err)))
+		f = xcalloc(1, sizeof(*f));
+	if (f && (*err = fulfil_read(map, end + 5, path, f))) {
+		fulfilment_free(f);
+		f = NULL;
+	}
+	ynode_free(map);
+	free(front);
 	return f;
 }
 
