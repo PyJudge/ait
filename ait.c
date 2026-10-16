@@ -571,7 +571,7 @@ static char *default_of(const char *wt)
  * v14 4.1: a lock file is opened, never removed, and held with flock(2);
  * -1 when NOWAIT finds it held
  */
-int lock_path(const char *path, int nowait)
+static int lock_path(const char *path, int nowait)
 {
 	int fd;
 

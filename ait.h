@@ -37,7 +37,6 @@ void suggest(const char *fmt, ...) __attribute__((format (printf, 1, 2)));
 NORETURN void reject(int code, const char *hint, const char *fmt, ...) __attribute__((format (printf, 3, 4)));
 void newid(char *out, int prefix);
 const char *session(int need);
-int lock_path(const char *path, int nowait);
 int lock_session(const char *s);
 int listener_lock(const char *s);
 int hook_installed(void);
