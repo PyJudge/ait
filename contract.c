@@ -483,8 +483,11 @@ int path_ok(const char *p)
 /* spec 2.1.3: a group is path pieces, none of them "fulfill"; "" is the root */
 int group_ok(const char *group)
 {
-	return !*group || (path_ok(group) && strcmp(group, "fulfill") && !starts_with(group, "fulfill/") &&
-			   !strstr(group, "/fulfill/") && !ends_with(group, "/fulfill"));
+	char *pieces = xstrfmt("/%s/", group);
+	int ok = !*group || (path_ok(group) && !strstr(pieces, "/fulfill/"));
+
+	free(pieces);
+	return ok;
 }
 
 static int one_of(const char *w, const char *const *set)
@@ -777,18 +780,18 @@ static char *contract_read(struct ynode *map, struct contract *c, int draft)
 		return yaml_refusal(n, "bad 'target'");
 	if (drop)
 		c->target = xstrdup(n->value);
-	if (c->kind == OFFER &&
-	    ((why = yaml_list(yget(map, "undertakes"), "undertakes", &c->undertakes, 0)) ||
-	     (why = yaml_list(yget(map, "undertakes-partially"), "undertakes-partially", &c->partially, 0))))
-		return why;
-	for_each_string_list_item(item, &c->undertakes)
-		if (!id_ok(item->string, "D") || unsorted_string_list_has_string(&c->partially, item->string))
-			return yaml_refusal(yget(map, "undertakes")->kids[item - c->undertakes.items],
-					    "bad ID '%s' in 'undertakes'", item->string);
-	for_each_string_list_item(item, &c->partially)
-		if (!id_ok(item->string, "D"))
-			return yaml_refusal(yget(map, "undertakes-partially")->kids[item - c->partially.items],
-					    "bad ID '%s' in 'undertakes-partially'", item->string);
+	/* 1.7: demands' IDs, the partial ones first, as a whole one is none of them */
+	for (i = 0; c->kind == OFFER && i < 2; i++) {
+		const char *key = i ? "undertakes" : "undertakes-partially";
+		struct string_list *held = i ? &c->undertakes : &c->partially;
+
+		if ((why = yaml_list(yget(map, key), key, held, 0)))
+			return why;
+		for_each_string_list_item(item, held)
+			if (!id_ok(item->string, "D") || (i && unsorted_string_list_has_string(&c->partially, item->string)))
+				return yaml_refusal(yget(map, key)->kids[item - held->items], "bad ID '%s' in '%s'",
+						    item->string, key);
+	}
 	/* 2.3.2: no fulfilment is the key alone */
 	n = yget(map, "fulfilled");
 	if (n->kind != '?' && (why = yaml_list(n, "fulfilled", &c->fulfilled, 0)))
