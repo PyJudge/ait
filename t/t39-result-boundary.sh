@@ -99,12 +99,32 @@ for kind in unknown duplicate outcome missing-outcome basis missing-basis missin
 	check_rc "$kind task result remains a format error" 128
 	check "$kind result identifies its file and source line" "has err \"^fatal: bad format: '$T/result.yaml': .* in line $line$\" && ! has err '^hint:'"
 done
+# v14 5.8: the advice follows why a task did not pass, and --force only when nothing failed
+fail_hint="hint: make the code meet the failed task(s) and stage it, check them again, and rerun with -r $T/result.yaml"
+unknown_hint="hint: check the unknown task(s) where their environment is available and rerun with -r $T/result.yaml"
+force_hint='hint: if it is trivial, add --force instead (recorded as forced)'
 for outcome in fail unknown; do
 	printf 'condition-ids:\n  %s: %s\nresults:\n- task: %s:1\n  outcome: %s\n  reason: unavailable\n' "$K" "$cid" "$K" "$outcome" > "$T/result.yaml"
 	run ait fulfill "$K" -r "$T/result.yaml" -m 'reported failure'
 	check_rc "$outcome remains E_CHECK_FAILED" 1
-	check "$outcome names its task without an ungrounded repair hint" "has err '^$K:1$' && has err '^error: check failed: 1 task(s)$' && ! has err '^hint:'"
+	check "$outcome names its task" "has err '^$K:1$' && has err '^error: check failed: 1 task(s)$'"
+	case $outcome in
+	fail) check "a failed task is advised to fix the code, not to force" \
+		"grep -qxF -- '$fail_hint' '$T/err' && ! grep -qF -- '$unknown_hint' '$T/err' && ! grep -qxF -- '$force_hint' '$T/err'" ;;
+	unknown) check "an unknown task is advised to check where its environment is, or to force" \
+		"grep -qxF -- '$unknown_hint' '$T/err' && grep -qxF -- '$force_hint' '$T/err' && ! grep -qF -- '$fail_hint' '$T/err'" ;;
+	esac
 done
+printf 'body: |\n  orders are counted per day\n' > cond-prompt.yaml
+run ait future offer src/stock.c cond.yaml,cond-prompt.yaml -m 'two tasks'
+K2=$(newest O)
+cid2=$(yaml "$K2" | sed -n 's/^condition-id: //p')
+printf 'condition-ids:\n  %s: %s\nresults:\n- task: %s:1\n  outcome: fail\n  reason: wrong\n- task: %s:2\n  outcome: unknown\n  reason: unavailable\n' "$K2" "$cid2" "$K2" "$K2" > "$T/result.yaml"
+run ait fulfill "$K2" -r "$T/result.yaml" -m 'failed and unknown'
+check "a failed and an unknown task get both pieces of advice, and no --force" \
+	"has err '^error: check failed: 2 task(s)$' && grep -qxF -- '$fail_hint' '$T/err' && grep -qxF -- '$unknown_hint' '$T/err' && ! grep -qxF -- '$force_hint' '$T/err'"
+rm -f cond-prompt.yaml
+
 
 # Parsing input once fixes the request even when locating a provider runs Git
 # after that read, and another process changes the result file at that point.

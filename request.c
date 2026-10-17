@@ -1036,6 +1036,7 @@ static void check_results(struct request_input *q, struct request_result *r, str
 	struct ynode *results = yget(map, "results");
 	char *err;
 	size_t i, n;
+	int fail = 0, unknown = 0;
 
 	for_each_string_list_item(item, &r->covered) {
 		struct contract *c = contract_after(r, item->string);
@@ -1071,6 +1072,8 @@ static void check_results(struct request_input *q, struct request_result *r, str
 						   "task '%s' has no basis", task));
 		if (strcmp(outcome, "pass"))
 			string_list_append(&failed, task);
+		fail |= !strcmp(outcome, "fail");
+		unknown |= !strcmp(outcome, "unknown");
 		strbuf_addf(&block, "  outcome: %s\n  basis: ", outcome);
 		yaml_out_body(&block, basis ? basis : "");
 		if (reason && *reason) {
@@ -1083,9 +1086,21 @@ static void check_results(struct request_input *q, struct request_result *r, str
 		if (!string_list_has_string(&q->results, item->string))
 			result_bad(q, yaml_refusal(results, "task '%s' is missing", item->string));
 	if (failed.nr) {
+		struct strbuf hint = STRBUF_INIT;
+		const char *rerun = quoted(q->result);
+
 		for_each_string_list_item(item, &failed)
 			fprintf(stderr, "%s\n", item->string);
-		reject(1, NULL, "check failed: %d task(s)", (int)failed.nr);
+		/* v14 5.8: the advice follows why a task did not pass, and a failed one is no trivial change */
+		if (fail)
+			strbuf_addf(&hint, "make the code meet the failed task(s) and stage it, check them again, "
+				    "and rerun with -r %s", rerun);
+		if (unknown)
+			strbuf_addf(&hint, "%scheck the unknown task(s) where their environment is available "
+				    "and rerun with -r %s", hint.len ? "\n" : "", rerun);
+		if (!fail)
+			strbuf_addstr(&hint, "\nif it is trivial, add --force instead (recorded as forced)");
+		reject(1, strbuf_detach(&hint, NULL), "check failed: %d task(s)", (int)failed.nr);
 	}
 }
 

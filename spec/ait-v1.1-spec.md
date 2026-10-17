@@ -232,7 +232,7 @@ v14 5.6·5.7을 쓴다. 바뀌는 점: 요약 행(4.4의 5, 6.7)의 OID는 짧�
 | `E_MOVED` | 1 | `error: 'ait/<name>' moved while running; nothing changed` |
 | `E_CONFLICT` | 1 | `error: contract branches conflict in '…'`, `error: merging '…' breaks contract rules: …`(6.5.6) |
 | `E_NEEDS_RESULTS` | 1 | `error: check results required: …`(hint는 v14 5.8) |
-| `E_CHECK_FAILED` | 1 | `error: check failed: …` |
+| `E_CHECK_FAILED` | 1 | `error: check failed: …`(앞에 fail·unknown인 과제마다 그 이름 한 행). hint는 결과로 고른다(C76): fail인 과제가 있으면 `make the code meet the failed task(s) and stage it, check them again, and rerun with -r RES`, unknown인 과제가 있으면 `check the unknown task(s) where their environment is available and rerun with -r RES`, fail인 과제가 없을 때만 이어서 `if it is trivial, add --force instead (recorded as forced)`(RES는 `-r`에 준 결과 파일) |
 | `E_COMMIT` | 1 | `error: commit failed; '…' not fulfilled` |
 | `E_NOT_RECORDED` | 1 | `error: committed '…' but '…' not fulfilled: …`, `error: '…' not fulfilled: …` |
 | `E_GIT` | 128 | `fatal: git failed: …`, 저장소 밖이면 `fatal: not a git repository` |
