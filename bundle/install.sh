@@ -1,19 +1,48 @@
 #!/bin/sh
-# Install the ait binary of this bundle (macOS arm64) into $PREFIX/bin, default ~/.local/bin.
-# The hooks ait installs run "ait" from PATH, so the ait found first on PATH serves every repository's hooks.
+# Install this release's executable and its skill/setup resources.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-prefix=${PREFIX:-$HOME/.local}
-dest="$prefix/bin/ait"
-if [ -e "$dest" ] && ! cmp -s "$here/bin/ait" "$dest"; then
-	echo "warning: replacing the ait at '$dest'; repositories set up by another ait (.ait/init 'version 1') stop until they move to 'version 2'"
-	echo "hint: to keep it, install elsewhere: 'PREFIX=\$HOME/.local/ait sh $here/install.sh', and put that bin first on PATH where you use this ait"
+if [ "$(cat "$here/PLATFORM")" != "$(uname -sm)" ]; then
+	echo "fatal: this release requires $(cat "$here/PLATFORM")" >&2
+	exit 128
 fi
+if ! git_version=$(git version) ||
+	! printf '%s\n' "$git_version" | awk '
+		$1 == "git" && $2 == "version" {
+			split($3, v, ".")
+			supported = v[1] > 2 || (v[1] == 2 && v[2] >= 53)
+		}
+		END { exit !supported }'; then
+	echo "fatal: git 2.53 or later is required" >&2
+	exit 128
+fi
+prefix=${PREFIX:-$HOME/.local}
+mkdir -p "$prefix"
+prefix=$(cd "$prefix" && pwd)
+dest="$prefix/bin/ait"
+[ ! -d "$dest" ] || { echo "fatal: '$dest' is a directory" >&2; exit 128; }
 mkdir -p "$prefix/bin"
-cp "$here/bin/ait" "$dest"
-chmod 755 "$dest"
-echo "installed $dest"
+if [ -L "$dest" ] || [ ! -x "$dest" ] || ! cmp -s "$here/bin/ait" "$dest"; then
+	# repositories' hooks run the ait found on PATH, which may be another ait than this one
+	if [ -e "$dest" ] && ! cmp -s "$here/bin/ait" "$dest"; then
+		echo "warning: replacing the ait at '$dest'; the hooks that run it now run this one" >&2
+		echo "hint: to keep it, install this one elsewhere: 'PREFIX=<dir> sh $here/install.sh'" >&2
+	fi
+	tmp=$(mktemp "$prefix/bin/.ait.XXXXXX")
+	trap 'rm -f "$tmp"' 0
+	trap 'exit 1' 1 2 3 15
+	cp "$here/bin/ait" "$tmp"
+	chmod 755 "$tmp"
+	mv -f "$tmp" "$dest"
+fi
+resources="$prefix/share/ait"
+mkdir -p "$resources/skills"
+cp -R "$here/skills/." "$resources/skills/"
+for name in setup.sh try.sh ait-graph.sh README.md VERSION PLATFORM; do
+	cp "$here/$name" "$resources/$name"
+done
+printf 'installed %s\nresources %s\n' "$dest" "$resources"
 case ":$PATH:" in
 *":$prefix/bin:"*) ;;
-*) echo "warning: '$prefix/bin' is not on PATH; add it, or the hooks will skip ait" ;;
+*) printf "hint: put '%s/bin' first on PATH before using ait\n" "$prefix" ;;
 esac

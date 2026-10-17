@@ -1,34 +1,47 @@
 #!/bin/sh
-# Set up an existing git repository for ait: the ait skill in its .claude/skills, a CLAUDE.md
-# section that points agents to it, and 'ait init' (hooks, and a commit of .ait/init on the current branch).
-#   sh setup.sh [REPO]      (default: the repository of the current directory)
+# Initialize ait and install repository-local agent instructions; do not commit code.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-command -v ait >/dev/null 2>&1 || { echo "fatal: ait is not on PATH; run 'sh $here/install.sh' first" >&2; exit 128; }
-cmp -s "$here/bin/ait" "$(command -v ait)" ||
-	echo "warning: the ait on PATH ('$(command -v ait)') is not this bundle's; the hooks will run that one" >&2
-top=$(git -C "${1:-.}" rev-parse --show-toplevel 2>/dev/null) || { echo "fatal: '${1:-.}' is not in a git repository" >&2; exit 128; }
-git -C "$top" rev-parse -q --verify HEAD >/dev/null || { echo "fatal: '$top' has no commit yet; commit something first" >&2; exit 128; }
-git -C "$top" symbolic-ref -q HEAD >/dev/null || { echo "fatal: HEAD is detached in '$top'; check out a branch first" >&2; exit 128; }
-mkdir -p "$top/.claude/skills"
-rm -rf "$top/.claude/skills/ait"
-cp -R "$here/skills/ait" "$top/.claude/skills/"
-if ! grep -q '^## ait$' "$top/CLAUDE.md" 2>/dev/null; then
-	[ ! -s "$top/CLAUDE.md" ] || printf '\n' >> "$top/CLAUDE.md"
-	cat >> "$top/CLAUDE.md" <<'MD'
+if [ -x "$here/bin/ait" ]; then
+	ait_bin="$here/bin/ait"
+else
+	ait_bin="$here/../../bin/ait"
+fi
+[ -x "$ait_bin" ] || { echo "fatal: install this release first" >&2; exit 128; }
+top=$(git -C "${1:-.}" rev-parse --show-toplevel 2>/dev/null) || {
+	echo "fatal: '${1:-.}' is not in a git work tree" >&2; exit 128;
+}
+# Fail before replacing any existing agent instructions.
+(cd "$top" && "$ait_bin" init)
+# the agents there run the ait found on PATH, which may be another ait than this one
+on_path=$(command -v ait 2>/dev/null || true)
+if [ -z "$on_path" ] || ! cmp -s "$ait_bin" "$on_path"; then
+	echo "warning: the ait on PATH ('${on_path:-none}') is not this release's; agents in '$top' run that one" >&2
+	echo "hint: put '$(cd "$(dirname "$ait_bin")" && pwd)' first on PATH" >&2
+fi
+for runtime in .agents .claude; do
+	dest="$top/$runtime/skills/ait"
+	[ ! -L "$dest" ] || { echo "fatal: '$dest' is a symbolic link" >&2; exit 128; }
+	mkdir -p "$dest"
+	cp -R "$here/skills/ait/." "$dest/"
+done
+for entry in AGENTS.md CLAUDE.md; do
+	if ! grep -q '^## ait$' "$top/$entry" 2>/dev/null; then
+		[ ! -s "$top/$entry" ] || printf '\n' >>"$top/$entry"
+		cat >>"$top/$entry" <<'MD'
 ## ait
 
-이 저장소는 여러 에이전트가 함께 고치며, 서로 기대는 조건을 ait 계약으로 적어 둔다. 코드를 고치거나 커밋하기 전에 ait 스킬(`.claude/skills/ait/SKILL.md`)을 읽고 그 절차를 따른다. ait의 `hint:`는 그대로 따른다.
+이 저장소는 ait v1.1의 별도 계약 브랜치를 사용한다. 코드를 고치거나 커밋하기 전에 ait 스킬(`.agents/skills/ait/SKILL.md`, Claude Code에서는 `.claude/skills/ait/SKILL.md`)을 읽고 따른다.
 MD
-fi
-cd "$top" && ait init
+	fi
+done
 cat <<MSG
 set up: $top
-  .claude/skills/ait/   the skill (not committed; commit it if every clone should have it)
-  CLAUDE.md                its '## ait' section (not committed)
-  .ait/init, hooks         committed and installed by 'ait init'
+  .agents/skills/ait/, .claude/skills/ait/  current skill
+  AGENTS.md, CLAUDE.md                    agent entry points
+  ait/* branch, reference-transaction hook initialized by ait
 
-Give each agent its own worktree and branch, for example:
-  git -C "$top" worktree add ../a -b a
-and open one Claude Code session there per agent: "너는 에이전트 a다. ait 스킬대로 일한다. <맡길 일>".
+Code HEAD and the Git stage were preserved. Agent files are not committed.
+Run setup in each new worktree, or commit these agent files before creating it.
+Each agent opens its own session there: ait session open --agent <name>
 MSG

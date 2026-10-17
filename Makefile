@@ -18,6 +18,8 @@ ifneq ($(filter Darwin SunOS FreeBSD OpenBSD MirBSD NetBSD,$(uname_S)),)
 endif
 # argv precomposed as git does on macOS (git v2.53.0 config.mak.uname:144-145), with iconv
 ifeq ($(uname_S),Darwin)
+	MACOSX_DEPLOYMENT_TARGET ?= 11.0
+	export MACOSX_DEPLOYMENT_TARGET
 	CFLAGS += -DPRECOMPOSE_UNICODE
 	LDLIBS += -liconv
 endif
@@ -31,20 +33,22 @@ libyaml/%.o: libyaml/%.c libyaml/yaml.h libyaml/yaml_private.h
 test: ait
 	@sh t/run.sh
 
-# a copy, not a link: the hooks of this repository run the installed ait, not the one being built
+# Source and archive installs use the same installer and resource layout.
 prefix ?= $(HOME)/.local
-install: ait
-	install -d $(prefix)/bin
-	install ait $(prefix)/bin/ait
+install: bundle
+	PREFIX="$(prefix)" sh dist/ait/install.sh
 
-# the experiment bundle: ait, its skill and bundle/'s scripts, as dist/ait.tar.gz
+# The v1.1 release: native executable, skill and setup scripts.
 bundle: ait
 	rm -rf dist/ait
 	mkdir -p dist/ait/bin dist/ait/skills
 	cp ait dist/ait/bin/
 	cp -R spec/skills/ait dist/ait/skills/
 	cp bundle/README.md bundle/install.sh bundle/setup.sh bundle/try.sh bundle/ait-graph.sh dist/ait/
-	tar -czf dist/ait.tar.gz -C dist ait
+	printf '1.1\n' > dist/ait/VERSION
+	uname -sm > dist/ait/PLATFORM
+	tar -czf dist/ait-v1.1.tar.gz -C dist ait
+	cp dist/ait-v1.1.tar.gz dist/ait.tar.gz
 
 clean:
 	rm -f ait $(YAML)

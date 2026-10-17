@@ -1,56 +1,34 @@
-# 명세만 있고 구현이 전혀 없을 때
+# 구현이 아직 없는 저장소
 
-명세 문서는 있는데 그것을 구현한 코드가 아직 하나도 없을 때의 절차다. 이 절차를 따르면 명세의 조항 하나하나가 계약이 되고, 누가 어느 조항을 맡았는지, 어느 조항이 어떤 확인을 거쳐 구현됐는지가 기록으로 남는다. 구현된 뒤에는 그 코드를 고칠 때마다 해당 조항이 걸려 다시 확인을 요구하므로, 명세가 계속 원본으로 남는다.
+명세를 먼저 계약으로 적되, 상대하는 ait 브랜치와 코드 HEAD를 구분한다. 같은 clone의 worktree들은 계약 브랜치를 공유하며 코드 파일은 각자의 worktree에 있다.
 
-일부라도 구현이 있으면 이 절차가 아니라 SKILL.md의 일반 흐름("코드를 쓰다 '이건 지켜져야 해'라고 판단했다")을 따른다.
+1. 각 에이전트는 자기 코드 worktree에서 session을 열고 `ait status /`를 확인한다.
+2. 명세의 조건을 `body`로 쓴 조건 파일을 만든다. 구현이 없어 검사를 실행할 수 없으면 prompt 정의(`body`만)를 쓴다. 실행 가능한 검사가 생기면 exec 정의로 바꾼다.
+3. 아직 없는 구현에 대한 demand는 provider를 `/`로 약속할 수 있다. consumer는 명세 파일처럼 이미 있는 사용 쪽 범위로 둔다.
 
-## 흐름
-
-1. 명세의 조항마다 명세 정의를 쓰고, **추상 future demand**를 건다.
-2. 조항에 착수할 때 그 demand를 **추상 future offer**로 떠맡는다. 하나씩, 손댈 때.
-3. 구현을 마치면 **fulfill로 범위를 실제 파일로 좁혀** current로 만든다.
-
-## 1. 조항마다 demand를 건다
-
-```sh
-# specs/cN.yaml: 명세 N조의 조건과 확인 방법. 절 하나(future demand …)가 demand 하나, 조항 하나다
-ait future demand doc/spec.md / specs/c1.yaml \
-    future demand doc/spec.md / specs/c2.yaml \
-    future demand doc/spec.md / specs/c3.yaml -m "명세 1-3조"
+```yaml
+body: 재고가 모자라면 예약을 거절하고 저장된 재고는 바꾸지 않는다
 ```
 
-- **코드보다 먼저, 따로 커밋한다.** 다른 에이전트는 이 계약 커밋을 찾아 `ait contract pull D…`로 받는다(SKILL.md "남의 계약을 받는다"). pull은 그 계약이 처음 들어간 커밋과 조상을 받으므로, 계약 커밋이 코드보다 앞에 있어야 코드 없이 받는다.
-- **demand 하나에 조항 하나.** 계약은 통째로 이행되고 통째로 다시 확인된다. 명세 전체를 demand 하나로 걸면 전부 구현할 때까지 이행할 수 없다. 이행한 뒤에는 어느 코드를 고치든 명세 전체를 다시 확인해야 한다. 위처럼 한 명령에 절로 이어 걸면 한 커밋에 모두 걸리고, 출력의 `new D…` 행이 조항마다 하나씩 나온다.
-- **consumer는 명세 문서.** 이 조건에 기대는 것은 명세 자체다. consumer에는 추상 범위(`/`, `src/`)를 쓸 수 없다(추상 범위는 future의 provider에만 쓴다).
-- **provider는 `/`(전체).** 어디에 구현될지 아직 모르기 때문이다. 짐작이 가면 `src/`처럼 좁혀도 되지만, 디렉터리 범위는 HEAD에 그 디렉터리가 있을 때만 쓸 수 있다(없으면 `fatal: bad scope`). 구현이 하나도 없으면 `/`다.
-- **명세 정의의 `body`는 그 조항.** 명령으로 확인할 수 있으면 `engine: exec`와 그 조항을 검사하는 테스트를 `command`·`inputs`에 둔다. 명세 문서 전체를 `inputs`에 넣지 않는다. 한 줄만 고쳐도 모든 조항이 미확인이 된다.
-
-## 2. 착수할 때 하나씩 떠맡는다
-
 ```sh
-ait todo doc/spec.md                     # 조항들의 demand. undertaken-by 행이 없으면 아무도 맡지 않은 것
-ait future offer / specs/c1.yaml as o undertake D… o -m "명세 1조 착수"
+ait future demand doc/spec.md / specs/stock.yaml -m "재고 예약 조건"
 ```
 
-- 미리 여러 조항을 잡아 두지 않는다. 잡고만 있으면 남이 그 약속을 기다리므로 병목이다. 손대는 조항만 떠맡고, 그만두면 바로 거둔다(`ait future cancel O… -m …`).
-- offer의 provider도 추상 범위로 둔다(`/`, 그 디렉터리가 HEAD에 있으면 `src/`). 어느 파일에 구현할지는 구현하면서 정해진다.
-- 조항 몇 개를 한 구현으로 해낸다면 offer 하나로 함께 떠맡는다(`… as o undertake D1… o undertake D2… o`). 그래도 demand는 조항마다 따로 남으므로, 한 조항이 바뀌면 그 demand만 다시 확인한다.
-- 다른 조항이 아직 구현되지 않았어도, 그 demand의 조건대로 있다고 보고 개발한다.
-
-## 3. 구현한 뒤 범위를 좁혀 이행한다
+4. 구현을 맡는 에이전트는 같은 계약 브랜치에서 그 demand를 보고, 조건 파일을 자기 worktree에 준비하여 떠맡는다. 다른 worktree의 미커밋 조건 파일이 내 작업 폴더에도 있다고 가정하지 않는다.
 
 ```sh
-git add <구현>; ait commit -m "명세 1조 구현"     # 코드만 커밋. future는 걸리지 않으므로 확인이 없다
-ait fulfill O…=src/a.c D…=src/a.c -m "명세 1조 구현"                   # -r 없이: 과제를 받는다
-ait fulfill O…=src/a.c D…=src/a.c -r <check-result> -m "명세 1조 구현"  # 확인해 current로
+ait future offer / specs/stock.yaml as stock undertake D0123456789ab stock -m "재고 구현 착수"
 ```
 
-- 따로 amend할 필요가 없다. future 계약에 `ait amend O…`를 하면 `noop`이다. fulfill이 추상 범위를 구현한 파일로 좁히고, 확인을 거쳐 offer와 떠맡은 demand를 함께 current로 만든다.
-- 좁힌 범위는 실제로 그 조건을 구현한 파일이다. 여러 파일이면 `,`로 잇는다(`O…=src/a.c,src/b.c`).
-- 확인 결과를 내는 법은 SKILL.md의 "확인 결과를 내는 법"과 같다.
+5. 구현과 검사를 작성하고 코드 stage를 확인한다. 통째 offer와 demand의 추상 provider를 함께 좁혀 이행한다. 두 ID를 명시하여 서로 기대는 계약의 조건을 같은 요청에서 바꾼다.
 
-## 그 뒤
+```sh
+git add src/stock.sh tests/stock.sh
+ait fulfill O0123456789ab=src/stock.sh D0123456789ab=src/stock.sh -m "재고 예약 구현"
+# 출력된 request의 tree를 검사하고 result를 채운 뒤 같은 범위로 재실행:
+ait fulfill O0123456789ab=src/stock.sh D0123456789ab=src/stock.sh -r /path/to/check-result.yaml -m "재고 예약 구현"
+```
 
-- 이행된 조항의 코드를 고치면 그 계약이 걸린다. SKILL.md의 "current 계약의 코드를 고친다"를 따른다.
-- **명세가 바뀌면** 그 조항의 명세 정의(`specs/cN.yaml`)를 고치고 다시 고정한다. 구현이 이미 맞으면 `ait amend D… -m "명세 N조 변경"`으로 확인해 current로 둔다. 다시 구현해야 하면 `ait future amend D… -m "명세 N조 변경"`(offer가 떠맡고 있으면 `future amend O…`도 한 요청에 함께)으로 약속으로 되돌린 뒤 다시 구현하고 이행한다.
-- **조항이 새로 생기면** 1부터 같은 절차로 건다. **조항이 없어지면** 그 demand를 거둔다. future면 `ait future cancel D…`, current면 `ait future amend D…` 다음 요청으로 `ait future cancel D…`다.
+아직 HEAD에 없는 파일을 future에서 미리 지정하려면 `new:src/stock.sh`를 쓴다. 이행할 때 그 파일이 index에 존재한 뒤 구체 범위로 좁힌다. 행 범위를 future amend에 직접 주려면 해당 코드가 먼저 HEAD에 있어야 한다.
+
+한쪽이 작업 중이어도 다른 쪽은 그 약속의 조건을 기준으로 자기 일을 계속한다. 조건이 바뀌면 `ait status /`와 알림을 보고 합의한 조건에 맞춰 수정한다. 완료한 코드 브랜치는 Git으로 합치고, 계약의 현재 판정은 합친 코드에서 다시 확인한다.
