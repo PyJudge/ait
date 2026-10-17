@@ -177,6 +177,7 @@ void scopes_clear(struct scope_list *list);
 void scopes_copy(struct scope_list *out, const struct scope_list *from);
 void scope_append(struct scope_list *out, const struct scope *s);
 int scope_equal(const struct scope *a, const struct scope *b, int with_base);
+int scopes_has(const struct scope_list *list, const struct scope *s, int with_base);
 char *scope_text(const struct scope *s, int with_base);
 const struct scope **scope_order(const struct scope_list *list);
 char *scopes_text(const struct scope_list *list, int with_base);

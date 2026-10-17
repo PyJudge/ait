@@ -1533,18 +1533,6 @@ char *environment_path(const char *name)
 	return xstrfmt("specs/environments/%s.yaml", name);
 }
 
-/* plan 3.2 (U60): a scope OUT does not hold yet joins it */
-static void witness(struct scope_list *out, const struct scope *scope)
-{
-	const struct scope *s;
-	int found = 0;
-
-	for_each_scope(s, out)
-		found |= scope_equal(s, scope, 1);
-	if (!found)
-		scope_append(out, scope);
-}
-
 /*
  * plan 3 (U60): what a fulfilment records of C and the judgment compares (rule
  * 4): the provider, then each spec's fixtures and environment definition file
@@ -1558,11 +1546,13 @@ void witnessed_scopes(const struct contract *c, struct scope_list *out)
 	scopes_copy(out, &c->provider);
 	for (i = 0; i < c->nspecs; i++) {
 		for_each_scope(f, &c->specs[i].fixtures)
-			witness(out, f);
+			if (!scopes_has(out, f, 1))
+				scope_append(out, f);
 		if (c->specs[i].environment) {
 			struct scope file = { .kind = SCOPE_FILE, .path = environment_path(c->specs[i].environment) };
 
-			witness(out, &file);
+			if (!scopes_has(out, &file, 1))
+				scope_append(out, &file);
 			scope_clear(&file);
 		}
 	}

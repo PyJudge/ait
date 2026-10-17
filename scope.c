@@ -45,6 +45,17 @@ int scope_equal(const struct scope *a, const struct scope *b, int with_base)
 	       (!with_base || !strcmp(a->base, b->base));
 }
 
+/* LIST holds S (its base too, WITH_BASE) */
+int scopes_has(const struct scope_list *list, const struct scope *s, int with_base)
+{
+	const struct scope *had;
+
+	for_each_scope(had, list)
+		if (scope_equal(had, s, with_base))
+			return 1;
+	return 0;
+}
+
 char *scope_text(const struct scope *s, int with_base)
 {
 	if (s->kind == SCOPE_RANGE)
@@ -127,15 +138,11 @@ char *scopes_parse(struct scope_list *out, const char *text, int allow_new, int 
 	if (*text)
 		string_list_split(&words, text, ",", -1);
 	for_each_string_list_item(word, &words) {
-		const struct scope *had;
 		struct scope s;
 
 		if ((err = scope_parse(&s, word->string, allow_new, allow_abs, form)))
 			break;
-		for_each_scope(had, out)
-			if (scope_equal(had, &s, 0))
-				break;
-		if (had && had < out->items + out->nr) {
+		if (scopes_has(out, &s, 0)) {
 			char *key = scope_text(&s, 0);
 
 			err = xstrfmt("'%s' is given twice", key);

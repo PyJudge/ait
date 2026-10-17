@@ -146,17 +146,13 @@ static int list_same(const struct string_list *a, const struct string_list *b, i
 
 int scopes_same(const struct scope_list *a, const struct scope_list *b)
 {
-	size_t i, j;
+	size_t i;
 
 	if (a->nr != b->nr)
 		return 0;
-	for (i = 0; i < a->nr; i++) {
-		for (j = 0; j < b->nr; j++)
-			if (scope_equal(&a->items[i], &b->items[j], 1))
-				break;
-		if (j == b->nr)
+	for (i = 0; i < a->nr; i++)
+		if (!scopes_has(b, &a->items[i], 1))
 			return 0;
-	}
 	return 1;
 }
 
