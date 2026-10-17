@@ -411,7 +411,7 @@ void newid(char *out, int prefix)
 /* one of LETTERS and twelve lowercase hex digits (spec 1.11) */
 int id_ok(const char *s, const char *letters)
 {
-	return s && *s && strchr(letters, *s) && strlen(s) == 13 && !s[1 + strspn(s + 1, "0123456789abcdef")];
+	return s && strlen(s) == 13 && strchr(letters, *s) && !s[1 + strspn(s + 1, "0123456789abcdef")];
 }
 
 /* forty lowercase hex digits, a SHA-1 object name */
