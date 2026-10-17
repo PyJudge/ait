@@ -105,8 +105,8 @@ check 'the existing invalid environment is a format error, not a read error' \
 	"has err '^fatal: bad format:' && has err \"'cwd'\""
 printf 'body: condition\nengine: exec\ncommand: [true]\nenvironment: "missing\\nname"\n' >cond.yaml
 run ait offer src/stock.c cond.yaml -m 'missing environment'
-check_rc 'a missing newline-named environment remains a read error' 128
-check 'a missing environment retains its specified read diagnostic' \
-	"has err '^fatal: could not read'"
+check_rc 'a missing newline-named environment is refused' 128
+check 'as a witnessed scope not in the code (6.7.4, C77)' \
+	"has err '^fatal: bad scope: .* is not in the code$'"
 
 done_testing

@@ -27,7 +27,7 @@ static void block(struct branch *b, struct judgment *j, struct contract *c, cons
 	printf("id %s\nkind %s\ngroup %s\nstate %s\ncreator %s\n", c->id, kind_word(c->kind), *c->group ? c->group : "-",
 	       verdict_word(v), c->creator);
 	if (demand) {
-		char *display = geometry_text(g, 0, NULL);
+		char *display = geometry_text(g, GEOMETRY_CONSUMER, NULL);
 
 		printf("consumer %s\n", display);
 		free(display);
@@ -35,10 +35,15 @@ static void block(struct branch *b, struct judgment *j, struct contract *c, cons
 	if (c->kind == DROP) {
 		printf("target %s\n", c->target);
 	} else {
-		char *display = geometry_text(g, 1, result->matches_any);
+		char *display = geometry_text(g, GEOMETRY_PROVIDER, result->matches_any);
 
 		printf("provider %s\n", display);
 		free(display);
+		if (g->witnessed.nr > c->provider.nr) {
+			display = geometry_text(g, GEOMETRY_FIXTURES, result->matches_any);
+			printf("fixtures %s\n", display);
+			free(display);
+		}
 	}
 	for (i = 0; i < c->nspecs; i++)
 		printf("spec %s %.*s\n", c->specs[i].engine ? "exec" : "prompt", (int)strcspn(c->specs[i].body, "\n"),

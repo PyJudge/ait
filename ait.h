@@ -187,6 +187,7 @@ struct spec {
 	struct strvec command;
 	struct string_list success;
 	char *environment;
+	struct string_list fixtures;	/* files of the code the check reads (U60) */
 };
 /* spec 1.1: the kinds of contract; their words, ID letters and keys are in one table (contract.c) */
 enum kind { DEMAND, OFFER, DROP };
@@ -307,16 +308,18 @@ struct scope_result {
 struct contract_geometry {
 	const struct contract *contract;
 	struct scope_result *consumer;
-	struct scope_result *provider;
+	struct scope_list witnessed;	/* the provider, then the fixtures (witnessed_scopes()) */
+	struct scope_result *witness;	/* where each witnessed scope is */
 };
 /*
  * spec 5: the one way to judge. A judgment holds a view and a tree; each
  * contract is judged once in it. MATCHES_ANY is set when C has a valid
- * fulfilment: which provider scopes some valid fulfilment recorded as they are.
+ * fulfilment: which witnessed scopes some valid fulfilment recorded as they are.
  */
 struct judgment_result {
 	enum verdict verdict;
-	struct recorded_code *code;	/* per provider scope, the whole witness's code as it is in the tree */
+	struct scope_list witnessed;	/* the scopes CODE and MATCHES_ANY follow (witnessed_scopes()) */
+	struct recorded_code *code;	/* per witnessed scope, the whole witness's code as it is in the tree */
 	unsigned char *matches_any;
 };
 struct judgment {
@@ -326,9 +329,13 @@ struct judgment {
 	struct string_list visiting;
 };
 void blob_pairs_clear(void);
+char *environment_path(const char *name);
+void witnessed_scopes(const struct contract *c, struct scope_list *out);
 void geometry_init(struct contract_geometry *g, const struct contract *c, struct tree *t);
 void geometry_clear(struct contract_geometry *g);
-char *geometry_text(const struct contract_geometry *g, int provider, const unsigned char *matches);
+/* the parts of a contract geometry_text() writes (v14 3.8) */
+enum geometry_part { GEOMETRY_CONSUMER, GEOMETRY_PROVIDER, GEOMETRY_FIXTURES };
+char *geometry_text(const struct contract_geometry *g, enum geometry_part part, const unsigned char *matches);
 char *scope_result_text(const struct scope *scope, const struct scope_result *at);
 void scope_result_at(const struct scope *s, struct tree *t, struct scope_result *out);
 int contract_overlaps(const struct contract *c, struct tree *t, const struct scope *q, const struct scope_result *qa,
@@ -378,6 +385,7 @@ void yaml_out_scalar(struct strbuf *sb, const char *s);
 void yaml_out_body(struct strbuf *sb, const char *s);
 void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n);
 void spec_lists(struct strbuf *sb, struct spec *s);
+void spec_fixtures(struct strbuf *sb, struct spec *s);
 
 /* request.c, notify.c: the commands; notify.c: the session's tip lines */
 int cmd_request(int argc, const char **argv);

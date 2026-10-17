@@ -32,6 +32,7 @@ void spec_clear(struct spec *s)
 	free(s->environment);
 	strvec_clear(&s->command);
 	string_list_clear(&s->success, 0);
+	string_list_clear(&s->fixtures, 0);
 	memset(s, 0, sizeof(*s));
 }
 
@@ -45,6 +46,7 @@ void spec_copy(struct spec *out, const struct spec *s)
 	if (s->command.nr)
 		strvec_pushv(&out->command, s->command.v);
 	list_copy(&out->success, &s->success);
+	list_copy(&out->fixtures, &s->fixtures);
 }
 
 void specs_clear(struct contract *c)
@@ -169,7 +171,7 @@ static int specs_same(const struct contract *a, const struct contract *b)
 
 		if (!text_same(s->body, t->body) || !text_same(s->engine, t->engine) ||
 		    !text_same(s->environment, t->environment) || s->command.nr != t->command.nr ||
-		    !list_same(&s->success, &t->success, 0))
+		    !list_same(&s->success, &t->success, 0) || !list_same(&s->fixtures, &t->fixtures, 0))
 			return 0;
 		for (j = 0; j < s->command.nr; j++)
 			if (strcmp(s->command.v[j], t->command.v[j]))

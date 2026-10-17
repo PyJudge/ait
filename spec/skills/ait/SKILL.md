@@ -27,9 +27,12 @@ body: 재고가 모자라면 예약을 거절하고 재고를 바꾸지 않는�
 engine: exec
 command: [sh, tests/stock.sh]
 success: [0]
+fixtures: [tests/stock.sh, tests/stock-cases.csv]
 ```
 
-`body`는 필수다. exec는 `command`가 필요하고, `success` 생략은 `[0]`이다. prompt는 `body`만 쓴다. exec는 선택적으로 `environment: NAME`을 쓰며 코드 HEAD의 `specs/environments/NAME.yaml`을 참조한다. `inputs` 키는 없다. ait가 검사를 실행하지 않으므로 에이전트가 직접 실행·확인한다.
+`body`는 필수다. exec는 `command`가 필요하고, `success` 생략은 `[0]`이다. prompt는 `body`와 `fixtures`만 쓴다. exec는 선택적으로 `environment: NAME`을 쓰며 코드 HEAD의 `specs/environments/NAME.yaml`을 참조한다. ait가 검사를 실행하지 않으므로 에이전트가 직접 실행·확인한다.
+
+`fixtures`에는 검사가 읽는 코드 쪽 파일(테스트, 데이터, 근거 자료)을 파일 경로로 적는다. 행 범위나 디렉터리는 쓸 수 없다. 이행하면 provider와 함께 그 파일들의 내용 지문이 기록되고, 환경 정의 파일도 저절로 들어간다. 이행 뒤 fixture나 환경 정의를 고치면 계약은 `current ?unverified`가 되고 status의 `fixtures` 행에 `?changed`가 붙는다. 바꾼 것이 맞으면 다시 확인해 이행하고, 아니면 이행 파일의 `commit`의 판으로 되돌린다. 검사를 통과시키려고 fixture를 약하게 고치지 않는다.
 
 조건 파일은 계약의 `specs`로 복사된다. 원래 파일을 고친 것만으로 계약이 바뀌지 않는다. 고친 파일을 amend에 다시 주어야 한다. 다른 worktree가 그 원본 파일을 가지고 있다고 가정하지 않는다.
 
@@ -117,4 +120,4 @@ ait listen --fetch 30
 
 계약 브랜치끼리 충돌하면(`contract branches conflict`) `contract pull`의 hint에 따라 계약 브랜치에서 Git으로 풀고, 코드 브랜치로 돌아온다. 일반 코드 merge와 계약 브랜치 merge는 별개다. ait가 코드 커밋을 자동으로 원격에 보내지 않는다.
 
-`status`의 `current ?unverified`·`?changed`·`?missing`·`?deleted`·`?nobase`와 `touch`를 확인한다. 형식 오류는 status가 경고하고 쓰기는 거절한다. `git config hides the trailers`는 사용자 Git 설정과 기록줄이 충돌한 것이므로 설정 원인을 확인하며, 스킬이나 설치기가 설정을 덮어쓰지 않는다.
+`status`의 `current ?unverified`·`?changed`·`?missing`·`?deleted`·`?nobase`(provider와 `fixtures` 행)와 `touch`를 확인한다. 형식 오류는 status가 경고하고 쓰기는 거절한다. `git config hides the trailers`는 사용자 Git 설정과 기록줄이 충돌한 것이므로 설정 원인을 확인하며, 스킬이나 설치기가 설정을 덮어쓰지 않는다.

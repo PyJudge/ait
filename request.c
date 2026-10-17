@@ -864,7 +864,7 @@ static void environment_types(struct ynode *n)
 /* spec 7.2 and v14 2.5.3: HEAD's environment NAME, checked, written with its schema's types */
 static char *environment_out(struct strbuf *sb, const char *name, struct tree *h)
 {
-	char *path = xstrfmt("specs/environments/%s.yaml", name), *text, *err = NULL;
+	char *path = environment_path(name), *text, *err = NULL;
 	const char *oid = head ? blob_at(h, path) : NULL;
 	struct ynode *map;
 	size_t len;
@@ -952,8 +952,8 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 		char *consumer, *provider;
 
 		geometry_init(&g, c, q->x);
-		consumer = geometry_text(&g, 0, NULL);
-		provider = geometry_text(&g, 1, NULL);
+		consumer = geometry_text(&g, GEOMETRY_CONSUMER, NULL);
+		provider = geometry_text(&g, GEOMETRY_PROVIDER, NULL);
 		geometry_clear(&g);
 		for (n = 0; n < c->nspecs; n++) {
 			struct spec *s = &c->specs[n];
@@ -987,6 +987,7 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 				}
 				strbuf_addstr(&req, env->util);
 			}
+			spec_fixtures(&req, s);
 			strbuf_addf(&res, "- task: \"%s\"\n  outcome:\n  basis: |\n  reason:\n", task);
 		}
 		free(consumer);
@@ -1124,7 +1125,7 @@ static char *concrete_hint(struct request_input *q, struct request_result *r, co
 	return NULL;
 }
 
-/* spec 6.7.4: every provider scope of C is found in T; the refusal names what is not */
+/* spec 6.7.4: every witnessed scope of C (its provider and fixtures) is found in T; the refusal names what is not */
 static char *locate_all(struct request_input *q, struct request_result *r, const struct contract_geometry *g,
 		       char **hint)
 {
@@ -1132,10 +1133,10 @@ static char *locate_all(struct request_input *q, struct request_result *r, const
 	size_t i;
 
 	*hint = NULL;
-	for (i = 0; i < c->provider.nr; i++) {
-		const struct scope *item = &c->provider.items[i];
+	for (i = 0; i < g->witnessed.nr; i++) {
+		const struct scope *item = &g->witnessed.items[i];
 
-		switch (g->provider[i].status) {
+		switch (g->witness[i].status) {
 		case FOUND:
 			break;
 		case ABSTRACT:
@@ -1182,10 +1183,10 @@ static void record(struct request_input *q, struct request_result *r)
 		geometry_init(&geometry, c, q->code);
 		if ((err = locate_all(q, r, &geometry, &hint)))
 			reject(128, hint, "%s", err);
-		for (n = 0; n < c->provider.nr; n++) {
-			struct recorded_code value = code_at(q->code, &geometry.provider[n].at);
+		for (n = 0; n < geometry.witnessed.nr; n++) {
+			struct recorded_code value = code_at(q->code, &geometry.witness[n].at);
 
-			code_add(&f->code, &c->provider.items[n], &value);
+			code_add(&f->code, &geometry.witnessed.items[n], &value);
 		}
 		geometry_clear(&geometry);
 		for (n = 0; n < c->nspecs && !q->force; n++) {
@@ -1578,15 +1579,17 @@ static int contract_new_spec(const char *path, const char *engine)
 	require_condition_path(path);
 	write_new_file(path, !strcmp(engine, "exec") ?
 		"# ait spec (exec): the checker runs 'command'; it passes if the exit code is in 'success'.\n"
-		"# Keys: body, engine, command, success, environment. Any other key is a format error.\n"
+		"# Keys: body, engine, command, success, environment, fixtures. Any other key is a format error.\n"
 		"body: |\n  <the condition the code must keep>\n"
 		"engine: exec\n"
 		"command: [<program>, <arg>]   # argv, run without a shell\n"
 		"success: [0]                  # exit codes that count as pass\n"
-		"# environment: <name>         # optional: specs/environments/<name>.yaml in the code\n" :
+		"# environment: <name>         # optional: specs/environments/<name>.yaml in the code\n"
+		"# fixtures: [<file>]          # optional: files of the code the check reads, recorded when fulfilled\n" :
 		"# ait spec (prompt): the checker reads the code and judges 'body'.\n"
-		"# Keys: body. Any other key is a format error.\n"
-		"body: |\n  <the condition the code must keep>\n");
+		"# Keys: body, fixtures. Any other key is a format error.\n"
+		"body: |\n  <the condition the code must keep>\n"
+		"# fixtures: [<file>]          # optional: files of the code the check reads, recorded when fulfilled\n");
 	return 0;
 }
 

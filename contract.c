@@ -512,17 +512,21 @@ char *keys_refusal(struct ynode *map, const char *const *keys, int required)
 	return NULL;
 }
 
-/* v14 2.5.2 without inputs: the spec of the map MAP into S; NULL, or why not */
+/* v14 2.5.2, inputs named fixtures (U60): the spec of the map MAP into S; NULL, or why not */
 static char *spec_read(struct ynode *map, struct spec *s)
 {
-	static const char *const keys[] = { "body", "engine", "command", "success", "environment", NULL };
+	static const char *const keys[] = { "body", "engine", "command", "success", "environment", "fixtures", NULL };
 	struct ynode *body = yget(map, "body"), *engine = yget(map, "engine"), *command = yget(map, "command"),
-		     *success = yget(map, "success"), *environment = yget(map, "environment");
+		     *success = yget(map, "success"), *environment = yget(map, "environment"),
+		     *fixtures = yget(map, "fixtures");
 	struct string_list cmd = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	char *why;
 	size_t i;
 
+	strvec_init(&s->command);
+	string_list_init_dup(&s->success);
+	string_list_init_dup(&s->fixtures);
 	if (map->kind != 'm')
 		return yaml_refusal(map, "a spec is not a map");
 	if ((why = keys_refusal(map, keys, 0)))
@@ -557,7 +561,23 @@ static char *spec_read(struct ynode *map, struct spec *s)
 	if (s->engine && !s->command.nr)
 		return yaml_refusal(command ? command : map, "an exec spec needs 'command'");
 	if (!s->engine && (command || success || environment))
-		return yaml_refusal(command ? command : success ? success : environment, "a prompt spec takes only 'body'");
+		return yaml_refusal(command ? command : success ? success : environment,
+				    "a prompt spec takes only 'body' and 'fixtures'");
+	if (fixtures && (why = yaml_list(fixtures, "fixtures", &s->fixtures, 0)))
+		return why;
+	/* plan 3.3: a fixture is one file, so that judging it needs no blob's content (plan 6) */
+	for (i = 0; fixtures && i < fixtures->nr; i++) {
+		struct scope file;
+		char *bad = scope_parse(&file, fixtures->kids[i]->value, 0, 0, SCOPE_ARGUMENT);
+		int one_file = !bad && file.kind == SCOPE_FILE;
+
+		if (!bad)
+			scope_clear(&file);
+		free(bad);
+		if (!one_file)
+			return yaml_refusal(fixtures->kids[i], "'fixtures' holds '%s', not a file path",
+					    fixtures->kids[i]->value);
+	}
 	return NULL;
 }
 
@@ -565,8 +585,6 @@ struct spec *spec_from(struct ynode *map, char **err)
 {
 	struct spec *s = xcalloc(1, sizeof(*s));
 
-	strvec_init(&s->command);
-	string_list_init_dup(&s->success);
 	if (!(*err = spec_read(map, s)))
 		return s;
 	spec_clear(s);
@@ -797,8 +815,6 @@ static char *contract_read(struct ynode *map, struct contract *c, int draft)
 	for (i = 0; i < n->nr; i++) {
 		struct spec *spec = &c->specs[c->nspecs++];
 
-		strvec_init(&spec->command);
-		string_list_init_dup(&spec->success);
 		if ((why = spec_read(n->kids[i], spec)))
 			return why;
 	}
@@ -872,6 +888,22 @@ void spec_lists(struct strbuf *sb, struct spec *s)
 	strbuf_addstr(sb, "]\n");
 }
 
+/* spec 2.3.2, 7.2: a spec's fixtures, an exec or a prompt one's, as a flow list */
+void spec_fixtures(struct strbuf *sb, struct spec *s)
+{
+	struct string_list_item *item;
+
+	if (!s->fixtures.nr)
+		return;
+	strbuf_addstr(sb, "  fixtures: [");
+	for_each_string_list_item(item, &s->fixtures) {
+		if (item != s->fixtures.items)
+			strbuf_addstr(sb, ", ");
+		yaml_out_scalar(sb, item->string);
+	}
+	strbuf_addstr(sb, "]\n");
+}
+
 /* spec 2.3.2: the contract written in its one form, every key on its own line */
 char *contract_text(struct contract *c)
 {
@@ -896,15 +928,16 @@ char *contract_text(struct contract *c)
 
 			strbuf_addstr(&sb, "- body: ");
 			yaml_out_body(&sb, s->body);
-			if (!s->engine)
-				continue;
-			strbuf_addstr(&sb, "  engine: exec\n");
-			spec_lists(&sb, s);
-			if (s->environment) {
-				strbuf_addstr(&sb, "  environment: ");
-				yaml_out_scalar(&sb, s->environment);
-				strbuf_addch(&sb, '\n');
+			if (s->engine) {
+				strbuf_addstr(&sb, "  engine: exec\n");
+				spec_lists(&sb, s);
+				if (s->environment) {
+					strbuf_addstr(&sb, "  environment: ");
+					yaml_out_scalar(&sb, s->environment);
+					strbuf_addch(&sb, '\n');
+				}
 			}
+			spec_fixtures(&sb, s);
 		}
 	}
 	if (c->kind == OFFER) {
@@ -1493,6 +1526,48 @@ char *scope_display(const struct scope *scope, struct tree *x)
 	return scope_result_text(scope, &at);
 }
 
+/* C39: the environment definition NAME is a file of the code */
+char *environment_path(const char *name)
+{
+	return xstrfmt("specs/environments/%s.yaml", name);
+}
+
+/* plan 3.2 (U60): a file OUT does not hold yet joins it */
+static void witness_file(struct scope_list *out, const char *path)
+{
+	struct scope file = { .kind = SCOPE_FILE, .path = (char *)path };
+	const struct scope *s;
+	int found = 0;
+
+	for_each_scope(s, out)
+		found |= scope_equal(s, &file, 0);
+	if (!found)
+		scope_append(out, &file);
+}
+
+/*
+ * plan 3 (U60): what a fulfilment records of C and the judgment compares (rule
+ * 4): the provider, then each spec's fixtures and environment definition file
+ * that is not among them yet
+ */
+void witnessed_scopes(const struct contract *c, struct scope_list *out)
+{
+	struct string_list_item *item;
+	size_t i;
+
+	scopes_copy(out, &c->provider);
+	for (i = 0; i < c->nspecs; i++) {
+		for_each_string_list_item(item, &c->specs[i].fixtures)
+			witness_file(out, item->string);
+		if (c->specs[i].environment) {
+			char *path = environment_path(c->specs[i].environment);
+
+			witness_file(out, path);
+			free(path);
+		}
+	}
+}
+
 void geometry_init(struct contract_geometry *g, const struct contract *c, struct tree *t)
 {
 	size_t i;
@@ -1500,17 +1575,19 @@ void geometry_init(struct contract_geometry *g, const struct contract *c, struct
 	memset(g, 0, sizeof(*g));
 	g->contract = c;
 	g->consumer = xcalloc(c->consumer.nr, sizeof(*g->consumer));
-	g->provider = xcalloc(c->provider.nr, sizeof(*g->provider));
+	witnessed_scopes(c, &g->witnessed);
+	g->witness = xcalloc(g->witnessed.nr, sizeof(*g->witness));
 	for (i = 0; i < c->consumer.nr; i++)
 		scope_result_at(&c->consumer.items[i], t, &g->consumer[i]);
-	for (i = 0; i < c->provider.nr; i++)
-		scope_result_at(&c->provider.items[i], t, &g->provider[i]);
+	for (i = 0; i < g->witnessed.nr; i++)
+		scope_result_at(&g->witnessed.items[i], t, &g->witness[i]);
 }
 
 void geometry_clear(struct contract_geometry *g)
 {
 	free(g->consumer);
-	free(g->provider);
+	free(g->witness);
+	scopes_clear(&g->witnessed);
 	memset(g, 0, sizeof(*g));
 }
 
@@ -1671,13 +1748,14 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 	}
 	string_list_remove(&j->visiting, c->id, 0);
 	/* Per-scope matches can come from different fulfilments; a whole witness cannot. */
-	r->matches_any = xcalloc(c->provider.nr, sizeof(*r->matches_any));
+	witnessed_scopes(c, &r->witnessed);
+	r->matches_any = xcalloc(r->witnessed.nr, sizeof(*r->matches_any));
 	for_each_string_list_item(f, &valid) {
-		struct recorded_code *code = xcalloc(c->provider.nr, sizeof(*code));
+		struct recorded_code *code = xcalloc(r->witnessed.nr, sizeof(*code));
 		int all = 1;
 
-		for (i = 0; i < c->provider.nr; i++) {
-			const struct scope *s = &c->provider.items[i];
+		for (i = 0; i < r->witnessed.nr; i++) {
+			const struct scope *s = &r->witnessed.items[i];
 			int same = scope_same(s, code_lookup(&((struct fulfilment *)f->util)->code, s), j->tree, &code[i]);
 
 			r->matches_any[i] |= same;
@@ -1706,6 +1784,7 @@ void judgment_clear(struct judgment *j)
 
 		free(r->code);
 		free(r->matches_any);
+		scopes_clear(&r->witnessed);
 		free(r);
 	}
 	string_list_clear(&j->done, 0);
@@ -1735,17 +1814,23 @@ const char *verdict_word(enum verdict v)
  * v14 3.8: the scopes of G's contract as they are in its tree; MATCHES, a
  * judgment's per-scope comparison, marks a found scope that differs ?changed
  */
-char *geometry_text(const struct contract_geometry *g, int provider, const unsigned char *matches)
+char *geometry_text(const struct contract_geometry *g, enum geometry_part part, const unsigned char *matches)
 {
 	const struct contract *c = g->contract;
-	const struct scope_list *scopes = provider ? &c->provider : &c->consumer;
-	const struct scope_result *positions = provider ? g->provider : g->consumer;
-	const struct scope **ordered = scope_order(scopes);
+	/* the provider heads the witnessed scopes and the fixtures follow it (witnessed_scopes()) */
+	size_t from = part == GEOMETRY_FIXTURES ? c->provider.nr : 0;
+	struct scope_list scopes = part == GEOMETRY_CONSUMER ? c->consumer : (struct scope_list){
+		.items = g->witnessed.items + from,
+		.nr = part == GEOMETRY_PROVIDER ? c->provider.nr : g->witnessed.nr - from };
+	const struct scope_result *positions = part == GEOMETRY_CONSUMER ? g->consumer : g->witness + from;
+	const struct scope **ordered = scope_order(&scopes);
 	struct strbuf out = STRBUF_INIT;
 	size_t i;
 
-	for (i = 0; i < scopes->nr; i++) {
-		size_t n = ordered[i] - scopes->items;
+	if (matches)
+		matches += from;
+	for (i = 0; i < scopes.nr; i++) {
+		size_t n = ordered[i] - scopes.items;
 		char *display = scope_result_text(ordered[i], &positions[n]);
 		int changed = matches && !matches[n] && positions[n].status == FOUND;
 
@@ -1764,8 +1849,8 @@ int judgment_touched(struct judgment *h, struct contract *c, struct tree *x)
 
 	if (r->verdict != V_CURRENT)
 		return 0;
-	for (i = 0; i < c->provider.nr; i++)
-		if (!scope_same(&c->provider.items[i], &r->code[i], x, NULL))
+	for (i = 0; i < r->witnessed.nr; i++)
+		if (!scope_same(&r->witnessed.items[i], &r->code[i], x, NULL))
 			return 1;
 	return 0;
 }

@@ -89,10 +89,14 @@ check "success codes are written inside the list (7.2)" "grep -qx '  success: \[
 printf 'body: |\n  y\nengine: exec\ncommand: [make]\nenvironment: node\n' > cond4.yaml
 run ait future demand src/order.c src/stock.c cond4.yaml -m d5; D5=$(newest D)
 run ait fulfill "$D5" -m x
-check_rc "an environment missing at HEAD is refused (7.2)" 128
-check "the message" "has err \"could not read 'specs/environments/node.yaml' at HEAD\""
+check_rc "an environment missing from the code is refused (6.7.4, C77)" 128
+check "as a witnessed scope not in the code" "has err \"^fatal: bad scope: 'specs/environments/node.yaml' of '$D5' is not in the code$\""
 mkdir -p specs/environments; printf 'cwd: src\nenv:\n  set:\n    A: "1"\n' > specs/environments/node.yaml
-git add specs; git commit -qm env
+git add specs
+run ait fulfill "$D5" -m x
+check_rc "an environment staged but missing at HEAD is refused (7.2)" 128
+check "the message" "has err \"could not read 'specs/environments/node.yaml' at HEAD\""
+git commit -qm env
 run ait fulfill "$D5" -m x
 check "the environment's set value is under environment: (7.2)" "grep -A5 '^  environment:\$' .git/ait/check-request.yaml | grep -qx '        A: \"1\"'"
 
