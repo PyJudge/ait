@@ -376,7 +376,7 @@ v14 7.2(session open·list·close, sub·unsub, listen의 잠금·신호·`--fetc
 - `sub id K`는 상대하는 ait 브랜치에 K가 있어야 한다(E_ID).
 - `listen --fetch SEC`은 SEC초마다 원격마다 `git fetch <remote>`.
 - listen 도중 상대할 ait 브랜치를 정할 수 없게 되면(4.3의 2) 그 차례를 건너뛰고 `warning:`으로 그 문구를 한 번 쓴다. 정할 수 있게 되면 이어서 돈다.
-- agent 이름의 예약어 `unknown`은 쓰지 않는다(기록줄 없는 커밋은 보낸 session이 없다).
+- agent 이름 `unknown`은 v14 7.2.1대로 예약어라 쓸 수 없다(`session open`은 `error: bad agent name 'unknown'`과 사용법, 129). v1.1은 기록줄 없는 커밋에 보낸 session을 두지 않으므로 기록줄에 `unknown`을 쓰지 않지만, 예약은 그대로 둔다(U59).
 
 ## 7. 확인 결과
 
