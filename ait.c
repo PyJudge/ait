@@ -679,27 +679,22 @@ static int gone(const char *wt)
 /* "agent NAME\nworktree PATH\n..." (v14 4.2), NAME whole and valid: the worktree, or NULL */
 static char *session_read(const char *s, char *name)
 {
-	struct strbuf sb = STRBUF_INIT;
-	char *wt, *path, *agent = NULL, *result = NULL;
+	struct string_list lines = STRING_LIST_INIT_DUP;
+	const char *who, *wt = NULL;
+	char *result = NULL;
+	size_t i;
 
 	if (!id_ok(s, "S"))
 		return NULL;
-	path = session_path(s, "");
-	if (strbuf_read_file(&sb, path, 0) < 0)
-		goto out;
-	wt = strstr(sb.buf, "\nworktree ");
-	if (!starts_with(sb.buf, "agent ") || !wt)
-		goto out;
-	agent = xstrndup(sb.buf + 6, strcspn(sb.buf + 6, "\n"));
-	if (!agent_ok(agent))
-		goto out;
-	if (name)
-		snprintf(name, 72, "%s", agent);
-	result = xstrdup(line1(wt + 10));
-out:
-	free(agent);
-	free(path);
-	strbuf_release(&sb);
+	session_lines(s, &lines);
+	for (i = 1; !wt && i < lines.nr; i++)
+		skip_prefix(lines.items[i].string, "worktree ", &wt);
+	if (lines.nr && skip_prefix(lines.items[0].string, "agent ", &who) && agent_ok(who) && wt) {
+		if (name)
+			snprintf(name, 72, "%s", who);
+		result = xstrdup(wt);
+	}
+	string_list_clear(&lines, 0);
 	return result;
 }
 
@@ -939,11 +934,24 @@ static const char *remote_ait_name(const struct string_list *remotes, const char
 	for_each_string_list_item(r, remotes) {
 		size_t len = strlen(r->string);
 
-		if (*r->string && !strncmp(rest, r->string, len) && starts_with(rest + len, "/ait/") &&
+		if (!strncmp(rest, r->string, len) && starts_with(rest + len, "/ait/") &&
 		    rest[len + 5] && (!best || len > strlen(best)))
 			best = r->string;
 	}
 	return best ? rest + strlen(best) + 1 : NULL;
+}
+
+/* git remote: the configured remotes, one name each */
+void remote_names(struct string_list *out)
+{
+	char *text = git("remote");
+
+	/* each name ends its line */
+	if (*text) {
+		text[strlen(text) - 1] = 0;
+		string_list_split(out, text, "\n", -1);
+	}
+	free(text);
 }
 
 void names_load(struct names *n)
@@ -956,9 +964,7 @@ void names_load(struct names *n)
 	string_list_init_dup(&n->remote);
 	string_list_init_dup(&n->remotes);
 	string_list_init_dup(&n->tips);
-	text = git("remote");
-	string_list_split(&n->remotes, text, "\n", -1);
-	free(text);
+	remote_names(&n->remotes);
 	text = git("for-each-ref", "--format=%(objectname) %(refname) %(upstream)", "refs/heads/ait/", "refs/remotes/");
 	string_list_split(&refs, text, "\n", -1);
 	free(text);

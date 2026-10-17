@@ -63,6 +63,7 @@ struct names {
 	struct string_list tips;		/* tip OID REF, from the same classified ref snapshot */
 	size_t nr;			/* distinct names in local and remote */
 };
+void remote_names(struct string_list *out);
 void names_load(struct names *n);
 void names_clear(struct names *n);
 const char *names_tip(struct names *n, const char *ref);

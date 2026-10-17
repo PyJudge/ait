@@ -511,28 +511,26 @@ static void reasons(struct judgment *judgments, struct contract *c, struct contr
 	struct string_list_item *item;
 	size_t i;
 	struct contract *k = contract_get(mine, c->id);
-	enum verdict v = k && is_mine(k) ? judgment_get(judgments, k)->verdict : V_FUTURE;
+	int own = k && is_mine(k);
+	enum verdict v = own ? judgment_get(judgments, k)->verdict : V_FUTURE;
 
-	if (k && is_mine(k) && promise(k, v))
+	if (own && promise(k, v))
 		add_reason(out, future_reason(k), k->id);
+	if (own && k->kind == DEMAND && v == V_CURRENT)
+		add_reason(out, REASON_DEMAND, k->id);
 	if (k) {
 		undertakings(&judgments->view, k, 'w', &related);
 		undertakings(&judgments->view, k, 'p', &related);
-	}
-	for_each_string_list_item(item, &mine->contracts) {
-		struct contract *m = item->util;
-		int counterpart;
+		for_each_string_list_item(item, &mine->contracts) {
+			struct contract *m = item->util;
+			int counterpart = string_list_has_string(&related, m->id) ||
+					  (m->kind == DROP && !strcmp(m->target, k->id));
 
-		if (!k || !is_mine(m))
-			continue;
-		counterpart = string_list_has_string(&related, m->id) ||
-			      (m->kind == DROP && !strcmp(m->target, k->id));
-		if (counterpart && promise(m, judgment_get(judgments, m)->verdict))
-			add_reason(out, future_reason(m), m->id);
+			if (counterpart && is_mine(m) && promise(m, judgment_get(judgments, m)->verdict))
+				add_reason(out, future_reason(m), m->id);
+		}
 	}
 	string_list_clear(&related, 0);
-	if (k && k->kind == DEMAND && is_mine(k) && v == V_CURRENT)
-		add_reason(out, REASON_DEMAND, k->id);
 	if (string_list_has_string(&subs->ids, c->id))
 		add_reason(out, REASON_SUB_ID, c->id);
 	/* E and its parent may have the same ID as MINE, but are different values. */
@@ -593,7 +591,7 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 	git_records(&files, NULL, NULL, "diff-tree", "-r", "-z", "--root", "--name-only", "--no-commit-id",
 		"--diff-merges=first-parent", e);
 	for_each_string_list_item(f, &files) {
-		const char *blob = blob_at(at->tree, f->string);
+		const char *blob = blob_at(at->tree, f->string), *ours = blob_at(mine->tree, f->string);
 		char *id = contract_path_id(f->string);
 		struct string_list_item *ful = string_list_lookup(&at->fulfils, f->string);
 		struct contract *c = id ? contract_get(at, id) : NULL, *old;
@@ -612,7 +610,7 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 		strbuf_addf(keys, "%s\n", key);
 		free(key);
 		/* in-head: every key is in the local branch's tip */
-		in_head &= blob_at(mine->tree, f->string) && !strcmp(blob_at(mine->tree, f->string), blob);
+		in_head &= ours && !strcmp(ours, blob);
 		if (ful)
 			continue;
 		old = before ? contract_get(before, c->id) : NULL;
@@ -800,15 +798,11 @@ static void listen_loop(int fetch)
 		if (fetch && time(NULL) - fetched >= fetch) {
 			struct string_list remotes = STRING_LIST_INIT_DUP;
 			struct string_list_item *r;
-			char *names = git("remote");
 			int rc;
 
 			/* spec 6.8: each remote on its own; one that fails does not stop the others */
-			string_list_split(&remotes, names, "\n", -1);
-			free(names);
+			remote_names(&remotes);
 			for_each_string_list_item(r, &remotes) {
-				if (!*r->string)
-					continue;
 				free(git_run(NULL, NULL, &rc, "fetch", "-q", "--", r->string));
 				if (rc) {
 					warning("fetch failed: %s", git_error);
