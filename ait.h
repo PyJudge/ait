@@ -187,7 +187,7 @@ struct spec {
 	struct strvec command;
 	struct string_list success;
 	char *environment;
-	struct string_list fixtures;	/* files of the code the check reads (U60) */
+	struct scope_list fixtures;	/* files and line ranges of the code the check reads (U60) */
 };
 /* spec 1.1: the kinds of contract; their words, ID letters and keys are in one table (contract.c) */
 enum kind { DEMAND, OFFER, DROP };

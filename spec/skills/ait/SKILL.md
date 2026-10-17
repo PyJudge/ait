@@ -32,7 +32,7 @@ fixtures: [tests/stock.sh, tests/stock-cases.csv]
 
 `body`는 필수다. exec는 `command`가 필요하고, `success` 생략은 `[0]`이다. prompt는 `body`와 `fixtures`만 쓴다. exec는 선택적으로 `environment: NAME`을 쓰며 코드 HEAD의 `specs/environments/NAME.yaml`을 참조한다. ait가 검사를 실행하지 않으므로 에이전트가 직접 실행·확인한다.
 
-`fixtures`에는 검사가 읽는 코드 쪽 파일(테스트, 데이터, 근거 자료)을 파일 경로로 적는다. 행 범위나 디렉터리는 쓸 수 없다. 이행하면 provider와 함께 그 파일들의 내용 지문이 기록되고, 환경 정의 파일도 저절로 들어간다. 이행 뒤 fixture나 환경 정의를 고치면 계약은 `current ?unverified`가 되고 status의 `fixtures` 행에 `?changed`가 붙는다. 바꾼 것이 맞으면 다시 확인해 이행하고, 아니면 이행 파일의 `commit`의 판으로 되돌린다. 검사를 통과시키려고 fixture를 약하게 고치지 않는다.
+`fixtures`에는 검사가 읽는 코드 쪽 파일(테스트, 데이터, 근거 자료)을 provider처럼 파일이나 행 범위(`tests/stock.sh:10-40`)로 적는다. 계약을 만들 때 그 파일이 있어야 하고, 디렉터리는 쓸 수 없다. 이행하면 provider와 함께 그 파일들의 내용 지문이 기록되고, 환경 정의 파일도 저절로 들어간다. 이행 뒤 fixture나 환경 정의를 고치면 계약은 `current ?unverified`가 되고 status의 `fixtures` 행에 `?changed`가 붙는다. 바꾼 것이 맞으면 다시 확인해 이행하고, 아니면 이행 파일의 `commit`의 판으로 되돌린다. 검사를 통과시키려고 fixture를 약하게 고치지 않는다.
 
 조건 파일은 계약의 `specs`로 복사된다. 원래 파일을 고친 것만으로 계약이 바뀌지 않는다. 고친 파일을 amend에 다시 주어야 한다. 다른 worktree가 그 원본 파일을 가지고 있다고 가정하지 않는다.
 

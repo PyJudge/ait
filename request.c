@@ -282,8 +282,8 @@ static const struct spec *condition_from_file(struct request_input *q, const cha
 	return s;
 }
 
-/* Repeated files count once; each candidate owns a copy of fixed input. */
-static void specs_from_files(struct request_input *q, struct contract *c, const char *files)
+/* Repeated files count once; each candidate owns a copy of fixed input, its fixtures pinned at T (3.2). */
+static void specs_from_files(struct request_input *q, struct contract *c, const char *files, struct tree *t)
 {
 	struct string_list paths = STRING_LIST_INIT_DUP, seen = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
@@ -295,7 +295,8 @@ static void specs_from_files(struct request_input *q, struct contract *c, const 
 			continue;
 		string_list_insert(&seen, item->string);
 		REALLOC_ARRAY(c->specs, c->nspecs + 1);
-		spec_copy(&c->specs[c->nspecs++], condition_from_file(q, item->string));
+		spec_copy(&c->specs[c->nspecs], condition_from_file(q, item->string));
+		scopes_pin(&c->specs[c->nspecs++].fixtures, t, NULL);
 	}
 	string_list_clear(&paths, 0);
 	string_list_clear(&seen, 0);
@@ -662,7 +663,7 @@ static void apply_clauses(struct request_input *q, struct request_result *r)
 		if (cl->provider_arg >= 0)
 			string_list_insert(&r->provider_words, c->id)->util = &cl->arg_words[cl->provider_arg];
 		if (cl->files)
-			specs_from_files(q, c, cl->files);
+			specs_from_files(q, c, cl->files, pin_at);
 		if (cl->target)
 			replace_text(&c->target, contract_arg(r, cl->target, "DO")->id);
 		if (!strcmp(verb, "amend")) {
@@ -1585,11 +1586,11 @@ static int contract_new_spec(const char *path, const char *engine)
 		"command: [<program>, <arg>]   # argv, run without a shell\n"
 		"success: [0]                  # exit codes that count as pass\n"
 		"# environment: <name>         # optional: specs/environments/<name>.yaml in the code\n"
-		"# fixtures: [<file>]          # optional: files of the code the check reads, recorded when fulfilled\n" :
+		"# fixtures: [<file>]          # optional: files or line ranges (<file>:<s>-<e>) of the code the check reads\n" :
 		"# ait spec (prompt): the checker reads the code and judges 'body'.\n"
 		"# Keys: body, fixtures. Any other key is a format error.\n"
 		"body: |\n  <the condition the code must keep>\n"
-		"# fixtures: [<file>]          # optional: files of the code the check reads, recorded when fulfilled\n");
+		"# fixtures: [<file>]          # optional: files or line ranges (<file>:<s>-<e>) of the code the check reads\n");
 	return 0;
 }
 
@@ -1787,6 +1788,7 @@ static void commit_judge(struct checkin *ck)
 	for_each_string_list_item(item, &st->drafts) {
 		struct contract *d = contract_copy(item->util), *old;
 		struct string_list_item *prior;
+		size_t i;
 
 		old = contract_get(r->view.at, d->id);
 		prior = string_list_lookup(&r->changed, d->id);
@@ -1796,6 +1798,8 @@ static void commit_judge(struct checkin *ck)
 		/* v14 3.3: drafts are fixed at HEAD, retaining unchanged tuples from T */
 		scopes_pin(&d->consumer, q->h, old ? &old->consumer : NULL);
 		scopes_pin(&d->provider, q->h, old ? &old->provider : NULL);
+		for (i = 0; i < d->nspecs; i++)
+			scopes_pin(&d->specs[i].fixtures, q->h, old && i < old->nspecs ? &old->specs[i].fixtures : NULL);
 		if (!old) {
 			replace_text(&d->creator, agent);
 			made(r, d->id);

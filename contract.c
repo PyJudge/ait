@@ -512,8 +512,8 @@ char *keys_refusal(struct ynode *map, const char *const *keys, int required)
 	return NULL;
 }
 
-/* v14 2.5.2, inputs named fixtures (U60): the spec of the map MAP into S; NULL, or why not */
-static char *spec_read(struct ynode *map, struct spec *s)
+/* v14 2.5.2, inputs named fixtures (U60): the spec of the map MAP into S, its scopes in FORM; NULL, or why not */
+static char *spec_read(struct ynode *map, struct spec *s, enum scope_form form)
 {
 	static const char *const keys[] = { "body", "engine", "command", "success", "environment", "fixtures", NULL };
 	struct ynode *body = yget(map, "body"), *engine = yget(map, "engine"), *command = yget(map, "command"),
@@ -526,7 +526,6 @@ static char *spec_read(struct ynode *map, struct spec *s)
 
 	strvec_init(&s->command);
 	string_list_init_dup(&s->success);
-	string_list_init_dup(&s->fixtures);
 	if (map->kind != 'm')
 		return yaml_refusal(map, "a spec is not a map");
 	if ((why = keys_refusal(map, keys, 0)))
@@ -563,20 +562,16 @@ static char *spec_read(struct ynode *map, struct spec *s)
 	if (!s->engine && (command || success || environment))
 		return yaml_refusal(command ? command : success ? success : environment,
 				    "a prompt spec takes only 'body' and 'fixtures'");
-	if (fixtures && (why = yaml_list(fixtures, "fixtures", &s->fixtures, 0)))
+	if (fixtures && (why = yaml_list(fixtures, "fixtures", NULL, 0)))
 		return why;
-	/* plan 3.3: a fixture is one file, so that judging it needs no blob's content (plan 6) */
+	/* 2.3.2: a fixture is a file or a line range, as a provider scope fixed in the code is */
 	for (i = 0; fixtures && i < fixtures->nr; i++) {
-		struct scope file;
-		char *bad = scope_parse(&file, fixtures->kids[i]->value, 0, 0, SCOPE_ARGUMENT);
-		int one_file = !bad && file.kind == SCOPE_FILE;
+		struct scope fixture;
 
-		if (!bad)
-			scope_clear(&file);
-		free(bad);
-		if (!one_file)
-			return yaml_refusal(fixtures->kids[i], "'fixtures' holds '%s', not a file path",
-					    fixtures->kids[i]->value);
+		if ((why = scope_parse(&fixture, fixtures->kids[i]->value, 0, 0, form)))
+			return yaml_refusal(fixtures->kids[i], "%s in 'fixtures'", why);
+		scope_append(&s->fixtures, &fixture);
+		scope_clear(&fixture);
 	}
 	return NULL;
 }
@@ -585,7 +580,7 @@ struct spec *spec_from(struct ynode *map, char **err)
 {
 	struct spec *s = xcalloc(1, sizeof(*s));
 
-	if (!(*err = spec_read(map, s)))
+	if (!(*err = spec_read(map, s, SCOPE_ARGUMENT)))
 		return s;
 	spec_clear(s);
 	free(s);
@@ -815,7 +810,7 @@ static char *contract_read(struct ynode *map, struct contract *c, int draft)
 	for (i = 0; i < n->nr; i++) {
 		struct spec *spec = &c->specs[c->nspecs++];
 
-		if ((why = spec_read(n->kids[i], spec)))
+		if ((why = spec_read(n->kids[i], spec, draft ? SCOPE_DRAFT : SCOPE_STORED)))
 			return why;
 	}
 	return NULL;
@@ -891,15 +886,18 @@ void spec_lists(struct strbuf *sb, struct spec *s)
 /* spec 2.3.2, 7.2: a spec's fixtures, an exec or a prompt one's, as a flow list */
 void spec_fixtures(struct strbuf *sb, struct spec *s)
 {
-	struct string_list_item *item;
+	const struct scope *f;
 
 	if (!s->fixtures.nr)
 		return;
 	strbuf_addstr(sb, "  fixtures: [");
-	for_each_string_list_item(item, &s->fixtures) {
-		if (item != s->fixtures.items)
+	for_each_scope(f, &s->fixtures) {
+		char *text = scope_text(f, 1);
+
+		if (f != s->fixtures.items)
 			strbuf_addstr(sb, ", ");
-		yaml_out_scalar(sb, item->string);
+		yaml_out_scalar(sb, text);
+		free(text);
 	}
 	strbuf_addstr(sb, "]\n");
 }
@@ -1532,17 +1530,16 @@ char *environment_path(const char *name)
 	return xstrfmt("specs/environments/%s.yaml", name);
 }
 
-/* plan 3.2 (U60): a file OUT does not hold yet joins it */
-static void witness_file(struct scope_list *out, const char *path)
+/* plan 3.2 (U60): a scope OUT does not hold yet joins it */
+static void witness(struct scope_list *out, const struct scope *scope)
 {
-	struct scope file = { .kind = SCOPE_FILE, .path = (char *)path };
 	const struct scope *s;
 	int found = 0;
 
 	for_each_scope(s, out)
-		found |= scope_equal(s, &file, 0);
+		found |= scope_equal(s, scope, 1);
 	if (!found)
-		scope_append(out, &file);
+		scope_append(out, scope);
 }
 
 /*
@@ -1552,18 +1549,18 @@ static void witness_file(struct scope_list *out, const char *path)
  */
 void witnessed_scopes(const struct contract *c, struct scope_list *out)
 {
-	struct string_list_item *item;
+	const struct scope *f;
 	size_t i;
 
 	scopes_copy(out, &c->provider);
 	for (i = 0; i < c->nspecs; i++) {
-		for_each_string_list_item(item, &c->specs[i].fixtures)
-			witness_file(out, item->string);
+		for_each_scope(f, &c->specs[i].fixtures)
+			witness(out, f);
 		if (c->specs[i].environment) {
-			char *path = environment_path(c->specs[i].environment);
+			struct scope file = { .kind = SCOPE_FILE, .path = environment_path(c->specs[i].environment) };
 
-			witness_file(out, path);
-			free(path);
+			witness(out, &file);
+			scope_clear(&file);
 		}
 	}
 }

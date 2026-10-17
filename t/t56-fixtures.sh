@@ -60,21 +60,47 @@ run ait future amend "$O" - fix.yaml -m 'fewer fixtures'
 check_rc "amend the fixtures" 0
 check "a new fixtures list is a new condition-id" "test \"\$(yaml $O | sed -n 's/^condition-id: //p')\" != $cid"
 
-# 6.7.4: a fixture is found in the code, as a provider scope is
+# 3.2: a fixture is pinned as a provider scope is: there when the contract is made
 printf 'body: |\n  stock never goes below zero\nfixtures: [tests/absent.csv]\n' > fix-absent.yaml
 run ait future offer src/stock.c fix-absent.yaml -m 'absent fixture'
-A=$(newest O)
-run ait fulfill "$A" --force -m 'trivial'
 check_rc "a fixture not in the code is refused" 128
-check "as a scope not in the code" "has err \"^fatal: bad scope: 'tests/absent.csv' of '$A' is not in the code$\""
+check "as a scope that is not a file" "has err \"^fatal: bad scope: 'tests/absent.csv' is not a file$\""
 
-# 2.3.2: a fixture is a file; no range, directory, root or new: path
-for bad in tests/stock.csv:1-2 tests/ / new:tests/x.csv; do
+# 6.7.4: a fixture gone from the code by the fulfilment is refused as a provider scope is
+printf 'body: |\n  stock never goes below zero\nfixtures: [tests/stock.csv]\n' > fix-gone.yaml
+run ait future offer src/stock.c fix-gone.yaml -m 'fixture to remove'
+G=$(newest O)
+git rm -q --cached tests/stock.csv
+run ait fulfill "$G" --force -m 'trivial'
+check_rc "a fixture gone from the code is refused" 128
+check "as a scope not in the code" "has err \"^fatal: bad scope: 'tests/stock.csv' of '$G' is not in the code$\""
+git add tests/stock.csv
+
+# 3.2, 5.3: a line range of a fixture takes its base blob, and only those lines witness
+printf 'a\nb\nc\n' > tests/cases.txt; git add tests/cases.txt; git commit -qm cases
+printf 'body: |\n  case b holds\nfixtures: [tests/cases.txt:2-2]\n' > fix-range.yaml
+run ait future offer src/stock.c fix-range.yaml -m 'range fixture'
+check_rc "a line-range fixture is taken" 0
+R=$(newest O)
+check "it is written with its base blob" "yaml $R | grep -qE '^  fixtures: \\[\"tests/cases.txt:2-2 [0-9a-f]{40}\"\\]$'"
+run ait fulfill "$R" --force -m 'checked'
+check_rc "fulfil the range fixture" 0
+printf 'a\nb\nc\nd\n' > tests/cases.txt; git add tests/cases.txt
+run ait status /
+check "a change outside the range keeps it current" "test \"\$(state_of $R)\" = current"
+printf 'a\nB\nc\n' > tests/cases.txt; git add tests/cases.txt
+run ait status /
+check "a change inside the range: current ?unverified" "test \"\$(state_of $R)\" = 'current ?unverified'"
+check "the fixtures line shows the range ?changed" "grep -A8 '^id $R$' '$T/out' | grep -q '^fixtures tests/cases.txt:2-2 ?changed$'"
+git reset -q; git checkout -q -- tests/cases.txt
+
+# 2.3.2: a fixture is a file or a line range; no directory, root or new: path
+for bad in tests/ / new:tests/x.csv; do
 	printf 'body: |\n  x\nfixtures: ["%s"]\n' "$bad" > fix-bad.yaml
 	run ait future offer src/stock.c fix-bad.yaml -m 'bad fixture'
 	check_rc "fixture '$bad' is refused" 128
 	check "fixture '$bad' is a format error of its file" "has err \"^fatal: bad format: 'fix-bad.yaml': \""
 done
 
-rm -f fix.yaml fix-prompt.yaml fix-absent.yaml fix-bad.yaml
+rm -f fix.yaml fix-prompt.yaml fix-absent.yaml fix-gone.yaml fix-range.yaml fix-bad.yaml
 done_testing
