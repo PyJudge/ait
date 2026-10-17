@@ -1148,25 +1148,22 @@ const char *branch_find(struct names *n, const char *chosen, struct strbuf *msg,
 		*only = 0;
 	strbuf_reset(msg);
 	strbuf_reset(hint);
-	if (!n->local.nr) {
-		strbuf_addstr(msg, n->remote.nr ? "no local ait branch" : "no ait branch");
-		if (!n->remote.nr || init_hint(n))
-			strbuf_addstr(hint, hint_command("ait init"));
-		return NULL;
-	}
 	if (chosen && string_list_has_string(&n->local, chosen))
 		return chosen;
 	/* 2.1.2: one name, counting the remote-tracking names too, so a DWIM-made branch is not taken silently */
-	if (!chosen && n->nr == 1) {
+	if (!chosen && n->nr == 1 && n->local.nr) {
 		if (only)
 			*only = 1;
 		return n->local.items[0].string;
 	}
 	for_each_string_list_item(item, &n->local)
 		strbuf_addf(hint, "%s\n", hint_command("ait checkout %s", quoted(item->string)));
-	if (init_hint(n))
+	/* init makes the default branch where there is none, or a local one from a remote-tracking one (6.1) */
+	if (!n->nr || init_hint(n))
 		strbuf_addf(hint, "%s\n", hint_command("ait init"));
-	if (chosen)
+	if (!n->local.nr)
+		strbuf_addstr(msg, n->remote.nr ? "no local ait branch" : "no ait branch");
+	else if (chosen)
 		strbuf_addf(msg, "contract branch '%s' does not exist", chosen);
 	else
 		strbuf_addstr(msg, "more than one ait branch; none is checked out");
@@ -1717,11 +1714,8 @@ static int cmd_init(int argc, const char **argv)
 
 		for_each_string_list_item(r, &n.remotes) {
 			int rc;
-			char *out;
+			char *out = git_run(NULL, NULL, &rc, "ls-remote", "--", r->string, "refs/heads/ait/*");
 
-			if (!*r->string)
-				continue;
-			out = git_run(NULL, NULL, &rc, "ls-remote", "--", r->string, "refs/heads/ait/*");
 			if (rc)
 				warning("cannot reach '%s'; skipped", r->string);
 			else if (*out)
