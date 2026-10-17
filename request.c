@@ -1248,23 +1248,21 @@ static void request_judge(struct checkin *ck)
 		struct contract *c = contract_after(r, item->string);
 
 		validate_change(q, r, c, c, FULFILL, 0);
+		if (*c->id == 'X')
+			string_list_insert(&targets, c->target);
 	}
 	/* 6.7.2: the covered set fixed at step 0, with the condition-ids its results are for, holds to the end */
-	for_each_string_list_item(item, &r->covered)
-		if (q->fixed.nr && (!string_list_lookup(&q->fixed, item->string) ||
-				    strcmp(string_list_lookup(&q->fixed, item->string)->util, condition_at_t(r->view.at, item->string))))
+	for_each_string_list_item(item, &r->covered) {
+		struct string_list_item *fixed = string_list_lookup(&q->fixed, item->string);
+
+		if (q->fixed.nr && (!fixed || strcmp(fixed->util, condition_at_t(r->view.at, item->string))))
 			checkin_moved(ck);
+	}
 	if (q->fixed.nr && q->fixed.nr != r->covered.nr)
 		checkin_moved(ck);
 	if (q->code)
 		record(q, r);
 	/* A drop's final state effect is present at step zero, before 4.10 too. */
-	for_each_string_list_item(item, &r->covered) {
-		struct contract *c = contract_after(r, item->string);
-
-		if (*c->id == 'X')
-			string_list_insert(&targets, c->target);
-	}
 	for_each_string_list_item(item, &targets) {
 		struct contract *old = contract_after(r, item->string), *c = contract_copy(old);
 
@@ -1426,6 +1424,7 @@ static void options(struct request_input *q, int argc, const char **argv, struct
 		static const char *const valued[] = { "-m", "-F", "-r", "--result", "-g", NULL };
 		int k;
 
+		/* a valued option last is refused here, so each branch below has its value */
 		for (k = 0; valued[k]; k++)
 			if (!strcmp(argv[i], valued[k]) && i + 1 == argc)
 				reject(129, NULL, "option '%s' requires a value", argv[i]);
