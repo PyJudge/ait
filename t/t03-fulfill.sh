@@ -94,8 +94,8 @@ check "as a witnessed scope not in the code" "has err \"^fatal: bad scope: 'spec
 mkdir -p specs/environments; printf 'cwd: src\nenv:\n  set:\n    A: "1"\n' > specs/environments/node.yaml
 git add specs
 run ait fulfill "$D5" -m x
-check_rc "an environment staged but missing at HEAD is refused (7.2)" 128
-check "the message" "has err \"could not read 'specs/environments/node.yaml' at HEAD\""
+check_rc "an environment staged, not yet at HEAD, is read from the tree to check (7.2, C61)" 1
+check "the request carries the staged environment" "grep -A5 '^  environment:\$' .git/ait/check-request.yaml | grep -qx '        A: \"1\"'"
 git commit -qm env
 run ait fulfill "$D5" -m x
 check "the environment's set value is under environment: (7.2)" "grep -A5 '^  environment:\$' .git/ait/check-request.yaml | grep -qx '        A: \"1\"'"

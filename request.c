@@ -862,16 +862,16 @@ static void environment_types(struct ynode *n)
 		environment_types(n->kids[i]);
 }
 
-/* spec 7.2 and v14 2.5.3: HEAD's environment NAME, checked, written with its schema's types */
-static char *environment_out(struct strbuf *sb, const char *name, struct tree *h)
+/* spec 7.2 and v14 2.5.3: the environment NAME in the tree X to check, checked, written with its schema's types */
+static char *environment_out(struct strbuf *sb, const char *name, struct tree *x)
 {
 	char *path = environment_path(name), *text, *err = NULL;
-	const char *oid = head ? blob_at(h, path) : NULL;
+	const char *oid = blob_at(x, path);
 	struct ynode *map;
 	size_t len;
 
 	if (!oid || !(text = object(oid, 1, NULL, &len)))
-		return xstrfmt("could not read '%s' at HEAD", path);
+		return xstrfmt("could not read '%s'", path);
 	if ((map = yaml_parse(text, len, &err)) && !(err = environment_refusal(map))) {
 		environment_types(map);
 		if (yget(map, "timeout_ms"))
@@ -981,7 +981,7 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 				if (!env) {
 					struct strbuf text = STRBUF_INIT;
 
-					if ((err = environment_out(&text, s->environment, q->h)))
+					if ((err = environment_out(&text, s->environment, q->x)))
 						return err;
 					env = string_list_insert(&environments, s->environment);
 					env->util = strbuf_detach(&text, NULL);
