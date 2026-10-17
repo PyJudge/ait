@@ -120,7 +120,7 @@ void strbuf_vaddf(struct strbuf *sb, const char *fmt, va_list ap)
 	len = vsnprintf(sb->buf + sb->len, sb->alloc - sb->len, fmt, cp);
 	va_end(cp);
 	if (len < 0)
-		die("unable to format message: %s", fmt);
+		die(_("unable to format message: %s"), fmt);
 	if (len > strbuf_avail(sb)) {
 		strbuf_grow(sb, len);
 		len = vsnprintf(sb->buf + sb->len, sb->alloc - sb->len, fmt, ap);

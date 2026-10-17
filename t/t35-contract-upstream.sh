@@ -41,6 +41,17 @@ check_rc "the nested upstream and local branch still count as one contract name"
 check "the shared longest-prefix classification retains automatic selection" \
 	"has out '^On contract branch ait/master (the only one)$'"
 
+# Git keeps the configuration of an upstream the fetch has pruned; the ref is gone.
+git config branch.ait/master.remote origin
+git config branch.ait/master.merge refs/heads/ait/master
+git push -q origin :refs/heads/ait/master
+git config fetch.prune true
+run ait contract pull
+git config --unset fetch.prune
+check_rc "a pruned upstream is no upstream" 128
+check "the pruned upstream gets the no-upstream error" \
+	"has err \"fatal: 'ait/master' has no upstream\" && test \"\$(git rev-parse ait/master)\" = $nested"
+
 # Local Git upstream configuration can name an arbitrary remote-tracking ref;
 # the namespace alone does not make its remote a configured contract remote.
 ghost=$(printf 'unconfigured remote descendant\n' | git commit-tree -p "$nested" "$(git rev-parse 'ait/master^{tree}')")

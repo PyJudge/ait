@@ -318,15 +318,12 @@ static void prepare_scopes(struct scope_input *input, const char *arg, int allow
 
 static void scopes_arg(struct scope_list *into, const struct scope_input *input, struct tree *t)
 {
-	char *err;
-
 	if (input->keep)
 		return;
 	if (input->error)
 		reject(128, NULL, "bad scope: %s", input->error);
 	scopes_copy(into, &input->value);
-	if (scopes_pin(into, t, NULL, &err))
-		reject(128, NULL, "bad scope: %s", err);
+	scopes_pin(into, t, NULL);
 }
 
 /* spec 7.1: ID is the next contract this request makes */
@@ -382,18 +379,6 @@ enum change_action {
 	RECORD,
 	WITHDRAW
 };
-
-static int list_is_prefix(const struct string_list *a, const struct string_list *b)
-{
-	size_t i;
-
-	if (a->nr > b->nr)
-		return 0;
-	for (i = 0; i < a->nr; i++)
-		if (strcmp(a->items[i].string, b->items[i].string))
-			return 0;
-	return 1;
-}
 
 /* spec 2.4: one action is judged against the contract immediately before it. */
 static enum refusal change_refusal(struct request_input *q, struct request_result *r,
@@ -734,7 +719,7 @@ static char *violation_hint(struct checkin *ck, struct string_list *violations)
 				struct contract *c = o->util;
 
 				/* Rule 7 restricts advice, not the user's explicit release commands. */
-				if (strcmp(c->creator, agent)) {
+				if (!is_mine(c)) {
 					string_list_clear(&opposite, 0);
 					goto done;
 				}
@@ -1159,17 +1144,6 @@ static char *locate_all(struct request_input *q, struct request_result *r, const
 	return NULL;
 }
 
-/* the names of IDs as messages give them: 'A', 'B' */
-static char *contract_names(struct string_list *ids)
-{
-	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
-
-	for_each_string_list_item(item, ids)
-		strbuf_addf(&sb, "%s'%s'", sb.len ? ", " : "", item->string);
-	return strbuf_detach(&sb, NULL);
-}
-
 /* the fulfilments of the covered set (spec 6.7.5-2) into C's files, from the code commit */
 static void record(struct request_input *q, struct request_result *r)
 {
@@ -1395,13 +1369,13 @@ static void run_request(struct request *req, int fulfilling)
 		git_run(NULL, NULL, &rc, "diff", "--cached", "--quiet");
 		if (rc) {
 			if (git_commit(q->msg.buf))
-				reject(1, NULL, "commit failed; %s not fulfilled", contract_names(&r->covered));
+				reject(1, NULL, "commit failed; %s not fulfilled", quoted_list(&r->covered));
 			not_recorded = xstrfmt("committed '%s' but %s not fulfilled",
-					       line1(git("rev-parse", "--short", "HEAD")), contract_names(&r->covered));
+					       line1(git("rev-parse", "--short", "HEAD")), quoted_list(&r->covered));
 		} else {
 			warning("nothing to commit; recording the code at HEAD ('%s') for %s",
-				line1(git("rev-parse", "--short", "HEAD")), contract_names(&r->covered));
-			not_recorded = xstrfmt("%s not fulfilled", contract_names(&r->covered));
+				line1(git("rev-parse", "--short", "HEAD")), quoted_list(&r->covered));
+			not_recorded = xstrfmt("%s not fulfilled", quoted_list(&r->covered));
 		}
 		snprintf(q->commit, sizeof(q->commit), "%s", line1(git("rev-parse", "HEAD")));
 		q->code = tree_load(q->commit);
@@ -1550,11 +1524,33 @@ static char *draft_path(struct contract *c)
 	return xstrfmt(".ait/%s", c->path);
 }
 
+/*
+ * git's has_symlink_leading_path (symlinks.c): a directory of REL in the
+ * work tree that is a symbolic link would take the write out of it
+ */
+static int beyond_symlink(const char *rel)
+{
+	struct strbuf sb = STRBUF_INIT;
+	const char *slash;
+	struct stat st;
+	int found = 0;
+
+	for (slash = strchr(rel, '/'); slash && !found; slash = strchr(slash + 1, '/')) {
+		strbuf_reset(&sb);
+		strbuf_addf(&sb, "%s/%.*s", top, (int)(slash - rel), rel);
+		found = !lstat(sb.buf, &st) && S_ISLNK(st.st_mode);
+	}
+	strbuf_release(&sb);
+	return found;
+}
+
 /* REL written new in the work tree, its directories made; a file there is not overwritten */
 static void write_new_file(const char *rel, const char *text)
 {
 	char *full = xstrfmt("%s/%s", top, rel);
 
+	if (beyond_symlink(rel))
+		reject(128, NULL, "'%s' is beyond a symbolic link", rel);
 	if (!create_file(full, text, 0))
 		reject(1, NULL, "%s", refusal_words(EXISTS, rel, NULL, NULL));
 	printf("path %s\n", rel);
@@ -1761,15 +1757,6 @@ struct staged {
 	struct string_list drafts;	/* path -> immutable parsed draft */
 };
 
-/* v14 3.3: drafts are fixed at HEAD, retaining unchanged tuples from T. */
-static void pin_drafted(struct scope_list *scopes, const struct scope_list *was, struct tree *h)
-{
-	char *err;
-
-	if (scopes_pin(scopes, h, was, &err))
-		reject(128, NULL, "bad scope: %s", err);
-}
-
 /* spec 6.5.4: the staged drafts judged against the tip, each a change from T */
 static void commit_judge(struct checkin *ck)
 {
@@ -1788,8 +1775,9 @@ static void commit_judge(struct checkin *ck)
 		if (prior)
 			reject(128, NULL, "bad format: '%s': %s", d->path,
 			       yaml_refusal_at(1, "'%s' is also at '%s'", d->id, ((struct contract *)prior->util)->path));
-		pin_drafted(&d->consumer, old ? &old->consumer : NULL, q->h);
-		pin_drafted(&d->provider, old ? &old->provider : NULL, q->h);
+		/* v14 3.3: drafts are fixed at HEAD, retaining unchanged tuples from T */
+		scopes_pin(&d->consumer, q->h, old ? &old->consumer : NULL);
+		scopes_pin(&d->provider, q->h, old ? &old->provider : NULL);
 		if (!old) {
 			replace_text(&d->creator, agent);
 			made(r, d->id);
@@ -1910,7 +1898,7 @@ static int contract_push(int argc, const char **argv)
 }
 
 struct pull {
-	const char *upstream;		/* U, a remote-tracking ref */
+	char u[48];			/* U's commit, read once after the fetch */
 	char *name;			/* U as git's merge message names it (fmt-merge-msg.c) */
 };
 
@@ -1928,12 +1916,10 @@ static void pull_judge(struct checkin *ck)
 {
 	struct string_list lines = STRING_LIST_INIT_DUP;
 	struct strbuf paths = STRBUF_INIT;
-	char u[48], *expression = xstrfmt("%s^{commit}", ((struct pull *)ck->data)->upstream);
+	const char *u = ((struct pull *)ck->data)->u;
 	size_t i;
 	int rc;
 
-	object_oid(expression, u);
-	free(expression);
 	if (is_ancestor(u, ck->tip)) {
 		puts("Already up to date");
 		exit(0);
@@ -1961,8 +1947,9 @@ static int contract_pull(int argc, const char **argv)
 {
 	struct strvec args = STRVEC_INIT;
 	struct checkin ck = { 0 };
+	struct names n;
 	struct pull p;
-	const char *remote;
+	const char *remote, *up;
 
 	remote = remote_arg(argc, argv);
 	ck.branch = start_name(START_SESSION | START_WRITES);
@@ -1972,9 +1959,12 @@ static int contract_pull(int argc, const char **argv)
 	strvec_pushl(&args, "fetch", "-q", "--", remote_of(ck.branch, "upstream", remote), NULL);
 	if (git_pass(&args))
 		return 1;
-	if (!(p.upstream = upstream_of(ck.branch)))
+	names_load(&n);
+	if (!(up = names_upstream(&n, ck.branch)))
 		reject(128, NULL, "'%s' has no upstream", ck.branch);
-	p.name = line1(git("rev-parse", "--abbrev-ref", p.upstream));
+	snprintf(p.u, sizeof(p.u), "%.40s", names_tip(&n, up));
+	p.name = line1(git("rev-parse", "--abbrev-ref", up));
+	names_clear(&n);
 	string_list_init_dup(&ck.put);
 	/* ait's own words hold no cut line; the trailers read back with them as committed */
 	ck.msg = xstrfmt("[CONTRACT] merge '%s'", p.name);
@@ -1985,7 +1975,6 @@ static int contract_pull(int argc, const char **argv)
 	checkin_report(checkin_run(&ck, pull_judge));
 	checkin_clear(&ck);
 	free((char *)ck.branch);
-	free((char *)p.upstream);
 	free(p.name);
 	strvec_clear(&args);
 	return 0;

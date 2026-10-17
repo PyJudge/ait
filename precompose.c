@@ -89,7 +89,10 @@ char *reencode_string_iconv(const char *in, size_t insz, iconv_t conv,
 	return out;
 }
 
-/* git v2.53.0 compat/precompose_utf8.c:68 */
+/*
+ * git v2.53.0 compat/precompose_utf8.c:68, changed by ait: the setting is
+ * read by config_true() (ait.c), as ait has no repository config API
+ */
 const char *precompose_string_if_needed(const char *in)
 {
 	size_t inlen;

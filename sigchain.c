@@ -46,6 +46,8 @@ int sigchain_pop(int sig)
 	return 0;
 }
 
+/* git v2.53.0 sigchain.c:45 sigchain_push_common() is ait's, in ait.c */
+
 /* git v2.53.0 sigchain.c:54 */
 void sigchain_pop_common(void)
 {

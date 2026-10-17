@@ -68,6 +68,19 @@ check "the close hint removed the abandoned session" "! test -f .git/ait/session
 run env AIT_SESSION=$GONE sh -c "$open_hint"
 check_rc "the open hint works after the selected session was closed" 0
 
+# A session file's agent is read whole and checked, never cut to a buffer (v14 7.2.1).
+printf 'body: |\n  x\n' >cond-agent.yaml
+BAD=$(ait session open --agent bob)
+tip=$(git rev-parse ait/master)
+for name in "$(printf 'a%.0s' $(seq 1 100))" "bad name"
+do
+	sed "1s/.*/agent $name/" .git/ait/sessions/$BAD >"$T/session" && cp "$T/session" .git/ait/sessions/$BAD
+	run env AIT_SESSION=$BAD ait future demand src/order.c src/stock.c cond-agent.yaml -m agent
+	check_rc "a session whose agent is '$name' is not usable" 128
+	check "the unusable agent writes no contract" \
+		"has err \"no usable ait session: unknown session '$BAD'\" && test \"\$(git rev-parse ait/master)\" = $tip"
+done
+
 run env AIT_SESSION=- ait checkout ait/master
 check_rc "contract checkout still allows no session" 0
 run env AIT_SESSION=- ait switch --detach HEAD

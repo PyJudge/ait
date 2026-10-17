@@ -487,13 +487,6 @@ int group_ok(const char *group)
 			   !strstr(group, "/fulfill/") && !ends_with(group, "/fulfill"));
 }
 
-static char *group_of(const char *path)
-{
-	const char *slash = strrchr(path, '/');
-
-	return slash ? xstrndup(path, slash - path) : xstrdup("");
-}
-
 static int one_of(const char *w, const char *const *set)
 {
 	for (; *set; set++)
@@ -815,22 +808,22 @@ static char *contract_read(struct ynode *map, struct contract *c, int draft)
 struct contract *contract_parse(const char *text, size_t len, const char *path, int draft, char **err)
 {
 	struct ynode *map = yaml_parse(text, len, err), *kind = yget(map, "kind");
-	char *id = contract_path_id(path), *group = group_of(path);
+	struct placement at;
+	int placed = place(path, &at) == CONTRACT_FILE && at.ok;
 	struct contract *c = NULL;
 
-	if (map && !id)
+	if (map && !placed)
 		*err = yaml_refusal_at(1, "not a contract path");
-	else if (map && (!ystr(kind) || kind_of(kind->value) < 0 || kind_letter(kind_of(kind->value)) != *id))
+	else if (map && (!ystr(kind) || kind_of(kind->value) < 0 || kind_letter(kind_of(kind->value)) != *at.id))
 		*err = yaml_refusal(kind ? kind : map, "'kind' is missing or does not match the ID");
 	else if (map)
-		c = contract_new(kind_of(kind->value), group, id);
+		c = contract_new(kind_of(kind->value), at.group, at.id);
 	if (c && (*err = contract_read(map, c, draft))) {
 		contract_free(c);
 		c = NULL;
 	}
 	ynode_free(map);
-	free(id);
-	free(group);
+	free(at.group);
 	return c;
 }
 
@@ -1188,7 +1181,7 @@ int live(struct contract *c)
 }
 
 /* spec 5.2: the fulfilment at PATH in B, when C made it with its condition-id */
-static struct fulfilment *valid_fulfilment(struct branch *b, struct contract *c, const char *path)
+struct fulfilment *valid_fulfilment(struct branch *b, struct contract *c, const char *path)
 {
 	struct string_list_item *item = string_list_lookup(&b->fulfils, path);
 	struct fulfilment *f = item ? item->util : NULL;
@@ -1357,60 +1350,49 @@ static int line_count(const char *text, size_t n)
 	return line_at(text, n) + (n && text[n - 1] != '\n');
 }
 
-/* spec 3.2 (v14 3.3): a scope argument fixed at T, a line range taking T's blob; -1 with ERR */
-int scope_pin(struct scope *s, struct tree *t, char **err)
+/* spec 3.2 (v14 3.3): a scope argument fixed at T, a line range taking T's blob, or E_SCOPE */
+void scope_pin(struct scope *s, struct tree *t)
 {
 	struct entry *e;
 
-	*err = NULL;
 	if (s->kind == SCOPE_ROOT)
-		return 0;
+		return;
 	if (s->kind == SCOPE_NEW) {
 		if (tree_get(t, s->path))
-			*err = xstrfmt("'%s' exists", s->path);
-		return *err ? -1 : 0;
+			reject(128, NULL, "bad scope: '%s' exists", s->path);
+		return;
 	}
 	if (s->kind == SCOPE_DIR) {
 		char *dir = xstrndup(s->path, strlen(s->path) - 1);
 
 		e = tree_get(t, dir);
-		free(dir);
 		if (!e || strcmp(e->type, "tree"))
-			*err = xstrfmt("'%s' is not a directory", s->path);
-		return *err ? -1 : 0;
+			reject(128, NULL, "bad scope: '%s' is not a directory", s->path);
+		free(dir);
+		return;
 	}
 	/* File scopes include gitlinks; line ranges require a text blob. */
 	e = tree_get(t, s->path);
-	if (!e || !strcmp(e->type, "tree")) {
-		*err = xstrfmt("'%s' is not a file", s->path);
-		return -1;
-	}
+	if (!e || !strcmp(e->type, "tree"))
+		reject(128, NULL, "bad scope: '%s' is not a file", s->path);
 	if (s->kind == SCOPE_RANGE) {
 		size_t n;
 		const char *oid = blob_at(t, s->path);
 		char *text = oid ? object(oid, 1, NULL, &n) : NULL;
-		int valid = text && strlen(text) == n && s->last <= line_count(text, n);
 
+		if (!text || strlen(text) != n || s->last > line_count(text, n))
+			reject(128, NULL, "bad scope: '%s' is not a range of '%s'", scope_text(s, 0), s->path);
 		free(text);
-		if (!valid) {
-			char *range = scope_text(s, 0);
-
-			*err = xstrfmt("'%s' is not a range of '%s'", range, s->path);
-			free(range);
-			return -1;
-		}
 		snprintf(s->base, sizeof(s->base), "%s", oid);
 	}
-	return 0;
 }
 
 /* Draft input tuples keep their old pin; only new tuples read the code tree. */
-int scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_list *was, char **err)
+void scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_list *was)
 {
 	struct scope *s;
 	const struct scope *old;
 
-	*err = NULL;
 	for_each_scope(s, scopes) {
 		int retained = 0;
 
@@ -1421,10 +1403,9 @@ int scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_lis
 					retained = 1;
 					break;
 				}
-		if (!retained && scope_pin(s, t, err))
-			return -1;
+		if (!retained)
+			scope_pin(s, t);
 	}
-	return 0;
 }
 
 /*
@@ -1729,6 +1710,12 @@ void judgment_clear(struct judgment *j)
 	}
 	string_list_clear(&j->done, 0);
 	string_list_clear(&j->visiting, 0);
+}
+
+/* spec 1.5: C was made by the agent of the session in use */
+int is_mine(const struct contract *c)
+{
+	return *sid && !strcmp(c->creator, agent);
 }
 
 /* spec 1.5: a promise is a live contract judged future or current ?unverified */

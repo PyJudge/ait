@@ -31,6 +31,7 @@ char *object(const char *name, int contents, char *oid, size_t *size);
 int object_oid(const char *name, char *oid);
 int branch_tip(const char *name, char *oid);
 char *quoted(const char *s);
+char *quoted_list(const struct string_list *names);
 char *hint_command_for(const char *session_id, const char *fmt, ...) __attribute__((format (printf, 2, 3)));
 #define hint_command(...) hint_command_for(NULL, __VA_ARGS__)
 void suggest(const char *fmt, ...) __attribute__((format (printf, 1, 2)));
@@ -64,6 +65,7 @@ struct names {
 };
 void names_load(struct names *n);
 void names_clear(struct names *n);
+const char *names_tip(struct names *n, const char *ref);
 const char *names_upstream(struct names *n, const char *branch);
 const char *branch_find(struct names *n, const char *chosen, struct strbuf *msg, struct strbuf *hint, int *only);
 int branch_only(void);
@@ -71,7 +73,6 @@ enum { START_SESSION = 1, START_WRITES = 2, START_FULFILS = 4, START_WARNS = 8 }
 struct branch *start(int how);
 char *git_path(const char *name);
 int is_ancestor(const char *a, const char *b);
-char *upstream_of(const char *branch);
 char *checkout_read(void);
 
 /* spec 4.8: E_STATE reasons; the words are chosen once in refusal_words(). */
@@ -105,7 +106,7 @@ struct checkin {
 	char tip[48];			/* T; "" when the branch has no commit */
 	struct string_list put;		/* path -> its new text */
 	const char *msg;		/* the message; its first line is the summary */
-	const char *record;		/* assembled and validated once, reused across CAS retries */
+	const char *record;		/* the commit message, its trailers validated once (4.5) */
 	int no_trailers;		/* ait init's commit: no trailers, no summary line (6.1) */
 	char rid[16];			/* this request's ID */
 	/* contract pull (6.5.6): a merge's tree and second parent, or the commit to fast-forward to */
@@ -269,6 +270,7 @@ void specs_clear(struct contract *c);
 struct contract *contract_copy(const struct contract *c);
 void contract_free(struct contract *c);
 void contract_fulfilled_copy(struct contract *out, const struct contract *from);
+int list_is_prefix(const struct string_list *a, const struct string_list *b);
 int scopes_same(const struct scope_list *a, const struct scope_list *b);
 int contract_same(const struct contract *a, const struct contract *b, unsigned parts);
 void fulfilment_free(struct fulfilment *f);
@@ -338,17 +340,19 @@ int judgment_touched(struct judgment *h, struct contract *c, struct tree *x);
 
 struct contract *contract_lookup(const struct contract_view *v, const char *id);
 int live(struct contract *c);
+struct fulfilment *valid_fulfilment(struct branch *b, struct contract *c, const char *path);
 int has_valid_fulfilment(struct branch *b, struct contract *c);
 void undertakings(const struct contract_view *v, struct contract *c, int how, struct string_list *out);
 void dependencies(const struct contract_view *v, struct contract *c, struct string_list *out);
 const char *verdict_word(enum verdict v);
+int is_mine(const struct contract *c);
 int promise(struct contract *c, enum verdict v);
 char *scope_display(const struct scope *scope, struct tree *x);
 char *violation_words(struct violation *v);
 void violations_clear(struct string_list *violations);
 void invariants(struct branch *b, struct branch *was, const struct string_list *fulfilling, struct string_list *out);
-int scope_pin(struct scope *s, struct tree *t, char **err);
-int scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_list *was, char **err);
+void scope_pin(struct scope *s, struct tree *t);
+void scopes_pin(struct scope_list *scopes, struct tree *t, const struct scope_list *was);
 struct recorded_code code_at(struct tree *t, const struct scope_location *where);
 
 /* contract.c: the YAML subset (v14 2.5.1) as nodes, and its writing (v14 8.2) */

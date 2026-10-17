@@ -70,7 +70,11 @@ static void cleanup_children(int sig, int in_signal)
 	}
 }
 
-/* Chain synchronously after reaping, keeping other cleanup signals blocked. */
+/*
+ * git v2.53.0 run-command.c:84, changed by ait: the other cleanup signals
+ * stay blocked (ait.c's sigchain_push_common) until the children are reaped;
+ * only SIG is unblocked, to chain to the next handler.
+ */
 static void cleanup_children_on_signal(int sig)
 {
 	sigset_t current;
@@ -83,7 +87,11 @@ static void cleanup_children_on_signal(int sig)
 	raise(sig);
 }
 
-/* Keep the following tempfile exit cleanup protected through process exit. */
+/*
+ * git v2.53.0 run-command.c:91, changed by ait: every signal is blocked first,
+ * so none can remove the tempfiles (the contract stage lock) before the
+ * children are reaped.
+ */
 static void cleanup_children_on_exit(void)
 {
 	sigset_t blocked;
@@ -93,7 +101,11 @@ static void cleanup_children_on_exit(void)
 	cleanup_children(SIGTERM, 0);
 }
 
-/* Install after a caller's tempfile registration, before any child can start. */
+/*
+ * ait's, from git v2.53.0 run-command.c:104-107: install the handlers after
+ * the caller's tempfile registration, before any child starts, so that the
+ * children are cleaned before the tempfiles.
+ */
 void prepare_child_cleanup(void)
 {
 	if (installed_child_cleanup_handler)

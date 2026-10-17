@@ -16,7 +16,7 @@ static char *pathspec_of(const struct scope *arg)
 
 /* spec 6.3-5: C's block, judged in X's judgment J; G is where its scopes are in X */
 static void block(struct branch *b, struct judgment *j, struct contract *c, const struct contract_geometry *g,
-		  int touch, const char *me)
+		  int touch)
 {
 	const struct judgment_result *result = judgment_get(j, c);
 	enum verdict v = result->verdict;
@@ -63,12 +63,12 @@ static void block(struct branch *b, struct judgment *j, struct contract *c, cons
 
 		if (ful)
 			printf("fulfilled %.13s %s %s %s %s\n", rid, ful->by, ful->outcome,
-			       strcmp(ful->condition_id, c->condition_id) ? "old" : "valid", ful->commit);
+			       valid_fulfilment(b, c, item->string) ? "valid" : "old", ful->commit);
 	}
 	if (touch)
 		puts("touch");
 	putchar('\n');
-	if (me && !strcmp(c->creator, me) && promise(c, v) && c->kind != DROP)
+	if (is_mine(c) && promise(c, v) && c->kind != DROP)
 		suggest("%s", hint_command("ait fulfill %s -m <why>", c->id));
 	if (demand && live(c) && !held)
 		suggest("%s", hint_command("ait future offer %s <files> as o undertake %s o -m <why>",
@@ -101,7 +101,7 @@ int cmd_status(int argc, const char **argv)
 	struct string_list_item *item;
 	struct branch *b;
 	struct tree *x, *h;
-	const char *name, *me;
+	const char *name;
 	int i, rc;
 
 	for (i = 1; i < argc; i++) {
@@ -126,10 +126,10 @@ int cmd_status(int argc, const char **argv)
 		strvec_push(&args, "--");
 	for (i = 1; i < argc; i++) {
 		struct scope *q = &scopes.items[i - 1];
-		char *err, *pathspec = pathspec_of(q);
+		char *pathspec = pathspec_of(q);
 
-		if (q->kind == SCOPE_RANGE && scope_pin(q, x, &err))
-			reject(128, NULL, "bad scope: %s", err);
+		if (q->kind == SCOPE_RANGE)
+			scope_pin(q, x);
 		scope_result_at(q, x, &positions[i - 1]);
 		if (!unsorted_string_list_has_string(&pins, pathspec))
 			string_list_append(&pins, pathspec);
@@ -140,8 +140,6 @@ int cmd_status(int argc, const char **argv)
 	if ((rc = git_pass(&args)))
 		goto out;
 	putchar('\n');
-	/* start() took the session */
-	me = *sid ? agent : NULL;
 	invariants(b, b, NULL, &bad);
 	for_each_string_list_item(item, &bad)
 		warning("%s", violation_words(item->util));
@@ -159,16 +157,15 @@ int cmd_status(int argc, const char **argv)
 			touch = pick && h && judgment_touched(&original, c, x);
 		} else {
 			enum verdict v = judgment_get(&current, c)->verdict;
-			int mine = me && !strcmp(c->creator, me);
 
 			touch = h && judgment_touched(&original, c, x);
-			pick = (mine && promise(c, v)) || (mine && c->kind == DEMAND && v == V_CURRENT) ||
+			pick = (is_mine(c) && (promise(c, v) || (c->kind == DEMAND && v == V_CURRENT))) ||
 			       v == V_UNVERIFIED || touch || violates(&bad, c->id);
 		}
 		if (!pick)
 			continue;
 		geometry_init(&g, c, x);
-		block(b, &current, c, &g, touch, me);
+		block(b, &current, c, &g, touch);
 		geometry_clear(&g);
 	}
 out:
@@ -363,8 +360,8 @@ static void subscribe(struct branch *b, int argc, const char **argv, FILE *out)
 				reject(128, NULL, "bad scope: %s", err);
 			if (s.kind == SCOPE_RANGE && !index)
 				index = index_tree();
-			if (s.kind == SCOPE_RANGE && scope_pin(&s, index, &err))
-				reject(128, NULL, "bad scope: %s", err);
+			if (s.kind == SCOPE_RANGE)
+				scope_pin(&s, index);
 			if (!h)
 				h = tree_load(head ? head : EMPTY_TREE);
 			text = scope_text(&s, 1);
@@ -509,9 +506,9 @@ static void reasons(struct judgment *judgments, struct contract *c, struct contr
 	struct string_list_item *item;
 	size_t i;
 	struct contract *k = contract_get(mine, c->id);
-	enum verdict v = k && !strcmp(k->creator, agent) ? judgment_get(judgments, k)->verdict : V_FUTURE;
+	enum verdict v = k && is_mine(k) ? judgment_get(judgments, k)->verdict : V_FUTURE;
 
-	if (k && !strcmp(k->creator, agent) && promise(k, v))
+	if (k && is_mine(k) && promise(k, v))
 		add_reason(out, future_reason(k), k->id);
 	if (k) {
 		undertakings(&judgments->view, k, 'w', &related);
@@ -521,7 +518,7 @@ static void reasons(struct judgment *judgments, struct contract *c, struct contr
 		struct contract *m = item->util;
 		int counterpart;
 
-		if (!k || strcmp(m->creator, agent))
+		if (!k || !is_mine(m))
 			continue;
 		counterpart = string_list_has_string(&related, m->id) ||
 			      (m->kind == DROP && !strcmp(m->target, k->id));
@@ -529,7 +526,7 @@ static void reasons(struct judgment *judgments, struct contract *c, struct contr
 			add_reason(out, future_reason(m), m->id);
 	}
 	string_list_clear(&related, 0);
-	if (k && k->kind == DEMAND && !strcmp(k->creator, agent) && v == V_CURRENT)
+	if (k && k->kind == DEMAND && is_mine(k) && v == V_CURRENT)
 		add_reason(out, REASON_DEMAND, k->id);
 	if (string_list_has_string(&subs->ids, c->id))
 		add_reason(out, REASON_SUB_ID, c->id);
@@ -647,16 +644,11 @@ out:
 /* Watch only the ref name/OID pair present in the captured N. */
 static const char *watch_ref(struct names *n, struct string_list *watched, const char *ref)
 {
-	struct string_list_item *item;
+	const char *oid = names_tip(n, ref);
 
-	for_each_string_list_item(item, &n->tips)
-		if (!strcmp(item->string + 45, ref)) {
-			struct string_list_item *w = string_list_insert(watched, ref);
-
-			w->util = xstrndup(item->string + 4, 40);
-			return w->util;
-		}
-	return NULL;
+	if (!oid)
+		return NULL;
+	return string_list_insert(watched, ref)->util = xstrndup(oid, 40);
 }
 
 /*

@@ -170,9 +170,11 @@ static char *git_failed(void)
 }
 
 /*
- * A cleanup chain must terminate, not return to an ignored disposition with
- * its locks removed. Preserve SIG_IGN, and prevent another signal from
- * reentering cleanup while a publishing child is being reaped.
+ * ait's, in place of git v2.53.0 sigchain.c:45 for tempfile.c and
+ * run-command.c: a cleanup chain must terminate, not return to an ignored
+ * disposition with its locks removed (t10). Preserve SIG_IGN, and prevent
+ * another signal from reentering cleanup while a publishing child is being
+ * reaped (t11).
  */
 void sigchain_push_common(sigchain_fun f)
 {
@@ -379,6 +381,17 @@ char *quoted(const char *s)
 	struct strbuf sb = STRBUF_INIT;
 
 	sq_quote_buf_pretty(&sb, s);
+	return strbuf_detach(&sb, NULL);
+}
+
+/* NAMES as messages list them: 'A', 'B' */
+char *quoted_list(const struct string_list *names)
+{
+	struct strbuf sb = STRBUF_INIT;
+	const struct string_list_item *item;
+
+	for_each_string_list_item(item, names)
+		strbuf_addf(&sb, "%s'%s'", sb.len ? ", " : "", item->string);
 	return strbuf_detach(&sb, NULL);
 }
 
@@ -663,11 +676,11 @@ static int gone(const char *wt)
 	return access(wt, F_OK) || !string_list_has_string(worktrees(), wt);
 }
 
-/* "agent NAME\nworktree PATH\n..." (v14 4.2): the worktree, or NULL */
+/* "agent NAME\nworktree PATH\n..." (v14 4.2), NAME whole and valid: the worktree, or NULL */
 static char *session_read(const char *s, char *name)
 {
 	struct strbuf sb = STRBUF_INIT;
-	char *wt, *path, *result = NULL;
+	char *wt, *path, *agent = NULL, *result = NULL;
 
 	if (!id_ok(s, "S"))
 		return NULL;
@@ -677,10 +690,14 @@ static char *session_read(const char *s, char *name)
 	wt = strstr(sb.buf, "\nworktree ");
 	if (!starts_with(sb.buf, "agent ") || !wt)
 		goto out;
+	agent = xstrndup(sb.buf + 6, strcspn(sb.buf + 6, "\n"));
+	if (!agent_ok(agent))
+		goto out;
 	if (name)
-		snprintf(name, 72, "%.*s", (int)strcspn(sb.buf + 6, "\n"), sb.buf + 6);
+		snprintf(name, 72, "%s", agent);
 	result = xstrdup(line1(wt + 10));
 out:
+	free(agent);
 	free(path);
 	strbuf_release(&sb);
 	return result;
@@ -983,12 +1000,24 @@ void names_load(struct names *n)
 	string_list_clear(&refs, 0);
 }
 
-/* Names and their upstream atoms come from the same for-each-ref/config read. */
+/* spec 9.1: the OID of REF in N's snapshot (its first 40 characters), or NULL */
+const char *names_tip(struct names *n, const char *ref)
+{
+	struct string_list_item *item;
+
+	for_each_string_list_item(item, &n->tips)
+		if (!strcmp(item->string + 45, ref))
+			return item->string + 4;
+	return NULL;
+}
+
+/* spec 6.5.6-2, 9.2: BRANCH's upstream, when it is a remote ait ref N holds */
 const char *names_upstream(struct names *n, const char *branch)
 {
 	struct string_list_item *item = string_list_lookup(&n->local, branch);
 
-	return item && item->util && remote_ait_name(&n->remotes, item->util) ? item->util : NULL;
+	return item && item->util && remote_ait_name(&n->remotes, item->util) &&
+	       names_tip(n, item->util) ? item->util : NULL;
 }
 
 void names_clear(struct names *n)
@@ -1037,23 +1066,6 @@ int is_ancestor(const char *a, const char *b)
 
 	free(git_run(NULL, NULL, &rc, "merge-base", "--is-ancestor", a, b));
 	return !rc;
-}
-
-/* spec 6.5.6-2, 9.2: the upstream of BRANCH when it is a remote ait ref, or NULL */
-char *upstream_of(const char *branch)
-{
-	struct string_list remotes = STRING_LIST_INIT_DUP;
-	int rc;
-	char *up = line1(git_run(NULL, NULL, &rc, "rev-parse", "-q", "--verify", "--symbolic-full-name",
-		xstrfmt("%s@{upstream}", branch)));
-	char *result;
-
-	if (rc)
-		return NULL;
-	string_list_split(&remotes, git("remote"), "\n", -1);
-	result = remote_ait_name(&remotes, up) ? up : NULL;
-	string_list_clear(&remotes, 0);
-	return result;
 }
 
 /* the directories that hold PATH, made as needed (git's safe_create_leading_directories) */
@@ -1229,11 +1241,9 @@ static char *trailer_message(const char *msg, const char *rid, const char *who, 
 
 	strbuf_addstr(&sb, msg);
 	strbuf_complete_line(&sb);
-	if (rid) {
-		strbuf_addch(&sb, '\n');
-		for (i = 0; i < ARRAY_SIZE(trailer_keys); i++)
-			strbuf_addf(&sb, "%s: %s\n", trailer_keys[i], values[i]);
-	}
+	strbuf_addch(&sb, '\n');
+	for (i = 0; i < ARRAY_SIZE(trailer_keys); i++)
+		strbuf_addf(&sb, "%s: %s\n", trailer_keys[i], values[i]);
 	return strbuf_detach(&sb, NULL);
 }
 
@@ -1330,7 +1340,7 @@ static char *read_message(const char *message)
  * given. The body git decodes is returned.
  */
 static char *trailer_probe(const char *record, const char *rid, const char *who, const char *session_id,
-			   struct strbuf *unread)
+			   struct string_list *unread)
 {
 	const char *values[] = { rid, who, session_id };
 	char *view = read_message(record), *value;
@@ -1339,7 +1349,7 @@ static char *trailer_probe(const char *record, const char *rid, const char *who,
 	value = view + strlen(view) + 1;
 	for (i = 0; i < ARRAY_SIZE(trailer_keys); i++) {
 		if (strncmp(value, values[i], strlen(values[i])) || strcmp(value + strlen(values[i]), "\n"))
-			strbuf_addf(unread, "%s'%s'", unread->len ? ", " : "", trailer_keys[i]);
+			string_list_append(unread, trailer_keys[i]);
 		value += strlen(value) + 1;
 	}
 	return view;
@@ -1354,7 +1364,7 @@ static char *trailer_probe(const char *record, const char *rid, const char *who,
 char *request_message(const char *msg, int fulfilling)
 {
 	char *text = xstrfmt("%s%s", fulfilling ? "[FULFILL] " : "[CONTRACT] ", msg);
-	struct strbuf unread = STRBUF_INIT;
+	struct string_list unread = STRING_LIST_INIT_DUP;
 	char nonce[16], *probe, *view;
 	size_t len, end;
 
@@ -1362,7 +1372,7 @@ char *request_message(const char *msg, int fulfilling)
 	probe = trailer_message(text, nonce, nonce, nonce);
 	view = trailer_probe(probe, nonce, nonce, nonce, &unread);
 	len = strlen(view);
-	if (unread.len) {
+	if (unread.nr) {
 		/* git resolves core.commentChar and core.commentString for its cut line */
 		char *prefix = git_run("x\n", NULL, NULL, "stripspace", "--comment-lines");
 
@@ -1375,7 +1385,7 @@ char *request_message(const char *msg, int fulfilling)
 			reject(129, "remove that line from the message", "the message hides the trailers: '%s'",
 			       xstrndup(view + end, strcspn(view + end, "\n")));
 	}
-	strbuf_release(&unread);
+	string_list_clear(&unread, 0);
 	free(probe);
 	free(view);
 	return text;
@@ -1390,14 +1400,12 @@ char *request_message(const char *msg, int fulfilling)
  */
 char *checked_record(const char *msg, const char *rid)
 {
-	struct string_list names = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
-	struct strbuf unread = STRBUF_INIT, settings = STRBUF_INIT;
-	char *record = trailer_message(msg, rid, agent, sid);
+	struct string_list unread = STRING_LIST_INIT_DUP, names = STRING_LIST_INIT_DUP;
+	char *record = trailer_message(msg, rid, agent, sid), *settings;
 	int rc;
 
 	free(trailer_probe(record, rid, agent, sid, &unread));
-	if (!unread.len)
+	if (!unread.nr)
 		return record;
 	git_records(&names, NULL, &rc, "config", "--null", "--name-only", "--get-regexp",
 		    "^(core\\.comment(char|string)|trailer\\.separators|trailer\\..*\\.key)$");
@@ -1405,10 +1413,9 @@ char *checked_record(const char *msg, const char *rid)
 		reject(128, NULL, "%s", git_failed());
 	string_list_sort(&names);
 	string_list_remove_duplicates(&names, 0);
-	for_each_string_list_item(item, &names)
-		strbuf_addf(&settings, "%s'%s'", settings.len ? ", " : "", item->string);
-	reject(128, NULL, "git config hides the trailers: %s%s%s%s", unread.buf,
-	       settings.len ? " (" : "", settings.buf, settings.len ? ")" : "");
+	settings = quoted_list(&names);
+	reject(128, NULL, "git config hides the trailers: %s%s%s%s", quoted_list(&unread),
+	       *settings ? " (" : "", settings, *settings ? ")" : "");
 }
 
 /*
@@ -1510,6 +1517,20 @@ void checkin_tip(struct checkin *c)
 		*c->tip = 0;
 }
 
+/* what a checkin judged on one T; a new T starts without it */
+static void checkin_reset(struct checkin *c)
+{
+	branch_free(c->at);
+	free(c->tree);
+	free((char *)c->second_parent);
+	free((char *)c->ff);
+	string_list_clear(&c->put, 1);
+	c->at = NULL;
+	c->tree = NULL;
+	c->second_parent = c->ff = NULL;
+	c->fulfilling = NULL;
+}
+
 /*
  * spec 4.4-1, 2: everything judged on the tip T the checkin holds; the new
  * tree, the invariants checked. Step 0 of fulfill asks the same (6.7.5-0).
@@ -1518,14 +1539,7 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
 {
 	struct branch *now;
 
-	string_list_clear(&c->put, 1);
-	branch_free(c->at);
-	free(c->tree);
-	free((char *)c->second_parent);
-	free((char *)c->ff);
-	c->tree = NULL;
-	c->second_parent = c->ff = NULL;
-	c->fulfilling = NULL;
+	checkin_reset(c);
 	c->at = now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
 	/* a tip that a git commit or merge broke after start() (4.3-3) */
 	refuse_malformed(now, 0);
@@ -1542,13 +1556,8 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
 /* The checkin owns T and its assembled output until the caller has reported it. */
 void checkin_clear(struct checkin *c)
 {
-	branch_free(c->at);
-	c->at = NULL;
-	free(c->tree);
-	free((char *)c->second_parent);
-	free((char *)c->ff);
+	checkin_reset(c);
 	free((char *)c->record);
-	string_list_clear(&c->put, 1);
 }
 
 /*
@@ -1560,10 +1569,6 @@ char *checkin_run(struct checkin *c, judge_fn decide)
 {
 	/* Register after a caller's stage lock so children are reaped before it is released. */
 	guard_git_children();
-	if (!*c->rid)
-		newid(c->rid, 'R');
-	if (!c->record)
-		c->record = trailer_message(c->msg, c->no_trailers ? NULL : c->rid, agent, sid);
 	checkin_tip(c);
 	for (;;) {
 		char old[48], *tree = checkin_judge(c, decide);
@@ -1719,6 +1724,7 @@ static int cmd_init(int argc, const char **argv)
 				       "'%s' has ait branches that are not fetched", r->string);
 		}
 		c.branch = xstrfmt("ait/%s", line1(git("var", "GIT_DEFAULT_BRANCH")));
+		c.record = xstrfmt("%s\n", c.msg);
 		string_list_init_dup(&c.put);
 		free(checkin_run(&c, NULL));
 		printf("branch %s\n", c.branch);

@@ -347,7 +347,7 @@ A, B    := 범위 목록 (v14 3.2a)
 - 6.5.5 `ait contract push [<remote>]`: 4.3의 0–3을 지난 뒤 `git push <remote> refs/heads/ait/<name>:refs/heads/ait/<name>`. remote는 인자, 없으면 `git for-each-ref --format='%(push:remotename)' refs/heads/ait/<name>`이 주는 것(git의 `branch.<b>.pushRemote` → `remote.pushDefault` → `branch.<b>.remote` 순, 비면 `origin`). git의 출력과 종료 코드를 전한다.
 - 6.5.6 `ait contract pull [<remote>]`: 4.3을 지난 뒤
   1. remote는 인자, 없으면 `%(upstream:remotename)`, 비면 `origin`. `git fetch <remote>`(원격의 설정된 refspec을 쓴다).
-  2. upstream U = `git rev-parse -q --verify --symbolic-full-name ait/<name>@{upstream}`이 `refs/remotes/*/ait/*`를 줄 때. 없으면 `fatal: 'ait/<name>' has no upstream`(E_BRANCH).
+  2. upstream U = fetch 뒤 이름의 집합(2.1.2)을 읽은 `git for-each-ref`의 `%(upstream)`이 그 집합에 있는 원격 추적 ait ref일 때(`git rev-parse ait/<name>@{upstream}`과 같은 답이다. listen의 9.2도 이 판정을 쓴다, U56). 없으면 `fatal: 'ait/<name>' has no upstream`(E_BRANCH).
   3. 출력과 메시지의 `<U>`는 git이 merge 메시지에 쓰는 대로 줄인 이름이다(`git rev-parse --abbrev-ref`, 예: `origin/ait/master`).
   3a. `git merge-base --is-ancestor U ait/<name>`이면 `Already up to date`. `git merge-base --is-ancestor ait/<name> U`이면 U로 4.4의 3을 한다(fast-forward. 출력 `Fast-forward <old>..<new>`).
   4. 갈라졌으면 `git merge-tree --write-tree --name-only ait/<name> U`. 충돌이 있으면 아무것도 바꾸지 않고 `error: contract branches conflict in '<paths>'`(E_CONFLICT)와 `hint: merge '<U>' into 'ait/<name>' and resolve the conflicts there (enter it with 'ait switch ait/<name>')`. 충돌이 없으면 결과 tree에 4.10을 대어 본다. (a)를 어기거나 (b)·(c)를 늘리면 `error: merging '<U>' breaks contract rules: '<ID>' <rule>`(E_CONFLICT, 같은 hint). 지나면 두 부모(`-p ait/<name> -p U`)의 커밋을 만들어 4.4의 3–5로 체크인한다(메시지 `[CONTRACT] merge '<U>'`, 기록줄. CAS에 지면 새 tip에서 merge부터 다시 한다. merge는 모든 파일을 읽으므로 4.4의 4에서 멈추지 않는다).

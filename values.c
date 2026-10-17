@@ -114,24 +114,31 @@ static int text_same(const char *a, const char *b)
 	return a == b || (a && b && !strcmp(a, b));
 }
 
+/* A's items begin B, in order */
+int list_is_prefix(const struct string_list *a, const struct string_list *b)
+{
+	size_t i;
+
+	if (a->nr > b->nr)
+		return 0;
+	for (i = 0; i < a->nr; i++)
+		if (strcmp(a->items[i].string, b->items[i].string))
+			return 0;
+	return 1;
+}
+
 static int list_same(const struct string_list *a, const struct string_list *b, int unordered)
 {
 	size_t i;
 
-	if (unordered) {
-		for (i = 0; i < a->nr; i++)
-			if (!unsorted_string_list_has_string((struct string_list *)b, a->items[i].string))
-				return 0;
-		for (i = 0; i < b->nr; i++)
-			if (!unsorted_string_list_has_string((struct string_list *)a, b->items[i].string))
-				return 0;
-	} else {
-		if (a->nr != b->nr)
+	if (!unordered)
+		return a->nr == b->nr && list_is_prefix(a, b);
+	for (i = 0; i < a->nr; i++)
+		if (!unsorted_string_list_has_string((struct string_list *)b, a->items[i].string))
 			return 0;
-		for (i = 0; i < a->nr; i++)
-			if (strcmp(a->items[i].string, b->items[i].string))
-				return 0;
-	}
+	for (i = 0; i < b->nr; i++)
+		if (!unsorted_string_list_has_string((struct string_list *)a, b->items[i].string))
+			return 0;
 	return 1;
 }
 
