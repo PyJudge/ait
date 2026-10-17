@@ -561,17 +561,11 @@ static int read_clauses(struct request_input *q, int argc, const char **argv)
 			cl->partial = 1;
 			i++;
 		}
-		while (cl->nargs < v->words) {
+		/* the verb's words, then (v14 7.3.1) up to three more of amend K, which may be "-"; none is the empty amend */
+		while (cl->nargs < v->words ||
+		       (!strcmp(w, "amend") && i < argc && cl->nargs < 4 && !clause_word(argv[i]))) {
 			int at = i;
-			const char *value = word(argc, argv, &i, 0);
-
-			cl->arg_words[cl->nargs] = q->word_index[at];
-			cl->args[cl->nargs++] = value;
-		}
-		/* v14 7.3.1: amend K takes up to three more words; none is the empty amend */
-		while (!strcmp(w, "amend") && i < argc && cl->nargs < 4 && !clause_word(argv[i])) {
-			int at = i;
-			const char *value = word(argc, argv, &i, 1);
+			const char *value = word(argc, argv, &i, cl->nargs >= v->words);
 
 			cl->arg_words[cl->nargs] = q->word_index[at];
 			cl->args[cl->nargs++] = value;
@@ -1440,12 +1434,12 @@ static void options(struct request_input *q, int argc, const char **argv, struct
 			reject(129, NULL, "-F is given twice");
 		if ((!strcmp(argv[i], "-m") && f) || (!strcmp(argv[i], "-F") && m))
 			reject(129, NULL, "options '-m' and '-F' cannot be used together");
-		if (!strcmp(argv[i], "-m") && i + 1 < argc) {
+		if (!strcmp(argv[i], "-m")) {
 			m = 1;
 			if (q->msg.len)
 				strbuf_addstr(&q->msg, "\n\n");
 			strbuf_addstr(&q->msg, argv[++i]);
-		} else if (!strcmp(argv[i], "-F") && i + 1 < argc) {
+		} else if (!strcmp(argv[i], "-F")) {
 			f = 1;
 			if ((strcmp(argv[i + 1], "-") ? strbuf_read_file(&q->msg, argv[i + 1], 0) :
 			     strbuf_read(&q->msg, 0, 0)) < 0)
@@ -1453,7 +1447,7 @@ static void options(struct request_input *q, int argc, const char **argv, struct
 			if (memchr(q->msg.buf, 0, q->msg.len))
 				reject(1, NULL, "a NUL byte in commit log message is not allowed");
 			i++;
-		} else if ((!strcmp(argv[i], "-r") || !strcmp(argv[i], "--result")) && i + 1 < argc) {
+		} else if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--result")) {
 			if (q->result)
 				reject(129, NULL, "-r is given twice");
 			q->result = argv[++i];
@@ -1462,17 +1456,16 @@ static void options(struct request_input *q, int argc, const char **argv, struct
 				reject(129, NULL, "--force is given twice");
 			q->force = 1;
 			q->force_word = (int)q->words.nr - argc + i;
-		} else if (!strcmp(argv[i], "-g") && i + 1 < argc) {
+		} else if (!strcmp(argv[i], "-g")) {
 			if (q->group)
 				reject(129, NULL, "-g is given twice");
 			q->group = argv[++i];
 			if (!group_ok(q->group) || !*q->group)
 				reject(129, NULL, "bad group '%s'", q->group);
-		} else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--partial")) {
-			positional_word(q, rest, argv[i], (int)q->words.nr - argc + i);
-		} else if (*argv[i] == '-' && strcmp(argv[i], "-")) {
+		} else if (*argv[i] == '-' && strcmp(argv[i], "-") && strcmp(argv[i], "-p") && strcmp(argv[i], "--partial")) {
 			reject(129, NULL, "unknown option '%s'", argv[i]);
 		} else {
+			/* undertake's -p is a word of its clause (6.4) */
 			positional_word(q, rest, argv[i], (int)q->words.nr - argc + i);
 		}
 	}
