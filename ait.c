@@ -1470,9 +1470,8 @@ static char *checkin_tree(struct checkin *c)
 	struct string_list_item *item;
 
 	for_each_string_list_item(item, &c->put)
-		strbuf_addf(&info, "100644 %s\t%s%c", line1(git_run(item->util, NULL, NULL, "hash-object", "-w",
-			"--stdin")),
-			    item->string, 0);
+		strbuf_addf(&info, "100644 %s\t%s%c",
+			    line1(git_run(item->util, NULL, NULL, "hash-object", "-w", "--stdin")), item->string, 0);
 	return tree_with(*c->tip ? c->tip : EMPTY_TREE, &info);
 }
 
@@ -1543,7 +1542,7 @@ char *checkin_judge(struct checkin *c, judge_fn decide)
 	struct branch *now;
 
 	checkin_reset(c);
-	c->at = now = branch_load(c->branch, *c->tip ? c->tip : NULL, *c->tip ? c->tip : EMPTY_TREE);
+	c->at = now = branch_load(c->branch, *c->tip ? c->tip : NULL, NULL);
 	/* a tip that a git commit or merge broke after start() (4.3-3) */
 	refuse_malformed(now, 0);
 	if (decide)
@@ -1601,11 +1600,10 @@ char *checkin_run(struct checkin *c, judge_fn decide)
 			NULL, &rc, "update-ref", "-m", c->msg, "--stdin");
 		if (!rc && c->ff)
 			return xstrfmt("Fast-forward %.7s..%.7s\n", c->tip, commit);
-		else if (!rc && !c->no_trailers)
-			return xstrfmt("[%s %s%s] %s\n", c->branch, line1(git("rev-parse", "--short", commit)),
-				       *c->tip ? "" : " (root-commit)", line1(xstrdup(c->msg)));
 		if (!rc)
-			return NULL;
+			return c->no_trailers ? NULL : xstrfmt("[%s %s%s] %s\n", c->branch,
+				line1(git("rev-parse", "--short", commit)), *c->tip ? "" : " (root-commit)",
+				line1(xstrdup(c->msg)));
 		/* 4.4-4: T' is read once, compared, and judged on: T := T' */
 		snprintf(old, sizeof(old), "%s", c->tip);
 		checkin_tip(c);
@@ -1618,10 +1616,11 @@ char *checkin_run(struct checkin *c, judge_fn decide)
 		for_each_string_list_item(item, &c->put)
 			strvec_push(&args, item->string);
 		free(git_argv(NULL, NULL, &rc, args.v));
-		if (rc && c->retry_hint)
+		if (!rc)
+			continue;
+		if (c->retry_hint)
 			retry_command = c->retry_hint(c, old);
-		if (rc)
-			checkin_moved(c);
+		checkin_moved(c);
 	}
 }
 

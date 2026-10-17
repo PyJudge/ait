@@ -573,7 +573,7 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 {
 	struct branch *mine = judgments->view.at;
 	const char *name = mine->name;
-	struct branch *at = branch_load(name, e, e), *before = NULL;
+	struct branch *at = branch_load(name, e, NULL), *before = NULL;
 	struct string_list files = STRING_LIST_INIT_DUP;
 	struct string_list_item *f;
 	struct event_reasons why;
@@ -587,7 +587,7 @@ static void event(struct judgment *judgments, const char *e, struct string_list 
 	parent = line1(git_run(NULL, NULL, &rc, "rev-parse", "-q", "--verify", first_parent));
 	free(first_parent);
 	if (!rc)
-		before = branch_load(name, parent, parent);
+		before = branch_load(name, parent, NULL);
 	git_records(&files, NULL, NULL, "diff-tree", "-r", "-z", "--root", "--name-only", "--no-commit-id",
 		"--diff-merges=first-parent", e);
 	for_each_string_list_item(f, &files) {
@@ -694,7 +694,7 @@ static void deliver(int *warned)
 		BUG("captured local branch has no tip");
 	if ((up = names_upstream(&n, name)))
 		watch_ref(&n, &watched, up);
-	mine = branch_load(name, tip, tip);
+	mine = branch_load(name, tip, NULL);
 	h = tree_load(*v.head_oid ? v.head_oid : EMPTY_TREE);
 	subscriptions_read(&subs, &v.lines, h);
 	judgment_init(&judgments, &(struct contract_view){ mine, NULL }, h);
