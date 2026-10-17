@@ -387,6 +387,7 @@ v14 8장의 확인 요청 파일·결과 파일 형식과 쓰기 규칙(v14 8.2�
 - 7.2 **확인 요청 파일**: 과제마다 그 spec 원소의 `fixtures`를 2.3.2의 모양으로 싣는다(환경 정의는 아래처럼 내용을 싣는다). `input` 대신 `condition-ids`(덮는 기존 계약마다 `ID: "RID"`, ID 순)를 쓰고, `tree`는 index의 tree다. 과제의 키는 v14 8.2에서 `role`을 `kind`로 바꾼 것이다. exec면 `environment`에 코드 브랜치의 환경 정의를 확인할 tree X(`tree`)에서 읽어 그 행들을 들여써 싣는다(C61). X에 없는 환경 정의는 그 전에 위치 판정이 거절한다(6.7.4, C77).
 - 7.3 **결과 파일**: `input` 대신 `condition-ids`. 0단계가 덮는 기존 계약마다 T의 `condition-id`와 비교하고, 다르거나 빠지거나 남으면 다른 검사 없이 E_NEEDS_RESULTS(그사이 계약이 바뀌었다). 새 계약(`+n`)은 `condition-ids`에 없다. ait는 결과를 코드와 묶지 않는다(U27). 나머지(과제가 빠짐·더함·겹침, outcome, pass의 basis, fail·unknown이면 E_CHECK_FAILED)는 v14 8.4다.
 - 7.4 결과 틀은 이미 있고 그 `condition-ids`와 과제 목록이 지금과 같으면 다시 쓰지 않는다.
+- 7.5 **환경의 실행**(U63. ait는 실행하지 않는다. 확인하는 쪽이 지킨다): `prepare`의 한 단계가 실패하면 뒤의 단계와 확인 명령을 돌리지 않고 그 과제는 `unknown`이다. `cleanup`은 무엇이 실패했든 언제나 돌리되, 이미 돈 `prepare` 단계까지만 역순으로 되돌린다. `cleanup`의 실패는 결과를 바꾸지 않고 `reason`에 적는다.
 
 ## 8. (비움)
 

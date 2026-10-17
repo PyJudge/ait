@@ -59,7 +59,7 @@ ait future offer src/stock.c specs/stock.yaml as o undertake D0123456789ab o -m 
    GIT_INDEX_FILE="$d/index" git -C "$top" checkout-index -a --prefix="$d/tree/"
    ```
 
-5. 각 과제를 검사하고 결과 파일에 `outcome: pass|fail|unknown`과 `basis`·`reason`을 채운다. pass에는 실제 검사 근거가 필요하다. 실행하지 않은 검사를 pass로 쓰지 않는다. `condition-ids`와 과제 이름을 고치지 않는다.
+5. 각 과제를 검사하고 결과 파일에 `outcome: pass|fail|unknown`과 `basis`·`reason`을 채운다. 환경 정의가 있으면 `prepare`를 차례로 돌리고, 하나라도 실패하면 확인하지 않고 `unknown`이다. `cleanup`은 무엇이 실패했든 돈 `prepare`까지 역순으로 돌리고, 그 실패는 `reason`에만 적는다. pass에는 실제 검사 근거가 필요하다. 실행하지 않은 검사를 pass로 쓰지 않는다. `condition-ids`와 과제 이름을 고치지 않는다.
 6. 같은 명령에 `-r <결과 경로>`를 붙여 다시 실행한다. 코드가 바뀌었으면 다시 검사한다. `condition-ids`는 계약 조건의 일치만 확인하며 검사 결과를 코드와 묶어 보증하지 않는다.
 
 ```sh
