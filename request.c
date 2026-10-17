@@ -1839,21 +1839,20 @@ static int contract_commit(int argc, const char **argv)
 	git_records(&lines, index, NULL, "ls-files", "-s", "-z");
 	for_each_string_list_item(item, &lines) {
 		char mode[8], oid[48], *bytes;
+		const char *path = strchr(item->string, '\t') + 1;
 		struct contract *draft;
 		char *err;
 		size_t len;
 
-		if (!*item->string)
-			continue;
 		sscanf(item->string, "%7s %47s", mode, oid);
 		bytes = object(oid, 1, NULL, &len);
 		if (!bytes)
-			reject(128, NULL, "could not read '%s' from the contract stage", strchr(item->string, '\t') + 1);
-		draft = contract_parse(bytes, len, strchr(item->string, '\t') + 1, 1, &err);
+			reject(128, NULL, "could not read '%s' from the contract stage", path);
+		draft = contract_parse(bytes, len, path, 1, &err);
 		free(bytes);
 		if (!draft)
-			reject(128, NULL, "bad format: '%s': %s", strchr(item->string, '\t') + 1, err);
-		string_list_insert(&st.drafts, strchr(item->string, '\t') + 1)->util = draft;
+			reject(128, NULL, "bad format: '%s': %s", path, err);
+		string_list_insert(&st.drafts, path)->util = draft;
 	}
 	if (!st.drafts.nr)
 		reject(1, hint_command("ait contract add <path>..."), "nothing staged");
