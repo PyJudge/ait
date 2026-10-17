@@ -1223,16 +1223,6 @@ struct fulfilment *valid_fulfilment(struct branch *b, struct contract *c, const 
 	return f && !strcmp(f->condition_id, c->condition_id) ? f : NULL;
 }
 
-static void valid_fulfilments(struct branch *b, struct contract *c, struct string_list *out)
-{
-	struct string_list_item *item;
-	struct fulfilment *f;
-
-	for_each_string_list_item(item, &c->fulfilled)
-		if ((f = valid_fulfilment(b, c, item->string)))
-			string_list_append(out, item->string)->util = f;
-}
-
 int has_valid_fulfilment(struct branch *b, struct contract *c)
 {
 	struct string_list_item *item;
@@ -1701,7 +1691,7 @@ void judgment_init(struct judgment *j, const struct contract_view *view, struct 
 const struct judgment_result *judgment_get(struct judgment *j, struct contract *c)
 {
 	struct string_list_item *hit = string_list_lookup(&j->done, c->id), *item, *f;
-	struct string_list valid = STRING_LIST_INIT_DUP, needs = STRING_LIST_INIT_DUP;
+	struct string_list needs = STRING_LIST_INIT_DUP;
 	struct judgment_result *r;
 	int whole_ok = 1;
 	size_t i;
@@ -1711,20 +1701,15 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 	if (string_list_has_string(&j->visiting, c->id))
 		return NULL;
 	r = xcalloc(1, sizeof(*r));
-	if (!strcmp(c->state, "cancelled")) {
-		r->verdict = V_CANCELLED;
-		goto done;
-	}
-	if (!strcmp(c->state, "withdrawn")) {
-		r->verdict = V_WITHDRAWN;
+	if (!live(c)) {
+		r->verdict = strcmp(c->state, "cancelled") ? V_WITHDRAWN : V_CANCELLED;
 		goto done;
 	}
 	if (c->kind == DROP) {
 		r->verdict = c->fulfilled.nr ? V_FULFILLED : V_FUTURE;
 		goto done;
 	}
-	valid_fulfilments(j->view.at, c, &valid);
-	if (!valid.nr) {
+	if (!has_valid_fulfilment(j->view.at, c)) {
 		r->verdict = V_FUTURE;
 		goto done;
 	}
@@ -1740,13 +1725,17 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 	/* Per-scope matches can come from different fulfilments; a whole witness cannot. */
 	witnessed_scopes(c, &r->witnessed);
 	r->matches_any = xcalloc(r->witnessed.nr, sizeof(*r->matches_any));
-	for_each_string_list_item(f, &valid) {
-		struct recorded_code *code = xcalloc(r->witnessed.nr, sizeof(*code));
+	for_each_string_list_item(f, &c->fulfilled) {
+		struct fulfilment *valid = valid_fulfilment(j->view.at, c, f->string);
+		struct recorded_code *code;
 		int all = 1;
 
+		if (!valid)
+			continue;
+		code = xcalloc(r->witnessed.nr, sizeof(*code));
 		for (i = 0; i < r->witnessed.nr; i++) {
 			const struct scope *s = &r->witnessed.items[i];
-			int same = scope_same(s, code_lookup(&((struct fulfilment *)f->util)->code, s), j->tree, &code[i]);
+			int same = scope_same(s, code_lookup(&valid->code, s), j->tree, &code[i]);
 
 			r->matches_any[i] |= same;
 			all &= same;
@@ -1759,7 +1748,6 @@ const struct judgment_result *judgment_get(struct judgment *j, struct contract *
 	}
 	r->verdict = whole_ok && r->code ? V_CURRENT : V_UNVERIFIED;
 done:
-	string_list_clear(&valid, 0);
 	string_list_clear(&needs, 0);
 	string_list_insert(&j->done, c->id)->util = r;
 	return r;
