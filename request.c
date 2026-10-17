@@ -391,15 +391,14 @@ static enum refusal change_refusal(struct request_input *q, struct request_resul
 		return ENDED;
 	if (old && (strcmp(c->path, old->path) || c->kind != old->kind || strcmp(c->creator, old->creator)))
 		return IDENTITY;
-	if (old && !list_is_prefix(&old->fulfilled, &c->fulfilled))
-		return FULFILMENT;
-	if (c->fulfilled.nr > (old ? old->fulfilled.nr : 0) &&
-	    !(action == RECORD && q->code && string_list_has_string(&r->covered, c->id)))
+	/* only record() adds a fulfilment, for a covered contract (6.7.5-2) */
+	if ((old && !list_is_prefix(&old->fulfilled, &c->fulfilled)) ||
+	    (c->fulfilled.nr > (old ? old->fulfilled.nr : 0) && action != RECORD))
 		return FULFILMENT;
 	if ((!old && strcmp(c->state, "future")) ||
 	    (old && strcmp(c->state, old->state) &&
 	     !((action == CANCEL || action == DRAFT) && !strcmp(c->state, "cancelled")) &&
-	     !(action == WITHDRAW && c->kind != DROP && !strcmp(c->state, "withdrawn"))))
+	     !(action == WITHDRAW && !strcmp(c->state, "withdrawn"))))
 		return STATE;
 	if (c->kind == DROP && (!old || strcmp(c->target, old->target) || action == FULFILL) &&
 	    !target_current(r, q->code ? q->code : q->x, c))
@@ -640,13 +639,13 @@ static void apply_clauses(struct request_input *q, struct request_result *r)
 		} else {
 			d = contract_arg(r, a[0], "D");
 			old = contract_arg(r, a[1], "O");
-			if (!strcmp(verb, "undertake"))
-				validate_change(q, r, d, d, EDIT, 0);
 			c = contract_copy(old);
 			remove_id(&c->undertakes, d->id);
 			remove_id(&c->partially, d->id);
-			if (!strcmp(verb, "undertake"))
+			if (!strcmp(verb, "undertake")) {
+				validate_change(q, r, d, d, EDIT, 0);
 				string_list_append(cl->partial ? &c->partially : &c->undertakes, d->id);
+			}
 		}
 		/* the words read_clauses() placed: "-" and words not given keep what is there */
 		if (c->kind == DEMAND)
