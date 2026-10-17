@@ -102,5 +102,25 @@ for bad in tests/ / new:tests/x.csv; do
 	check "fixture '$bad' is a format error of its file" "has err \"^fatal: bad format: 'fix-bad.yaml': \""
 done
 
-rm -f fix.yaml fix-prompt.yaml fix-absent.yaml fix-gone.yaml fix-range.yaml fix-bad.yaml
+# plan 6, 2.3.2: a file fixture is judged by OIDs alone, in a clone without the recorded blob
+printf 'body: |\n  the csv lists items\nfixtures: [tests/stock.csv]\n' > fix-clone.yaml
+run ait future offer src/stock.c fix-clone.yaml -m 'clone fixture'
+P=$(newest O)
+ait fulfill "$P" --force -m 'checked' >/dev/null 2>&1
+old=$(git rev-parse HEAD:tests/stock.csv)
+printf 'item,count\nnew,1\n' > tests/stock.csv; git add tests/stock.csv; git commit -qm 'csv grows'
+git push -q origin master ait/master
+git -C "$T/origin.git" config uploadpack.allowFilter true
+git clone -q --filter=blob:none "file://$T/origin.git" "$T/lean" 2>/dev/null
+cd "$T/lean"
+# the contract branch is fetched whole, as ait reads it; only the code's old blob stays behind
+git archive origin/ait/master >/dev/null
+git config remote.origin.url "$T/gone.git"
+git branch -q ait/master origin/ait/master
+check "the clone lacks the recorded blob and cannot fetch it" "! git cat-file -e $old 2>/dev/null"
+run ait status /
+check "status judges the file fixture there" "test \"\$(state_of $P)\" = 'current ?unverified' && grep -A8 '^id $P$' '$T/out' | grep -q '^fixtures tests/stock.csv ?changed'"
+cd "$T/r"
+
+rm -f fix.yaml fix-prompt.yaml fix-absent.yaml fix-gone.yaml fix-range.yaml fix-bad.yaml fix-clone.yaml
 done_testing
