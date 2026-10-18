@@ -25,22 +25,25 @@ run ait sub src/stock.c src/order.c
 check "subscriptions already saved do not print another successful addition" \
 	"test '$rc' = 0 && ! test -s '$T/out'"
 
-cp "$session_file" "$T/session.before"
-trap 'chmod u+w .git/ait/sessions' 0
-chmod a-w .git/ait/sessions
-run ait sub unsaved-example-path
-chmod u+w .git/ait/sessions
-check_rc "sub reports a failed session write" 128
-check "a failed sub write prints no successful addition" "! test -s '$T/out'"
-check "a failed sub write preserves the previous subscriptions" \
-	"cmp '$T/session.before' '$session_file'"
-chmod a-w .git/ait/sessions
-run ait unsub src/stock.c
-chmod u+w .git/ait/sessions
-check_rc "unsub reports a failed session write" 128
-check "a failed unsub write prints no successful removal" "! test -s '$T/out'"
-check "a failed unsub write preserves the previous subscriptions" \
-	"cmp '$T/session.before' '$session_file'"
+if test_have_prereq SANITY "sub and unsub report a failed session write"
+then
+	cp "$session_file" "$T/session.before"
+	trap 'chmod u+w .git/ait/sessions' 0
+	chmod a-w .git/ait/sessions
+	run ait sub unsaved-example-path
+	chmod u+w .git/ait/sessions
+	check_rc "sub reports a failed session write" 128
+	check "a failed sub write prints no successful addition" "! test -s '$T/out'"
+	check "a failed sub write preserves the previous subscriptions" \
+		"cmp '$T/session.before' '$session_file'"
+	chmod a-w .git/ait/sessions
+	run ait unsub src/stock.c
+	chmod u+w .git/ait/sessions
+	check_rc "unsub reports a failed session write" 128
+	check "a failed unsub write prints no successful removal" "! test -s '$T/out'"
+	check "a failed unsub write preserves the previous subscriptions" \
+		"cmp '$T/session.before' '$session_file'"
+fi
 run ait unsub src/order.c src/stock.c
 check_rc "valid subscription removals are saved together" 0
 printf 'unsub scope src/stock.c\nunsub scope src/order.c\n' >"$T/unsub.expected"

@@ -2,6 +2,8 @@
 # Signal cleanup must not remove the next owner's index.lock at handoff.
 . "$(dirname "$0")/lib.sh"
 setup
+# the next owner is a Perl helper
+test_have_prereq PERL "signal cleanup keeps the next owner's lock at handoff" || { done_testing; exit $?; }
 
 case $(uname -s) in
 Darwin)

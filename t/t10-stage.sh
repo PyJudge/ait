@@ -3,6 +3,8 @@
 . "$(dirname "$0")/lib.sh"
 setup
 racing_git
+run "${CC:-cc}" -Wall -Werror -o "$T/alarm" "$AIT_DIR/t/helper-alarm.c"
+check_rc "the alarm helper builds" 0
 
 stage=$(git rev-parse --absolute-git-dir)/ait/index
 export stage
@@ -126,7 +128,7 @@ seed_stage "$Q"
 # Both the first read and the CAS must be inside the same lock lifetime.
 # A watchdog makes a blocking lock in a synchronous hook fail, not deadlock.
 cat >"$T/try-add" <<'HOOK'
-perl -e 'alarm 5; exec @ARGV; die $!' ait contract add "$P" >"$T/nested.out" 2>"$T/nested.err"
+"$T/alarm" 5 ait contract add "$P" >"$T/nested.out" 2>"$T/nested.err"
 echo $? >"$T/nested.rc"
 exit 0
 HOOK
@@ -234,7 +236,7 @@ if test -e "$T/ready"
 then
 	git_child=$(cat "$T/update-ref.pid")
 	# A second commit must fail promptly at the contract lock, before reading it.
-	run perl -e 'alarm 5; exec @ARGV; die $!' ait contract commit -m competing
+	run "$T/alarm" 5 ait contract commit -m competing
 	check_rc "a competing commit is refused without blocking" 128
 	check "a competing commit respects the live stage lock" "has err 'index.lock' && cmp -s $T/stage-before $stage && test \"\$(git rev-parse ait/master)\" = $tip"
 	kill -TERM "$committer"

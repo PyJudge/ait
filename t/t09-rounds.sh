@@ -48,14 +48,17 @@ check "a reader gone ends listen (v14 9.5-3, 5.7)" "! kill -0 $L 2>/dev/null"
 kill $L 2>/dev/null; wait $L 2>/dev/null
 
 S="$(git rev-parse --git-common-dir)/ait/sessions/$BOB"
-perl -e 'use Fcntl ":flock"; open(F, ">>", $ARGV[0]) or die; flock(F, LOCK_EX); sleep 2' "$S.lock" &
-P=$!
-sleep 0.5
-AIT_SESSION=$BOB ait session close "$BOB" >/dev/null 2>&1 &
-C=$!
-sleep 0.5
-check "session close waits for the session's lock (v14 4.5)" "test -e \"$S\""
-wait $P; wait $C
-check "and closes once it has it" "! test -e \"$S\""
+if test_have_prereq PERL "session close waits for the session's lock (v14 4.5)"
+then
+	perl -e 'use Fcntl ":flock"; open(F, ">>", $ARGV[0]) or die; flock(F, LOCK_EX); sleep 2' "$S.lock" &
+	P=$!
+	sleep 0.5
+	AIT_SESSION=$BOB ait session close "$BOB" >/dev/null 2>&1 &
+	C=$!
+	sleep 0.5
+	check "session close waits for the session's lock (v14 4.5)" "test -e \"$S\""
+	wait $P; wait $C
+	check "and closes once it has it" "! test -e \"$S\""
+fi
 
 done_testing

@@ -25,7 +25,7 @@ int main(int argc, char **argv)
 	yaml_parser_set_input_file(&parser, file);
 	while (!done) {
 		struct frame *parent = depth ? &stack[depth - 1] : NULL;
-		int scalar, map, list;
+		int scalar, map, list, written = 0;
 		if (!yaml_parser_parse(&parser, &event)) {
 			fprintf(stderr, "cannot parse request: %s\n", parser.problem);
 			return 2;
@@ -41,12 +41,15 @@ int main(int argc, char **argv)
 			if (!parent)
 				*path = 0;
 			else if (parent->list)
-				snprintf(path, sizeof(path), "%s/%d", parent->path, parent->n++);
+				written = snprintf(path, sizeof(path), "%s/%d", parent->path, parent->n++);
 			else {
-				snprintf(path, sizeof(path), "%s%s%s", parent->path, *parent->path ? "/" : "", parent->key);
+				written = snprintf(path, sizeof(path), "%s%s%s", parent->path, *parent->path ? "/" : "", parent->key);
 				free(parent->key);
 				parent->key = NULL;
 			}
+			/* a path cut to the buffer would match another (git v2.53.0 wrapper.c:666 xsnprintf) */
+			if (written >= (int)sizeof(path))
+				return 2;
 			if (!strcmp(path, want) && (argc > 3 || scalar)) {
 				free(found);
 				found = strdup(argc > 3 ? map ? "map" : list ? "list" : "scalar" : (char *)event.data.scalar.value);

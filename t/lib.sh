@@ -14,6 +14,22 @@ done_testing() {
 	[ "$failed" = 0 ]
 }
 
+# what checks need from their environment (git v2.53.0 t/test-lib.sh:1732 PERL_TEST_HELPERS)
+prereq_PERL() { command -v perl >/dev/null; }
+# permission bits predict what the file system allows; not so for root (git v2.53.0 t/test-lib.sh:1816-1845)
+prereq_SANITY() {
+	mkdir "$T/sanity" && chmod -w "$T/sanity"
+	! (: >"$T/sanity/x") 2>/dev/null; sane=$?
+	chmod +w "$T/sanity" && rm -rf "$T/sanity"
+	return $sane
+}
+# test_have_prereq PREREQ WHAT: PREREQ holds, or WHAT is reported skipped (git v2.53.0 t/test-lib.sh:1146)
+test_have_prereq() {
+	"prereq_$1" && return 0
+	n=$((n+1)); echo "ok $n # skip $2 (missing $1)"
+	return 1
+}
+
 # a repository with code and an ait branch; alice's session is the worktree's default
 setup() {
 	T=$(mktemp -d); export T HOME=$T/home GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=: LANG=C LC_ALL=C; mkdir -p "$HOME"
