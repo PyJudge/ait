@@ -1,5 +1,6 @@
 /* Scope input values and their spelling (spec 3); consumers never decode text. */
 #include "ait.h"
+#include "quote.h"
 
 void scope_clear(struct scope *s)
 {
@@ -64,6 +65,24 @@ char *scope_text(const struct scope *s, int with_base)
 	return xstrfmt("%s%s", s->kind == SCOPE_NEW ? "new:" : "", s->path);
 }
 
+/*
+ * a location as an output field, as git status --porcelain writes a path
+ * (quote.c:367 quote_path() with QUOTE_PATH_QUOTE_SP): one with SP, '"' or
+ * '\' is in double quotes, those two as C escapes (U67)
+ */
+char *scope_field(const char *location)
+{
+	struct strbuf sb = STRBUF_INIT;
+	int force_dq = !!strchr(location, ' ');
+
+	if (force_dq)
+		strbuf_addch(&sb, '"');
+	quote_c_style(location, &sb, NULL, force_dq ? CQUOTE_NODQ : 0);
+	if (force_dq)
+		strbuf_addch(&sb, '"');
+	return strbuf_detach(&sb, NULL);
+}
+
 /* Canonical positive line numbers, shared by scopes and stored code spans. */
 const char *range_numbers(const char *text, int *first, int *last)
 {
@@ -87,13 +106,15 @@ const char *range_numbers(const char *text, int *first, int *last)
 /* Command, draft and stored permissions are decided only at this boundary. */
 char *scope_parse(struct scope *s, const char *text, int allow_new, int allow_abs, enum scope_form form)
 {
-	const char *p = text, *base = strchr(text, ' '), *colon, *end;
-	size_t len = base ? (size_t)(base - text) : strlen(text);
+	const char *p = text, *base, *colon, *end;
 	int is_new = skip_prefix(p, "new:", &p), valid;
+	size_t len;
 
 	memset(s, 0, sizeof(*s));
-	len -= p - text;
-	colon = memchr(p, ':', len);
+	/* a path holds no ':' (3.1), so a base blob is what follows SP after a range */
+	colon = strchr(p, ':');
+	base = colon ? strchr(colon, ' ') : NULL;
+	len = base ? (size_t)(base - p) : strlen(p);
 	s->path = xstrndup(p, colon ? (size_t)(colon - p) : len);
 	if (colon) {
 		s->kind = SCOPE_RANGE;
@@ -108,18 +129,17 @@ char *scope_parse(struct scope *s, const char *text, int allow_new, int allow_ab
 	} else {
 		s->kind = is_new ? SCOPE_NEW : !strcmp(s->path, "/") ? SCOPE_ROOT :
 			  ends_with(s->path, "/") ? SCOPE_DIR : SCOPE_FILE;
-		valid = !base;
 		if (s->kind == SCOPE_NEW) {
-			valid &= allow_new && path_ok(s->path);
+			valid = allow_new && path_ok(s->path);
 		} else if (s->kind == SCOPE_ROOT) {
-			valid &= allow_abs;
+			valid = allow_abs;
 		} else if (s->kind == SCOPE_DIR) {
 			char *dir = xstrndup(s->path, strlen(s->path) - 1);
 
-			valid &= allow_abs && path_ok(dir);
+			valid = allow_abs && path_ok(dir);
 			free(dir);
 		} else {
-			valid &= path_ok(s->path);
+			valid = path_ok(s->path);
 		}
 	}
 	if (valid)

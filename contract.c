@@ -457,13 +457,17 @@ void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n)
 	yaml_write(sb, &map, 1, "  ");
 }
 
-/* v14 3.1: repository-root path pieces; spec 3.1 permits .ait for condition files */
+/*
+ * v14 3.1: repository-root path pieces; spec 3.1 permits .ait for condition
+ * files. SP is a path byte (U67, v2 v16 3.1); ':' and ',' part a scope, and
+ * no path starts with '"', which starts a quoted field (scope_field())
+ */
 int worktree_path_ok(const char *p, int allow_ait)
 {
 	struct string_list parts = STRING_LIST_INIT_DUP;
 	struct string_list_item *item;
 	const char *q;
-	int ok = *p && *p != '/' && *p != '-' && strcmp(p, ".ait") && !p[strcspn(p, " :,")] &&
+	int ok = *p && *p != '/' && *p != '-' && *p != '"' && strcmp(p, ".ait") && !p[strcspn(p, ":,")] &&
 		 (allow_ait || !starts_with(p, ".ait/"));
 
 	for (q = p; *q; q++)
@@ -480,11 +484,11 @@ int path_ok(const char *p)
 	return worktree_path_ok(p, 0);
 }
 
-/* spec 2.1.3: a group is path pieces, none of them "fulfill"; "" is the root */
+/* spec 2.1.3: a group is path pieces without SP, none of them "fulfill"; "" is the root */
 int group_ok(const char *group)
 {
 	char *pieces = xstrfmt("/%s/", group);
-	int ok = !*group || (path_ok(group) && !strstr(pieces, "/fulfill/"));
+	int ok = !*group || (path_ok(group) && !strchr(group, ' ') && !strstr(pieces, "/fulfill/"));
 
 	free(pieces);
 	return ok;
@@ -1491,21 +1495,23 @@ static int scope_same(const struct scope *scope, const struct recorded_code *cod
 	return 1;
 }
 
-/* v14 3.8: formatting reads a prepared position and cannot invoke Git. */
-char *scope_result_text(const struct scope *scope, const struct scope_result *at)
+/*
+ * v14 3.8: the display of SCOPE found at AT; QUOTE writes its location as
+ * one output field (U67), as a YAML string needs not. Formatting reads a
+ * prepared position and cannot invoke Git.
+ */
+char *scope_result_text(const struct scope *scope, const struct scope_result *at, int quote)
 {
-	static const char *const marks[] = { [NOBASE] = "?nobase", [MISSING] = "?missing", [DELETED] = "?deleted" };
-	char *bare, *display;
+	static const char *const marks[] = { [NOBASE] = " ?nobase", [MISSING] = " ?missing", [DELETED] = " ?deleted" };
+	int found = scope->kind != SCOPE_NEW && at->status == FOUND;
+	const char *mark = scope->kind == SCOPE_NEW ? (at->exists ? " ?exists" : "") :
+			   found || at->status == ABSTRACT ? "" : marks[at->status];
+	char *where = !found ? scope_text(scope, 0) : at->at.first ?
+		      xstrfmt("%s:%d-%d", at->at.path, at->at.first, at->at.last) : xstrdup(at->at.path);
+	char *field = quote ? scope_field(where) : xstrdup(where), *display = xstrfmt("%s%s", field, mark);
 
-	if (scope->kind == SCOPE_NEW)
-		return xstrfmt("new:%s%s", scope->path, at->exists ? " ?exists" : "");
-	if (at->status == ABSTRACT)
-		return scope_text(scope, 0);
-	if (at->status == FOUND)
-		return at->at.first ? xstrfmt("%s:%d-%d", at->at.path, at->at.first, at->at.last) : xstrdup(at->at.path);
-	bare = scope_text(scope, 0);
-	display = xstrfmt("%s %s", bare, marks[at->status]);
-	free(bare);
+	free(where);
+	free(field);
 	return display;
 }
 
@@ -1514,7 +1520,7 @@ char *scope_display(const struct scope *scope, struct tree *x)
 	struct scope_result at;
 
 	scope_result_at(scope, x, &at);
-	return scope_result_text(scope, &at);
+	return scope_result_text(scope, &at, 1);
 }
 
 /* C39: the environment definition NAME is a file of the code */
@@ -1794,7 +1800,8 @@ const char *verdict_word(enum verdict v)
  * v14 3.8: the scopes of G's contract as they are in its tree; MATCHES, a
  * judgment's per-scope comparison, marks a found scope that differs ?changed
  */
-char *geometry_text(const struct contract_geometry *g, enum geometry_part part, const unsigned char *matches)
+char *geometry_text(const struct contract_geometry *g, enum geometry_part part, const unsigned char *matches,
+		    int quote)
 {
 	const struct contract *c = g->contract;
 	/* the provider heads the witnessed scopes and the fixtures follow it (witnessed_scopes()) */
@@ -1811,7 +1818,7 @@ char *geometry_text(const struct contract_geometry *g, enum geometry_part part, 
 		matches += from;
 	for (i = 0; i < scopes.nr; i++) {
 		size_t n = ordered[i] - scopes.items;
-		char *display = scope_result_text(ordered[i], &positions[n]);
+		char *display = scope_result_text(ordered[i], &positions[n], quote);
 		int changed = matches && !matches[n] && positions[n].status == FOUND;
 
 		strbuf_addf(&out, "%s%s%s", i ? "," : "", display, changed ? " ?changed" : "");

@@ -27,7 +27,7 @@ static void block(struct branch *b, struct judgment *j, struct contract *c, cons
 	printf("id %s\nkind %s\ngroup %s\nstate %s\ncreator %s\n", c->id, kind_word(c->kind), *c->group ? c->group : "-",
 	       verdict_word(v), c->creator);
 	if (demand) {
-		char *display = geometry_text(g, GEOMETRY_CONSUMER, NULL);
+		char *display = geometry_text(g, GEOMETRY_CONSUMER, NULL, 1);
 
 		printf("consumer %s\n", display);
 		free(display);
@@ -35,12 +35,12 @@ static void block(struct branch *b, struct judgment *j, struct contract *c, cons
 	if (c->kind == DROP) {
 		printf("target %s\n", c->target);
 	} else {
-		char *display = geometry_text(g, GEOMETRY_PROVIDER, result->matches_any);
+		char *display = geometry_text(g, GEOMETRY_PROVIDER, result->matches_any, 1);
 
 		printf("provider %s\n", display);
 		free(display);
 		if (g->witnessed.nr > c->provider.nr) {
-			display = geometry_text(g, GEOMETRY_FIXTURES, result->matches_any);
+			display = geometry_text(g, GEOMETRY_FIXTURES, result->matches_any, 1);
 			printf("fixtures %s\n", display);
 			free(display);
 		}
@@ -372,7 +372,8 @@ static void subscribe(struct branch *b, int argc, const char **argv, FILE *out)
 			text = scope_text(&s, 1);
 			line = xstrfmt("sub scope %s", text);
 			free(text);
-			text = s.kind == SCOPE_RANGE ? scope_text(&s, 0) : scope_display(&s, h);
+			/* a range pinned in the index shows there as given */
+			text = scope_display(&s, s.kind == SCOPE_RANGE ? index : h);
 			display = xstrfmt("sub scope %s", text);
 			free(text);
 			scope_clear(&s);
@@ -416,22 +417,29 @@ int cmd_unsub(int argc, const char **argv)
 	session_lines(sid, &lines);
 	for_each_string_list_item(item, &lines) {
 		struct scope s;
-		char *display, *text;
-		const char *named;
+		char *display, *named = NULL;
+		const char *id;
 		int drop = argc == 1;
 
-		/* a scope shows as it is at HEAD; any other line as it is written */
+		/* a scope shows as it is at HEAD, and is named by its location unquoted, as a shell passes it (U67) */
 		if (sub_scope(item->string, &s)) {
-			text = scope_display(&s, h);
-			display = xstrfmt("sub scope %s", text);
-			free(text);
+			struct scope_result at;
+			char *shown;
+
+			scope_result_at(&s, h, &at);
+			named = scope_result_text(&s, &at, 0);
+			shown = scope_result_text(&s, &at, 1);
+			display = xstrfmt("sub scope %s", shown);
+			free(shown);
 			scope_clear(&s);
 		} else {
 			display = xstrdup(item->string);
+			if (skip_prefix(display, "sub id ", &id))
+				named = xstrdup(id);
 		}
 		for (i = 1; i < argc; i++)
-			drop |= (skip_prefix(display, "sub id ", &named) || skip_prefix(display, "sub scope ", &named)) &&
-				!strcmp(named, argv[i]);
+			drop |= named && !strcmp(named, argv[i]);
+		free(named);
 		if (starts_with(item->string, "sub ") && drop)
 			strbuf_addf(&removed, "un%s\n", display);
 		else
@@ -539,7 +547,7 @@ static void reasons(struct judgment *judgments, struct contract *c, struct contr
 
 		if (contract_overlaps(c, judgments->tree, q, &subs->at[i], 1) ||
 		    (old && contract_overlaps(old, judgments->tree, q, &subs->at[i], 1))) {
-			char *display = scope_result_text(q, &subs->at[i]);
+			char *display = scope_result_text(q, &subs->at[i], 1);
 
 			add_reason(out, REASON_SUB_SCOPE, display);
 			free(display);

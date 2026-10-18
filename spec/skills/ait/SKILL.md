@@ -18,7 +18,7 @@ Git 2.53 이상이 필요하다. ait는 아래의 정해진 명령만 받는다.
 
 ## 계약과 명세 정의
 
-범위는 저장소 뿌리 기준이다: `src/stock.c`, `src/stock.c:10-40`, `src/`, `/`, 아직 없는 파일은 `new:src/stock.c`. 여럿이면 `,`로 잇는다. 행 범위는 보통 HEAD에서, 이행하는 요청과 `K=SCOPES`는 index에서 고정한다. 파일 단위 범위를 우선한다.
+범위는 저장소 뿌리 기준이다: `src/stock.c`, `src/stock.c:10-40`, `src/`, `/`, 아직 없는 파일은 `new:src/stock.c`. 여럿이면 `,`로 잇는다. 공백이 든 경로는 셸 낱말 하나로 따옴표를 쳐서 준다(`"doc/법령 문안.md"`). 출력은 그런 경로를 git처럼 큰따옴표로 감싸 보여 준다. 행 범위는 보통 HEAD에서, 이행하는 요청과 `K=SCOPES`는 index에서 고정한다. 파일 단위 범위를 우선한다.
 
 정의 파일은 `ait contract new spec specs/stock.yaml exec` 또는 `prompt`로 틀을 받아 쓴다.
 

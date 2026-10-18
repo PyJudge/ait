@@ -5,6 +5,9 @@ struct strbuf;
 void sq_quote_buf(struct strbuf *, const char *src);
 void sq_quote_buf_pretty(struct strbuf *, const char *src);
 
+/* git v2.53.0 quote.h:6 */
+extern int quote_path_fully;
+
 /* git v2.53.0 quote.h:86-86 */
 #define CQUOTE_NODQ 01
 

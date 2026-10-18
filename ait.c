@@ -1835,6 +1835,8 @@ int main(int argc, const char **argv)
 
 	sanitize_stdfds();
 	set_warn_routine(warn_line);
+	/* ait's own output keeps bytes of 0x80 and up as the git it runs does (core.quotePath=false) */
+	quote_path_fully = 0;
 	if (argc < 2)
 		reject(129, NULL, "no command");
 	for (i = 0; i < ARRAY_SIZE(commands); i++) {

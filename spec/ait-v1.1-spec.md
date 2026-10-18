@@ -164,7 +164,10 @@ code:
 ## 3. 범위
 
 v14 3.1·3.2·3.2a·3.5–3.10의 범위 문법, 행 수, diff0, 사상, 표시, 겹침, 접촉을 쓴다. 바뀌는 점:
-- 3.1 PATH 규칙(v14 3.1)의 `.ait` 금지는 그대로다. 조건 파일(FILES)만 `.ait/` 아래에 있어도 된다.
+- 3.1 PATH 규칙(v14 3.1)의 `.ait` 금지는 그대로다. 조건 파일(FILES)만 `.ait/` 아래에 있어도 된다. PATH에 SP가 있어도 된다. `:`·`,`는 여전히 없고(`:`는 행 범위와 `new:`, `,`는 범위 목록의 구분이다), `"`로 시작하지 않는다(U67, v2 v16 3.1). group(2.1.3)에는 SP가 없다.
+  - 계약 YAML의 행 범위는 `PATH:S-E BLOB`이다. PATH에 `:`가 없으므로 기준 blob은 행 범위 뒤의 SP 다음이다.
+  - 행으로 읽는 출력(`status` 블록의 DISPLAY, `sub`·`unsub`의 행, 알림의 `reason sub scope`)은 위치를 git `status --porcelain`처럼 쓴다: SP나 `"`·`\`가 있으면 큰따옴표로 감싸고 그 안의 `"`·`\`는 C 꼴로 쓴다(`quote.c:367`의 `quote_path()`와 `QUOTE_PATH_QUOTE_SP`, `core.quotePath=false`처럼 0x80 이상의 바이트는 그대로). 표시(`?changed` 등)는 따옴표 밖에 붙는다. YAML(계약, 이행 파일, 확인 요청 파일)은 YAML 문자열이 인용하므로 경로를 바이트 그대로 쓴다(7.2).
+  - `unsub`은 범위를 따옴표를 푼 위치로 받는다(셸이 넘기는 꼴).
 - 3.2 **고정**: 계약 YAML에는 행 범위의 기준 blob만 저장한다. 범위를 받는 요청은 행 범위를 HEAD(이행하는 명령과 `K=SCOPES`는 index)에서 고정한다(v14 3.3의 조건과 `E_SCOPE`). spec 원소의 `fixtures`도 provider와 같은 tree에서 같은 규칙으로 고정한다(U62). 파일·`new:PATH`·`DIR/`·`/`는 blob을 저장하지 않는다.
 - 3.3 **추상 범위**(v14 1.5c, 7.7.1): `DIR/`·`/`·`new:PATH`는 판정 future인 계약의 provider로만 쓴다. 이행할 때 provider는 모두 그 tree에서 찾을 수 있는 `PATH`나 `PATH:S-E`여야 하고, 아니면 `fatal: bad scope: 'K' needs concrete scopes to be fulfilled`와 `hint: ait fulfill K=<scope> …`(같은 명령에 `=SCOPES`를 더한 것). `=SCOPES`로 좁히는 것은 provider를 바꾸는 것이므로 같은 요청에서 `condition-id`를 바꾸고 새 `condition-id`로 이행한다.
 - 3.4 **표시**(v14 3.8): 파일 범위는 이행 파일의 항목과 비교한다. 유효한 이행이 없으면 `?changed`를 쓰지 않는다.

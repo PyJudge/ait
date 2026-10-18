@@ -946,8 +946,8 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 		char *consumer, *provider;
 
 		geometry_init(&g, c, q->x);
-		consumer = geometry_text(&g, GEOMETRY_CONSUMER, NULL);
-		provider = geometry_text(&g, GEOMETRY_PROVIDER, NULL);
+		consumer = geometry_text(&g, GEOMETRY_CONSUMER, NULL, 0);
+		provider = geometry_text(&g, GEOMETRY_PROVIDER, NULL, 0);
 		geometry_clear(&g);
 		for (n = 0; n < c->nspecs; n++) {
 			struct spec *s = &c->specs[n];
