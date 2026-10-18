@@ -50,7 +50,17 @@ bundle: ait
 	tar -czf dist/ait-v1.1.tar.gz -C dist ait
 	cp dist/ait-v1.1.tar.gz dist/ait.tar.gz
 
+# The Claude cloud kit: the committed source, built by the session's own compiler
+# (spec/drafts/v1.1-cloud-plan.md); a Linux binary is not built here.
+cloud:
+	rm -rf dist/ait-cloud
+	mkdir -p dist/ait-cloud
+	git archive --prefix=src/ HEAD -- Makefile '*.c' '*.h' libyaml bundle spec/skills/ait t | tar -x -C dist/ait-cloud
+	cp bundle/cloud/README.md bundle/cloud/setup-script.sh bundle/cloud/session-start.sh bundle/cloud/settings.json dist/ait-cloud/
+	git rev-parse HEAD > dist/ait-cloud/COMMIT
+	tar -czf dist/ait-v1.1-cloud.tar.gz -C dist ait-cloud
+
 clean:
 	rm -f ait $(YAML)
 
-.PHONY: test install bundle clean
+.PHONY: test install bundle cloud clean
