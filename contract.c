@@ -845,10 +845,10 @@ struct contract *contract_parse(const char *text, size_t len, const char *path, 
 	return c;
 }
 
-static void ids_out(struct strbuf *sb, const char *key, struct string_list *l)
+static void ids_out(struct strbuf *sb, const char *key, const struct string_list *l)
 {
 	struct string_list sorted = STRING_LIST_INIT_DUP;
-	struct string_list_item *item;
+	const struct string_list_item *item;
 	int first = 1;
 
 	for_each_string_list_item(item, l)
@@ -873,7 +873,7 @@ static void scope_line(struct strbuf *sb, const char *key, const struct scope_li
 }
 
 /* spec 2.3.2, 7.2: both outputs use the parsed command and success values. */
-void spec_lists(struct strbuf *sb, struct spec *s)
+void spec_lists(struct strbuf *sb, const struct spec *s)
 {
 	size_t j;
 
@@ -890,46 +890,55 @@ void spec_lists(struct strbuf *sb, struct spec *s)
 	strbuf_addstr(sb, "]\n");
 }
 
-/* spec 2.3.2, 7.2: a spec's fixtures, an exec or a prompt one's, as a flow list */
-void spec_fixtures(struct strbuf *sb, struct spec *s)
+/* spec 2.3.2, 7.2: a spec's fixtures as a flow list, in the order of a scope list (v14 3.2a) */
+void spec_fixtures(struct strbuf *sb, const struct spec *s)
 {
-	const struct scope *f;
+	const struct scope **ordered;
+	size_t i;
 
 	if (!s->fixtures.nr)
 		return;
+	ordered = scope_order(&s->fixtures);
 	strbuf_addstr(sb, "  fixtures: [");
-	for_each_scope(f, &s->fixtures) {
-		char *text = scope_text(f, 1);
+	for (i = 0; i < s->fixtures.nr; i++) {
+		char *text = scope_text(ordered[i], 1);
 
-		if (f != s->fixtures.items)
-			strbuf_addstr(sb, ", ");
+		strbuf_addstr(sb, i ? ", " : "");
 		yaml_out_scalar(sb, text);
 		free(text);
 	}
 	strbuf_addstr(sb, "]\n");
+	free(ordered);
 }
 
-/* spec 2.3.2: the contract written in its one form, every key on its own line */
-char *contract_text(struct contract *c)
+/*
+ * spec 2.3.2: the PARTS of C written in the contract's one form, every key on
+ * its own line; the kind heads every part
+ */
+static char *contract_parts_text(const struct contract *c, unsigned parts)
 {
 	struct strbuf sb = STRBUF_INIT;
-	struct string_list_item *item;
+	const struct string_list_item *item;
 	size_t i;
 
-	strbuf_addf(&sb, "condition-id: %s\nchange-id: %s\nkind: %s\ncreator: %s\n",
-		    *c->condition_id ? c->condition_id : "\"\"", *c->change_id ? c->change_id : "\"\"", kind_word(c->kind),
-		    *c->creator ? c->creator : "\"\"");
-	if (c->kind == DEMAND)
+	if (parts & CONTRACT_IDS)
+		strbuf_addf(&sb, "condition-id: %s\nchange-id: %s\n", *c->condition_id ? c->condition_id : "\"\"",
+			    *c->change_id ? c->change_id : "\"\"");
+	strbuf_addf(&sb, "kind: %s\n", kind_word(c->kind));
+	if (parts & CONTRACT_DETAILS)
+		strbuf_addf(&sb, "creator: %s\n", *c->creator ? c->creator : "\"\"");
+	if ((parts & CONTRACT_DETAILS) && c->kind == DEMAND)
 		scope_line(&sb, "consumer", &c->consumer);
-	if (c->kind == DROP)
+	if ((parts & CONTRACT_DETAILS) && c->kind == DROP)
 		strbuf_addf(&sb, "target: %s\n", c->target);
-	else
+	if ((parts & CONTRACT_REQUIREMENTS) && c->kind != DROP)
 		scope_line(&sb, "provider", &c->provider);
-	strbuf_addf(&sb, "state: %s\n", c->state);
-	if (c->kind != DROP) {
+	if (parts & CONTRACT_STATE)
+		strbuf_addf(&sb, "state: %s\n", c->state);
+	if ((parts & CONTRACT_SPECS) && c->kind != DROP) {
 		strbuf_addstr(&sb, "specs:\n");
 		for (i = 0; i < c->nspecs; i++) {
-			struct spec *s = &c->specs[i];
+			const struct spec *s = &c->specs[i];
 
 			strbuf_addstr(&sb, "- body: ");
 			yaml_out_body(&sb, s->body);
@@ -945,18 +954,48 @@ char *contract_text(struct contract *c)
 			spec_fixtures(&sb, s);
 		}
 	}
-	if (c->kind == OFFER) {
+	if ((parts & CONTRACT_REQUIREMENTS) && c->kind == OFFER)
 		ids_out(&sb, "undertakes", &c->undertakes);
+	if ((parts & CONTRACT_DETAILS) && c->kind == OFFER)
 		ids_out(&sb, "undertakes-partially", &c->partially);
-	}
 	/* an empty list is the key alone: the first fulfilment then leaves the key's line as it is (drafts 9.31) */
-	strbuf_addstr(&sb, "fulfilled:\n");
-	for_each_string_list_item(item, &c->fulfilled) {
-		strbuf_addstr(&sb, "- ");
-		yaml_out_scalar(&sb, item->string);
-		strbuf_addch(&sb, '\n');
+	if (parts & CONTRACT_FULFILLED) {
+		strbuf_addstr(&sb, "fulfilled:\n");
+		for_each_string_list_item(item, &c->fulfilled) {
+			strbuf_addstr(&sb, "- ");
+			yaml_out_scalar(&sb, item->string);
+			strbuf_addch(&sb, '\n');
+		}
 	}
 	return strbuf_detach(&sb, NULL);
+}
+
+char *contract_text(const struct contract *c)
+{
+	return contract_parts_text(c, CONTRACT_ALL);
+}
+
+/* Source lines and storage order are not contract semantics: the one form compares them. */
+int contract_same(const struct contract *a, const struct contract *b, unsigned parts)
+{
+	char *x = contract_parts_text(a, parts), *y = contract_parts_text(b, parts);
+	int same = !strcmp(x, y);
+
+	free(x);
+	free(y);
+	return same;
+}
+
+/* a copy is C read back from its one form; a draft's (unpinned) form reads as a draft */
+struct contract *contract_copy(const struct contract *c)
+{
+	char *text = contract_text(c), *err = NULL;
+	struct contract *copy = contract_parse(text, strlen(text), c->path, 1, &err);
+
+	if (!copy)
+		BUG("ait cannot read its own contract text: '%s': %s", c->path, err);
+	free(text);
+	return copy;
 }
 
 /* A recorded tree entry is parsed once at the stored-fact boundary (2.5). */

@@ -80,40 +80,9 @@ void contract_free(struct contract *c)
 	free(c);
 }
 
-struct contract *contract_copy(const struct contract *c)
-{
-	struct contract *copy = xcalloc(1, sizeof(*copy));
-	size_t i;
-
-	snprintf(copy->id, sizeof(copy->id), "%s", c->id);
-	copy->path = xstrdup(c->path);
-	copy->group = xstrdup(c->group);
-	copy->condition_id = xstrdup(c->condition_id);
-	copy->change_id = xstrdup(c->change_id);
-	copy->kind = c->kind;
-	copy->creator = xstrdup(c->creator);
-	copy->state = xstrdup(c->state);
-	copy->target = xstrdup_null(c->target);
-	scopes_copy(&copy->consumer, &c->consumer);
-	scopes_copy(&copy->provider, &c->provider);
-	list_copy(&copy->undertakes, &c->undertakes);
-	list_copy(&copy->partially, &c->partially);
-	list_copy(&copy->fulfilled, &c->fulfilled);
-	copy->specs = xcalloc(c->nspecs, sizeof(*copy->specs));
-	copy->nspecs = c->nspecs;
-	for (i = 0; i < c->nspecs; i++)
-		spec_copy(&copy->specs[i], &c->specs[i]);
-	return copy;
-}
-
 void contract_fulfilled_copy(struct contract *out, const struct contract *from)
 {
 	list_copy(&out->fulfilled, &from->fulfilled);
-}
-
-static int text_same(const char *a, const char *b)
-{
-	return a == b || (a && b && !strcmp(a, b));
 }
 
 /* A's items begin B, in order */
@@ -129,21 +98,6 @@ int list_is_prefix(const struct string_list *a, const struct string_list *b)
 	return 1;
 }
 
-static int list_same(const struct string_list *a, const struct string_list *b, int unordered)
-{
-	size_t i;
-
-	if (!unordered)
-		return a->nr == b->nr && list_is_prefix(a, b);
-	for (i = 0; i < a->nr; i++)
-		if (!unsorted_string_list_has_string((struct string_list *)b, a->items[i].string))
-			return 0;
-	for (i = 0; i < b->nr; i++)
-		if (!unsorted_string_list_has_string((struct string_list *)a, b->items[i].string))
-			return 0;
-	return 1;
-}
-
 int scopes_same(const struct scope_list *a, const struct scope_list *b)
 {
 	size_t i;
@@ -154,48 +108,6 @@ int scopes_same(const struct scope_list *a, const struct scope_list *b)
 		if (!scopes_has(b, &a->items[i], 1))
 			return 0;
 	return 1;
-}
-
-static int specs_same(const struct contract *a, const struct contract *b)
-{
-	size_t i, j;
-
-	if (a->nspecs != b->nspecs)
-		return 0;
-	for (i = 0; i < a->nspecs; i++) {
-		const struct spec *s = &a->specs[i], *t = &b->specs[i];
-
-		if (!text_same(s->body, t->body) || !text_same(s->engine, t->engine) ||
-		    !text_same(s->environment, t->environment) || s->command.nr != t->command.nr ||
-		    !list_same(&s->success, &t->success, 0) || !scopes_same(&s->fixtures, &t->fixtures))
-			return 0;
-		for (j = 0; j < s->command.nr; j++)
-			if (strcmp(s->command.v[j], t->command.v[j]))
-				return 0;
-	}
-	return 1;
-}
-
-/* Source lines and storage order are not contract semantics. */
-int contract_same(const struct contract *a, const struct contract *b, unsigned parts)
-{
-	if (a->kind != b->kind)
-		return 0;
-	if ((parts & CONTRACT_SPECS) && !specs_same(a, b))
-		return 0;
-	if ((parts & CONTRACT_REQUIREMENTS) &&
-	    (!scopes_same(&a->provider, &b->provider) || !list_same(&a->undertakes, &b->undertakes, 1)))
-		return 0;
-	if ((parts & CONTRACT_DETAILS) &&
-	    (!scopes_same(&a->consumer, &b->consumer) || !text_same(a->creator, b->creator) ||
-	     !text_same(a->target, b->target) || !list_same(&a->partially, &b->partially, 1)))
-		return 0;
-	if ((parts & CONTRACT_IDS) &&
-	    (!text_same(a->condition_id, b->condition_id) || !text_same(a->change_id, b->change_id)))
-		return 0;
-	if ((parts & CONTRACT_STATE) && !text_same(a->state, b->state))
-		return 0;
-	return !(parts & CONTRACT_FULFILLED) || list_same(&a->fulfilled, &b->fulfilled, 0);
 }
 
 void fulfilment_free(struct fulfilment *f)

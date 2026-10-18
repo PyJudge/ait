@@ -183,7 +183,7 @@ char *scope_field(const char *location);
 const struct scope **scope_order(const struct scope_list *list);
 char *scopes_text(const struct scope_list *list, int with_base);
 
-/* contract.c: contracts and fulfilments (spec 2.3, 2.5); values.c owns their copies, scope.c their code keys */
+/* contract.c: contracts and fulfilments (spec 2.3, 2.5), copied through their one form; values.c frees them, scope.c owns their code keys */
 struct spec {
 	char *body;
 	char *engine;			/* "exec", or NULL for prompt */
@@ -258,7 +258,7 @@ void branch_free(struct branch *b);
 struct contract *contract_get(struct branch *b, const char *id);
 char *contract_path_id(const char *path);
 struct contract *contract_parse(const char *text, size_t len, const char *path, int draft, char **err);
-char *contract_text(struct contract *c);
+char *contract_text(const struct contract *c);
 struct contract *contract_new(enum kind kind, const char *group, const char *id);
 enum contract_part {
 	CONTRACT_SPECS = 1, CONTRACT_REQUIREMENTS = 2, CONTRACT_DETAILS = 4,
@@ -388,8 +388,8 @@ struct spec *spec_from(struct ynode *map, char **err);
 void yaml_out_scalar(struct strbuf *sb, const char *s);
 void yaml_out_body(struct strbuf *sb, const char *s);
 void yaml_out_node(struct strbuf *sb, const char *key, struct ynode *n);
-void spec_lists(struct strbuf *sb, struct spec *s);
-void spec_fixtures(struct strbuf *sb, struct spec *s);
+void spec_lists(struct strbuf *sb, const struct spec *s);
+void spec_fixtures(struct strbuf *sb, const struct spec *s);
 
 /* request.c, notify.c: the commands; notify.c: the session's tip lines */
 int cmd_request(int argc, const char **argv);

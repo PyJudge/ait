@@ -14,17 +14,17 @@ git add tests specs; git commit -qm fixtures
 printf 'body: |\n  stock never goes below zero\nengine: exec\ncommand: [node, --test, tests/stock.test.js]\nenvironment: node\nfixtures: [tests/stock.test.js, tests/stock.csv]\n' > fix.yaml
 printf 'body: |\n  the report names each item once\nfixtures: [tests/stock.csv]\n' > fix-prompt.yaml
 
-# 2.3.2: fixtures are a spec's key, for prompt specs too, written in the contract as given
+# 2.3.2: fixtures are a spec's key, for prompt specs too, written in the order of a scope list (v14 3.2a)
 run ait future offer src/stock.c fix.yaml,fix-prompt.yaml -m 'offer with fixtures'
 check_rc "a spec with fixtures is taken" 0
 O=$(newest O)
 check "the contract keeps each spec's fixtures" \
-	"yaml $O | grep -qxF '  fixtures: [\"tests/stock.test.js\", \"tests/stock.csv\"]' && yaml $O | grep -cxF '  fixtures: [\"tests/stock.csv\"]' | grep -qx 1"
+	"yaml $O | grep -qxF '  fixtures: [\"tests/stock.csv\", \"tests/stock.test.js\"]' && yaml $O | grep -cxF '  fixtures: [\"tests/stock.csv\"]' | grep -qx 1"
 
 # 7.2: the check request names each task's fixtures
 run ait fulfill "$O" -m impl
 check "the check request names the fixtures of each task" \
-	"grep -A12 'task: \"$O:1\"' .git/ait/check-request.yaml | grep -qF 'fixtures: [\"tests/stock.test.js\", \"tests/stock.csv\"]'"
+	"grep -A12 'task: \"$O:1\"' .git/ait/check-request.yaml | grep -qF 'fixtures: [\"tests/stock.csv\", \"tests/stock.test.js\"]'"
 
 # 2.5: the fulfilment records the provider, the fixtures and the environment file, each once
 res=$(pass_all)
@@ -55,6 +55,9 @@ check "a reworded fulfilment commit keeps the offer current" "test \"\$(state_of
 
 # 2.3.3: the fixtures are part of the condition
 cid=$(yaml "$O" | sed -n 's/^condition-id: //p')
+printf 'body: |\n  stock never goes below zero\nengine: exec\ncommand: [node, --test, tests/stock.test.js]\nenvironment: node\nfixtures: [tests/stock.csv, tests/stock.test.js]\n' > fix.yaml
+run ait future amend "$O" - fix.yaml,fix-prompt.yaml -m 'the same fixtures, reordered'
+check "the same fixtures in another order are the same condition" "test \"\$(yaml $O | sed -n 's/^condition-id: //p')\" = $cid"
 printf 'body: |\n  stock never goes below zero\nengine: exec\ncommand: [node, --test, tests/stock.test.js]\nfixtures: [tests/stock.test.js]\n' > fix.yaml
 run ait future amend "$O" - fix.yaml -m 'fewer fixtures'
 check_rc "amend the fixtures" 0
