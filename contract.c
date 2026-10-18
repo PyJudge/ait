@@ -1604,23 +1604,25 @@ static int scope_overlaps(const struct scope *q, const struct scope_result *qa, 
 	return !a || !c || (a <= d && c <= b);
 }
 
-/* v14 3.9, 3.9a: C overlaps Q in T; DEPENDING leaves out what only a directory provider covers */
+/*
+ * v14 3.9, 3.9a: C's consumer or checked scopes (2.3.2) overlap Q in T;
+ * DEPENDING leaves out what only a directory provider covers
+ */
 int contract_overlaps(const struct contract *c, struct tree *t, const struct scope *q, const struct scope_result *qa,
 		      int depending)
 {
-	size_t i;
+	struct scope_list witnessed = { 0 };
+	const struct scope *s;
+	int overlaps = 0;
 
-	for (i = 0; i < c->consumer.nr; i++)
-		if (scope_overlaps(q, qa, &c->consumer.items[i], t))
-			return 1;
-	for (i = 0; i < c->provider.nr; i++) {
-		const struct scope *s = &c->provider.items[i];
-
-		if ((!depending || (s->kind != SCOPE_DIR && s->kind != SCOPE_ROOT) ||
-		     q->kind == SCOPE_DIR || q->kind == SCOPE_ROOT) && scope_overlaps(q, qa, s, t))
-			return 1;
-	}
-	return 0;
+	for_each_scope(s, &c->consumer)
+		overlaps |= scope_overlaps(q, qa, s, t);
+	witnessed_scopes(c, &witnessed);
+	for_each_scope(s, &witnessed)
+		overlaps |= (!depending || (s->kind != SCOPE_DIR && s->kind != SCOPE_ROOT) ||
+			     q->kind == SCOPE_DIR || q->kind == SCOPE_ROOT) && scope_overlaps(q, qa, s, t);
+	scopes_clear(&witnessed);
+	return overlaps;
 }
 
 /* spec 1.7: how the offer O holds the demand ID: 'w' wholly, 'p' partially, 0 not (or O is no offer) */

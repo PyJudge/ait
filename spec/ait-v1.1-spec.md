@@ -282,7 +282,7 @@ ait 브랜치의 tree 하나에 대해 판정한다: (a) 형식(2.3, 2.5, 배치
   1. stdout에 `On contract branch ait/<name>`(4.2에서 자동이면 ` (the only one)`)을 쓰고 내보낸다.
   2. 5.1의 unmerged 경고(stderr).
   3. `git status -- <pathspec>...`을 stdout을 물려준 채 돌린다(출력을 손대지 않는다). PATH마다 pathspec은 `/`는 `:/`, `DIR/`는 `DIR/`, `PATH`·`PATH:S-E`·`new:PATH`는 `PATH`다(git이 행 범위를 모르고 `/`를 저장소 밖으로 읽기 때문이다, drafts 9.32). 같은 pathspec은 한 번만 준다. git이 0이 아닌 코드로 끝나면 그 코드로 끝낸다.
-  4. 빈 행과 계약 블록. **고르기**: PATH가 없으면 session이 있을 때 내 약속, 내가 만든 demand, 그리고 누구에게나 `current ?unverified`인 계약, 지금 변경에 걸린 계약(5.5), 구조 불변식 위반(4.10). PATH가 있으면 consumer·provider가 PATH와 겹치는(v14 3.9, 사상 tree는 X) 계약. 행 범위 PATH는 X에서 고정한다.
+  4. 빈 행과 계약 블록. **고르기**: PATH가 없으면 session이 있을 때 내 약속, 내가 만든 demand, 그리고 누구에게나 `current ?unverified`인 계약, 지금 변경에 걸린 계약(5.5), 구조 불변식 위반(4.10). PATH가 있으면 consumer나 확인 범위(2.3.2)가 PATH와 겹치는(v14 3.9, 사상 tree는 X) 계약. 행 범위 PATH는 X에서 고정한다.
   5. **블록**(ID 순, 빈 행으로 끝남):
 
 ```
@@ -397,7 +397,7 @@ v14 8장의 확인 요청 파일·결과 파일 형식과 쓰기 규칙(v14 8.2�
 - 9.2 **후보**: `git rev-list --reverse --topo-order --ignore-missing --stdin`에 감시하는 ref의 OID들과 tip의 OID마다 `^OID`. 감시하는 ref는 session의 worktree가 상대하는 로컬 ait 브랜치와, upstream이 원격 추적 ait ref면 그 upstream이다. 되감기나 force push로 사라진 커밋은 알리지 않는다.
 - 9.3 **받는 상태** V: 구독, 받는 worktree의 HEAD, 체크아웃 파일의 내용. 내보내기 전에 V가 바뀌었으면 그 차례를 멈춘다(v14 9.5-3).
 - 9.4 **사건과 키**: 후보 커밋 C가 첫 부모와 비교해 바꾼 계약 파일(`git diff-tree -r --root --name-only --diff-merges=first-parent C`). 키는 바뀐 계약마다 `version ID BLOB`(C의 `<ID>.yaml` blob), 이행 파일마다 `fulfil ID BLOB`(ID는 그 이행 파일의 `contract`). 같은 키는 한 번만 나간다(사본 포함). C의 기록줄의 session이 받는 session이면 건너뛴다.
-- 9.5 **받는 쪽**(관계는 받는 worktree의 HEAD와 상대하는 로컬 ait 브랜치의 tip에서, 사건은 C와 첫 부모 양쪽의 판에서): 내 약속이면 `reason future ROLE K`, K가 내 약속 M의 상대면 `reason future ROLE(M) M`, 내 요구면 `reason demand K`, `sub id K`면 `reason sub id K`, `sub scope Q`가 C나 첫 부모의 판에서 K의 consumer·provider와 기대는 겹침(v14 3.9a)이면 `reason sub scope DISPLAY(Q)`. drop X가 바뀌면 target도 바뀐 계약으로 센다. 버려진 변경은 알리지 않는다(U34).
+- 9.5 **받는 쪽**(관계는 받는 worktree의 HEAD와 상대하는 로컬 ait 브랜치의 tip에서, 사건은 C와 첫 부모 양쪽의 판에서): 내 약속이면 `reason future ROLE K`, K가 내 약속 M의 상대면 `reason future ROLE(M) M`, 내 요구면 `reason demand K`, `sub id K`면 `reason sub id K`, `sub scope Q`가 C나 첫 부모의 판에서 K의 consumer나 확인 범위(2.3.2)와 기대는 겹침(v14 3.9a)이면 `reason sub scope DISPLAY(Q)`. drop X가 바뀌면 target도 바뀐 계약으로 센다. 버려진 변경은 알리지 않는다(U34).
 - 9.6 **전달**: v14 9.5의 순서와 9.6(at-least-once). 차례의 처음에 잠금 안에서 V와 tip 스냅샷 N을 읽고, 후보는 N에서 구한다. 키는 한 차례 안에서도 한 번만 나간다. 내보낸 사건의 키는 내보낼 때, 건너뛴 사건(받는 쪽이 아님, 자기 session의 요청)의 키와 N은 차례 끝에 V가 그대로일 때만 쓴다. stdout 쓰기가 실패하면 listen이 끝난다(EPIPE면 SIGPIPE, 그 밖에는 `fatal: write error`).
 - 9.7 **payload**: `ait-event 1`, `commit OID`, `recipient SID`, `ref REFNAME`(C를 담은 감시 ref, 이름순), `reason …` 행들(v14 9.7의 순서), `in-head yes|no`(키가 모두 받는 session이 상대하는 로컬 ait 브랜치의 tip에 있으면 yes), `contract ID ACTION` 행들(계약마다 해당하는 것을 `create`·`amend`(`condition-id`가 바뀜)·`edit`(`change-id`만)·state 이름·`fulfil` 순으로 한 행씩), 빈 행, `git show --no-color --no-ext-diff --no-textconv --no-show-signature --diff-merges=first-parent --format=fuller --stat --patch C`, `ait-event-end`. 코드 쪽의 `current ?unverified`는 알리지 않는다(C37).
 

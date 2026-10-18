@@ -1,5 +1,5 @@
 #!/bin/sh
-# spec 2.3.2, 2.5, 5.3-5.5, 6.3-5, 6.7.4, 7.2 (U60): a spec's fixtures are witnessed with the provider
+# spec 2.3.2, 2.5, 5.3-5.5, 6.3-5, 6.7.4, 7.2, 9.5 (U60, U66): a spec's fixtures are witnessed with the provider
 . "$(dirname "$0")/lib.sh"
 setup
 
@@ -122,5 +122,24 @@ run ait status /
 check "status judges the file fixture there" "test \"\$(state_of $P)\" = 'current ?unverified' && grep -A8 '^id $P$' '$T/out' | grep -q '^fixtures tests/stock.csv ?changed'"
 cd "$T/r"
 
-rm -f fix.yaml fix-prompt.yaml fix-absent.yaml fix-gone.yaml fix-range.yaml fix-bad.yaml fix-clone.yaml
+# 6.3, 9.5: a path selects the contracts whose consumer or checked scopes (2.3.2) meet it
+mkdir -p data; printf 'x\n' > data/only.csv; git add data; git commit -qm 'a fixture alone'
+printf 'body: |\n  only the csv\nengine: exec\ncommand: [true]\nenvironment: node\nfixtures: [data/only.csv]\n' > fix-only.yaml
+run ait future offer src/order.c fix-only.yaml -m 'fixture selects'
+F=$(newest O)
+run ait status data/only.csv
+check "status PATH picks a contract by its fixture" "grep -qx 'id $F' '$T/out'"
+run ait status specs/environments/node.yaml
+check "status PATH picks a contract by its environment file" "grep -qx 'id $F' '$T/out'"
+BOB=$(AIT_SESSION=- ait session open --agent bob 2>/dev/null)
+AIT_SESSION=$BOB ait sub data/only.csv >/dev/null
+AIT_SESSION=$BOB ait listen > "$T/events" 2>/dev/null &
+L=$!
+sleep 1.5
+ait future amend "$F" -m 'touch the fixture contract' >/dev/null
+for i in $(seq 1 50); do grep -q ait-event-end "$T/events" && break; sleep 0.1; done
+kill $L; wait $L 2>/dev/null
+check "sub scope on a fixture is told of its contract" "grep -qx 'reason sub scope data/only.csv' '$T/events'"
+
+rm -f fix.yaml fix-prompt.yaml fix-only.yaml fix-absent.yaml fix-gone.yaml fix-range.yaml fix-bad.yaml fix-clone.yaml
 done_testing
