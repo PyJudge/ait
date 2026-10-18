@@ -11,7 +11,7 @@ description: ait v1.1의 별도 계약 브랜치를 쓰는 저장소에서 요�
 
 1. 저장소에서 `ait init`을 실행한다. 계약은 코드와 독립된 `ait/<name>` 브랜치에 생긴다. 코드 브랜치의 `.ait/`는 초안 자리이며 `.ait/init`을 쓰지 않는다.
 2. `ait session list`에서 내 agent 이름과 현재 worktree가 맞는 session을 재사용한다. 없으면 `ait session open --agent <name>`. 다른 session을 명시하려면 `AIT_SESSION=<SID>`를 쓴다. 에이전트마다 코드 worktree와 session을 따로 둔다.
-3. `ait status /`로 전체 계약을 보고, 작업할 범위는 `ait status src/stock.c`처럼 좁힌다. PATH 인자는 범위이며 계약 ID 필터가 아니다.
+3. `ait status /`로 전체 계약을 보고, 작업할 범위는 `ait status src/stock.c`처럼 좁힌다. PATH 인자는 범위이며 계약 ID 필터가 아니다. consumer나 확인 범위(provider, `fixtures`, 환경 정의 파일)가 그 범위와 겹치는 계약이 나온다.
 4. ait 브랜치가 여럿이면 `ait checkout ait/<name>`으로 상대할 브랜치를 고른다. 코드 작업 폴더는 그대로다. `ait switch ait/<name>`은 실제로 계약 브랜치에 들어가므로 코드 개발에 쓰지 않는다.
 
 Git 2.53 이상이 필요하다. ait는 아래의 정해진 명령만 받는다. 일반 Git 작업은 `git`으로 한다.
@@ -32,7 +32,7 @@ fixtures: [tests/stock.sh, tests/stock-cases.csv]
 
 `body`는 필수다. exec는 `command`가 필요하고, `success` 생략은 `[0]`이다. prompt는 `body`와 `fixtures`만 쓴다. exec는 선택적으로 `environment: NAME`을 쓰며 이행할 index의 `specs/environments/NAME.yaml`을 참조한다. ait가 검사를 실행하지 않으므로 에이전트가 직접 실행·확인한다.
 
-`fixtures`에는 검사가 읽는 코드 쪽 파일(테스트, 데이터, 근거 자료)을 provider처럼 파일이나 행 범위(`tests/stock.sh:10-40`)로 적는다. 계약을 만들 때 그 파일이 있어야 하고, 디렉터리는 쓸 수 없다. 이행하면 provider와 함께 그 파일들의 내용 지문이 기록되고, 환경 정의 파일도 저절로 들어간다. 이행 뒤 fixture나 환경 정의를 고치면 계약은 `current ?unverified`가 되고 status의 `fixtures` 행에 `?changed`가 붙는다. 바꾼 것이 맞으면 다시 확인해 이행하고, 아니면 이행 파일의 `commit`의 판으로 되돌린다. 검사를 통과시키려고 fixture를 약하게 고치지 않는다.
+`fixtures`에는 검사가 읽는 코드 쪽 파일(테스트, 데이터, 근거 자료)을 provider처럼 파일이나 행 범위(`tests/stock.sh:10-40`)로 적는다. 계약을 만들 때 그 파일이 있어야 하고, 디렉터리는 쓸 수 없다. 이행하면 provider와 함께 그 파일들의 내용 지문이 기록되고, 환경 정의 파일도 저절로 들어간다. 이행 뒤 fixture나 환경 정의를 고치면 계약은 `current ?unverified`가 되고 status의 `fixtures` 행에 `?changed`가 붙는다. 바꾼 것이 맞으면 다시 확인해 이행하고, 아니면 이행 파일의 `commit`의 판으로 되돌린다. 테스트나 데이터를 고치기 전에 `ait status tests/stock.sh`로 그 파일을 확인 범위에 둔 계약을 본다. 검사를 통과시키려고 fixture를 약하게 고치지 않는다.
 
 조건 파일은 계약의 `specs`로 복사된다. 원래 파일을 고친 것만으로 계약이 바뀌지 않는다. 고친 파일을 amend에 다시 주어야 한다. 다른 worktree가 그 원본 파일을 가지고 있다고 가정하지 않는다.
 
@@ -73,7 +73,7 @@ offer를 이행하면 그 offer가 통째로 떠맡은 살아 있는 demand도 �
 
 일반 코드 커밋은 `git commit`이다. 이행은 Git의 hook·서명을 거쳐 코드 커밋을 만든 뒤 계약 브랜치에 이행을 기록한다. stage가 비었으면 현재 HEAD를 기록한다. 코드 커밋 뒤 계약 기록이 실패하면 `committed ... but ... not fulfilled`를 따로 알리므로 성공으로 간주하지 않는다.
 
-실제로 사소하다고 판단한 변경만 `-r` 대신 `--force`로 이행한다. `forced`로 기록된다. 명세나 구현을 확인하지 못한 일을 넘기는 수단으로 쓰지 않는다.
+실제로 사소하다고 판단한 변경만 `-r` 대신 `--force`로 이행한다. `forced`로 기록된다. 명세나 구현을 확인하지 못한 일을 넘기는 수단으로 쓰지 않는다. `fail`인 과제가 있으면 `--force`로 넘기지 않고 코드를 고쳐 다시 검사한다.
 
 ## 조건 변경·재개·철회
 
@@ -116,7 +116,7 @@ ait sub O0123456789ab
 ait listen --fetch 30
 ```
 
-`ait sub`는 ID나 범위를 받는다(`sub id K`를 직접 입력하는 문법이 아니다). `ait unsub <ID 또는 표시 범위>`로 구독을 제거한다. listen은 현재 session의 새 사건을 stdout으로 내보내며 session마다 하나만 실행한다. 종료할 때 SIGINT·SIGTERM을 사용한다. 내 약속과 내 current demand에 대한 알림도 받는다. 자신의 session이 만든 요청은 알리지 않는다.
+`ait sub`는 ID나 범위를 받는다(`sub id K`를 직접 입력하는 문법이 아니다). 범위 구독은 consumer나 확인 범위가 그 범위와 겹치는 계약의 변경을 알린다. `ait unsub <ID 또는 표시 범위>`로 구독을 제거한다. listen은 현재 session의 새 사건을 stdout으로 내보내며 session마다 하나만 실행한다. 종료할 때 SIGINT·SIGTERM을 사용한다. 내 약속과 내 current demand에 대한 알림도 받는다. 자신의 session이 만든 요청은 알리지 않는다.
 
 계약 브랜치끼리 충돌하면(`contract branches conflict`) `contract pull`의 hint에 따라 계약 브랜치에서 Git으로 풀고, 코드 브랜치로 돌아온다. 일반 코드 merge와 계약 브랜치 merge는 별개다. ait가 코드 커밋을 자동으로 원격에 보내지 않는다.
 
