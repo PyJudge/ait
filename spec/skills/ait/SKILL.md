@@ -5,7 +5,7 @@ description: ait v1.1의 별도 계약 브랜치를 쓰는 저장소에서 요�
 
 # ait v1.1
 
-다른 코드에 기대는 조건을 demand로, 내가 제공할 조건을 offer로 적는다. 착수할 때 offer가 demand를 떠맡고, 구현과 검사를 마치면 이행한다. 구현이 아직 없으면 [명세만 있는 저장소](references/spec-only.md)를 읽는다.
+다른 코드에 기대는 조건을 demand로, 내가 제공할 조건을 offer로 적는다. 착수할 때 offer가 demand를 떠맡고, 구현과 검사를 마치면 이행한다. ait의 핵심은 새 구현이나 새 명세가 이미 있는 계약과 충돌하는지 보는 것이다. 충돌하지 않음을 확인한 뒤에만 이행한다. 구현이 아직 없으면 [명세만 있는 저장소](references/spec-only.md)를 읽는다.
 
 ## 시작
 
@@ -34,6 +34,8 @@ fixtures: [tests/stock.sh, tests/stock-cases.csv]
 
 `fixtures`에는 검사가 읽는 코드 쪽 파일(테스트, 데이터, 근거 자료)을 provider처럼 파일이나 행 범위(`tests/stock.sh:10-40`)로 적는다. 계약을 만들 때 그 파일이 있어야 하고, 디렉터리는 쓸 수 없다. 이행하면 provider와 함께 그 파일들의 내용 지문이 기록되고, 환경 정의 파일도 저절로 들어간다. 이행 뒤 fixture나 환경 정의를 고치면 계약은 `current ?unverified`가 되고 status의 `fixtures` 행에 `?changed`가 붙는다. 바꾼 것이 맞으면 다시 확인해 이행하고, 아니면 이행 파일의 `commit`의 판으로 되돌린다. 테스트나 데이터를 고치기 전에 `ait status tests/stock.sh`로 그 파일을 확인 범위에 둔 계약을 본다. 검사를 통과시키려고 fixture를 약하게 고치지 않는다.
 
+새 조건을 적거나 바꾸기 전에 `ait status <범위>`로 그 범위에 걸린 계약을 보고, 새 조건이 그 조건들과 충돌하지 않는지 확인한다.
+
 조건 파일은 계약의 `specs`로 복사된다. 원래 파일을 고친 것만으로 계약이 바뀌지 않는다. 고친 파일을 amend에 다시 주어야 한다. 다른 worktree가 그 원본 파일을 가지고 있다고 가정하지 않는다.
 
 ```sh
@@ -49,8 +51,9 @@ ait future offer src/stock.c specs/stock.yaml as o undertake D0123456789ab o -m 
 
 1. 수정 전 `ait status <범위>`에서 계약과 조건, `undertakes`·`undertaken-by` 관계를 확인한다. current 판정은 코드와 이행 기록에서 계산된다. 계약 YAML의 저장된 `state`만 보고 current를 판단하지 않는다.
 2. 코드를 구현하고 필요한 파일을 `git add`한다. **fulfill은 현재 Git stage 전체를 코드 커밋으로 만든다.** `git diff --cached`로 이번에 커밋할 내용을 확인한다.
-3. `ait fulfill <K>... -m "변경 이유"`를 실행한다. 같은 변경에 걸린 다른 current 계약도 확인하여 필요한 ID를 함께 준다.
-4. `check results required`이면 stdout의 `request PATH`, `result PATH`를 읽는다. 요청의 `tree`는 검사할 index tree다. 작업 폴더의 다른 내용으로 대신 검사하지 않는다. 필요하면 임시 폴더에 그 tree를 꺼낸다.
+3. `ait status`로 `touch`(이번 변경이 확인 범위를 바꾸는 계약)와 `current ?unverified`(이행 뒤 코드가 바뀐 계약)를 본다. 코드 쪽의 `?unverified`는 알림이 오지 않는다. 남의 계약이어도 새 구현이 그 조건과 충돌하지 않는지 확인하고, 충돌하지 않으면 그 ID를 함께 주어 이행해 둔다. 충돌하면 이행하지 않는다. 코드를 고치거나, 조건을 바꿔야 하면 아래의 조건 변경으로 다시 연다.
+4. `ait fulfill <K>... -m "변경 이유"`를 실행한다.
+5. `check results required`이면 stdout의 `request PATH`, `result PATH`를 읽는다. 요청의 `tree`는 검사할 index tree다. 작업 폴더의 다른 내용으로 대신 검사하지 않는다. 필요하면 임시 폴더에 그 tree를 꺼낸다.
 
    ```sh
    top=$(git rev-parse --show-toplevel)
@@ -59,8 +62,8 @@ ait future offer src/stock.c specs/stock.yaml as o undertake D0123456789ab o -m 
    GIT_INDEX_FILE="$d/index" git -C "$top" checkout-index -a --prefix="$d/tree/"
    ```
 
-5. 각 과제를 검사하고 결과 파일에 `outcome: pass|fail|unknown`과 `basis`·`reason`을 채운다. 환경 정의가 있으면 `prepare`를 차례로 돌리고, 하나라도 실패하면 확인하지 않고 `unknown`이다. `cleanup`은 무엇이 실패했든 돈 `prepare`까지 역순으로 돌리고, 그 실패는 `reason`에만 적는다. pass에는 실제 검사 근거가 필요하다. 실행하지 않은 검사를 pass로 쓰지 않는다. `condition-ids`와 과제 이름을 고치지 않는다.
-6. 같은 명령에 `-r <결과 경로>`를 붙여 다시 실행한다. 코드가 바뀌었으면 다시 검사한다. `condition-ids`는 계약 조건의 일치만 확인하며 검사 결과를 코드와 묶어 보증하지 않는다.
+6. 각 과제를 검사하고 결과 파일에 `outcome: pass|fail|unknown`과 `basis`·`reason`을 채운다. 환경 정의가 있으면 `prepare`를 차례로 돌리고, 하나라도 실패하면 확인하지 않고 `unknown`이다. `cleanup`은 무엇이 실패했든 돈 `prepare`까지 역순으로 돌리고, 그 실패는 `reason`에만 적는다. pass에는 실제 검사 근거가 필요하다. 실행하지 않은 검사를 pass로 쓰지 않는다. `condition-ids`와 과제 이름을 고치지 않는다.
+7. 같은 명령에 `-r <결과 경로>`를 붙여 다시 실행한다. 코드가 바뀌었으면 다시 검사한다. `condition-ids`는 계약 조건의 일치만 확인하며 검사 결과를 코드와 묶어 보증하지 않는다.
 
 ```sh
 ait fulfill O0123456789ab -r /path/to/check-result.yaml -m "재고 예약 구현"
