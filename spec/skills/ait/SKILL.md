@@ -1,59 +1,59 @@
 ---
 name: ait
-description: ait v1.1의 별도 계약 브랜치를 쓰는 저장소에서 요구·약속·떠맡기·이행·알림을 다룬다. 사용자가 ait를 요청하거나 저장소가 ait 계약을 사용하면, 코드를 수정하거나 커밋하기 전에 읽는다.
+description: Handles demands, promises, undertakings, fulfillments and notifications in a repository that keeps ait v1.1 contracts on separate contract branches. Read it before changing or committing code when the user asks for ait or the repository uses ait contracts.
 ---
 
 # ait v1.1
 
-다른 코드에 기대는 조건을 demand로, 내가 제공할 조건을 offer로 적는다. 착수할 때 offer가 demand를 떠맡고, 구현과 검사를 마치면 이행한다. ait의 핵심은 새 구현이나 새 명세가 이미 있는 계약과 충돌하는지 보는 것이다. 충돌하지 않음을 확인한 뒤에만 이행한다. 구현이 아직 없으면 [명세만 있는 저장소](references/spec-only.md)를 읽는다.
+Write a condition your code relies on from other code as a demand, and a condition you provide as an offer. When you start, an offer undertakes a demand; when the implementation and its checks are done, you fulfill it. The heart of ait is seeing whether a new implementation or a new condition conflicts with the contracts already there. Fulfill only after you have checked that it does not. If there is no implementation yet, read [A repository with no implementation yet](references/spec-only.md).
 
-## 시작
+## Start
 
-1. 저장소에서 `ait init`을 실행한다. 계약은 코드와 독립된 `ait/<name>` 브랜치에 생긴다. 코드 브랜치의 `.ait/`는 초안 자리이며 `.ait/init`을 쓰지 않는다.
-2. `ait session list`에서 내 agent 이름과 현재 worktree가 맞는 session을 재사용한다. 없으면 `ait session open --agent <name>`. 다른 session을 명시하려면 `AIT_SESSION=<SID>`를 쓴다. 에이전트마다 코드 worktree와 session을 따로 둔다.
-3. `ait status /`로 전체 계약을 보고, 작업할 범위는 `ait status src/stock.c`처럼 좁힌다. PATH 인자는 범위이며 계약 ID 필터가 아니다. consumer나 확인 범위(provider, `fixtures`, 환경 정의 파일)가 그 범위와 겹치는 계약이 나온다.
-4. ait 브랜치가 여럿이면 `ait checkout ait/<name>`으로 상대할 브랜치를 고른다. 코드 작업 폴더는 그대로다. `ait switch ait/<name>`은 실제로 계약 브랜치에 들어가므로 코드 개발에 쓰지 않는다.
+1. Run `ait init` in the repository. Contracts live on `ait/<name>` branches, independent of the code. `.ait/` on a code branch is the place for drafts; do not write `.ait/init`.
+2. In `ait session list`, reuse the session whose agent name and worktree match yours. If there is none, `ait session open --agent <name>`. To name another session, use `AIT_SESSION=<SID>`. Give each agent its own code worktree and session.
+3. See all contracts with `ait status /`, and narrow to your work with `ait status src/stock.c`. A PATH argument is a scope, not a contract ID filter: it shows the contracts whose consumer or checked scopes (provider, `fixtures`, environment definition files) overlap it.
+4. If there are several ait branches, choose the one to work against with `ait checkout ait/<name>`. Your code work tree stays as it is. `ait switch ait/<name>` actually enters the contract branch; do not use it for code work.
 
-Git 2.53 이상이 필요하다. ait는 아래의 정해진 명령만 받는다. 일반 Git 작업은 `git`으로 한다.
+Git 2.53 or later is required. ait takes only the commands below. Do ordinary Git work with `git`.
 
-## 계약과 명세 정의
+## Contracts and conditions
 
-범위는 저장소 뿌리 기준이다: `src/stock.c`, `src/stock.c:10-40`, `src/`, `/`, 아직 없는 파일은 `new:src/stock.c`. 여럿이면 `,`로 잇는다. 공백이 든 경로는 셸 낱말 하나로 따옴표를 쳐서 준다(`"doc/법령 문안.md"`). 출력은 그런 경로를 git처럼 큰따옴표로 감싸 보여 준다. 행 범위는 보통 HEAD에서, 이행하는 요청과 `K=SCOPES`는 index에서 고정한다. 파일 단위 범위를 우선한다.
+Scopes are relative to the repository root: `src/stock.c`, `src/stock.c:10-40`, `src/`, `/`, and `new:src/stock.c` for a file that does not exist yet. Join several with `,`. Quote a path with spaces as one shell word (`"doc/law draft.md"`); output shows such paths in double quotes, as git does. Line ranges are pinned at HEAD, except in a fulfilling request and in `K=SCOPES`, where they are pinned at the index. Prefer whole-file scopes.
 
-정의 파일은 `ait contract new spec specs/stock.yaml exec` 또는 `prompt`로 틀을 받아 쓴다.
+Get a template for a definition file with `ait contract new spec specs/stock.yaml exec` or `prompt`.
 
 ```yaml
-body: 재고가 모자라면 예약을 거절하고 재고를 바꾸지 않는다
+body: when stock is short, refuse the reservation and leave the stock unchanged
 engine: exec
 command: [sh, tests/stock.sh]
 success: [0]
 fixtures: [tests/stock.sh, tests/stock-cases.csv]
 ```
 
-`body`는 필수다. exec는 `command`가 필요하고, `success` 생략은 `[0]`이다. prompt는 `body`와 `fixtures`만 쓴다. exec는 선택적으로 `environment: NAME`을 쓰며 이행할 index의 `specs/environments/NAME.yaml`을 참조한다. ait가 검사를 실행하지 않으므로 에이전트가 직접 실행·확인한다.
+`body` is required. exec needs `command`; an omitted `success` is `[0]`. prompt uses only `body` and `fixtures`. exec may add `environment: NAME`, which refers to `specs/environments/NAME.yaml` in the index being fulfilled. ait does not run checks; the agent runs and confirms them itself.
 
-`fixtures`에는 검사가 읽는 코드 쪽 파일(테스트, 데이터, 근거 자료)을 provider처럼 파일이나 행 범위(`tests/stock.sh:10-40`)로 적는다. 바뀌면 검사 결과가 달라질 수 있는 것은 빠짐없이 적고 그 밖은 적지 않는다(적은 것이 바뀔 때만 `touch`·`?unverified`로 드러난다). 계약을 만들 때 그 파일이 있어야 하고, 디렉터리는 쓸 수 없다. 이행하면 provider와 함께 그 파일들의 내용 지문이 기록되고, 환경 정의 파일도 저절로 들어간다. 이행 뒤 fixture나 환경 정의를 고치면 계약은 `current ?unverified`가 되고 status의 `fixtures` 행에 `?changed`가 붙는다. 바꾼 것이 맞으면 다시 확인해 이행하고, 아니면 이행 파일의 `commit`의 판으로 되돌린다. 테스트나 데이터를 고치기 전에 `ait status tests/stock.sh`로 그 파일을 확인 범위에 둔 계약을 본다. 검사를 통과시키려고 fixture를 약하게 고치지 않는다.
+In `fixtures`, list the code-side files the check reads (tests, data, sources) as files or line ranges (`tests/stock.sh:10-40`), as for provider. List every file whose change could alter the check's result, and nothing else (only a change in what is listed shows as `touch` or `?unverified`). The files must exist when the contract is made, and directories are not allowed. Fulfilling records their content fingerprints along with the provider's, and environment definition files are included on their own. Changing a fixture or an environment definition after fulfilling makes the contract `current ?unverified`, with `?changed` on the `fixtures` line of status. If the change is right, check again and fulfill; if not, restore the version at the fulfillment file's `commit`. Before changing tests or data, run `ait status tests/stock.sh` to see the contracts that hold that file in their checked scopes. Do not weaken a fixture to make a check pass.
 
-새 조건을 적거나 바꾸기 전에 `ait status <범위>`로 그 범위에 걸린 계약을 보고, 새 조건이 그 조건들과 충돌하지 않는지 확인한다.
+Before writing or changing a condition, run `ait status <scope>` to see the contracts on that scope, and check that the new condition does not conflict with theirs.
 
-조건 파일은 계약의 `specs`로 복사된다. 원래 파일을 고친 것만으로 계약이 바뀌지 않는다. 고친 파일을 amend에 다시 주어야 한다. 다른 worktree가 그 원본 파일을 가지고 있다고 가정하지 않는다.
+A condition file is copied into the contract's `specs`. Editing the original file does not change the contract; give the edited file to amend again. Do not assume another worktree has the original file.
 
 ```sh
-ait future demand src/order.c src/stock.c specs/stock.yaml -m "주문이 기대는 재고 조건"
-ait future offer src/stock.c specs/stock.yaml as o undertake D0123456789ab o -m "구현 착수"
+ait future demand src/order.c src/stock.c specs/stock.yaml -m "stock condition orders rely on"
+ait future offer src/stock.c specs/stock.yaml as o undertake D0123456789ab o -m "start the implementation"
 ```
 
-예시 ID는 실제 출력의 ID로 바꾼다. `as o`는 같은 요청 안에서만 쓸 수 있다. `undertake D O`는 통째 떠맡기, `undertake -p D O`는 부분 떠맡기다. 같은 살아 있는 demand에 통째·부분을 섞을 수 없다.
+Replace the example IDs with those in the actual output. `as o` works only within the same request. `undertake D O` undertakes wholly, `undertake -p D O` partially. One live demand cannot be undertaken both wholly and partially.
 
-`/`, `DIR/`, `new:PATH` 같은 추상 provider는 future로 약속할 때 쓴다. 이행할 때는 존재하는 파일이나 행 범위로 좁힌다.
+Abstract providers such as `/`, `DIR/` and `new:PATH` are for promising in future. When fulfilling, narrow them to existing files or line ranges.
 
-## 코드 수정과 이행
+## Changing code and fulfilling
 
-1. 수정 전 `ait status <범위>`에서 계약과 조건, `undertakes`·`undertaken-by` 관계를 확인한다. current 판정은 코드와 이행 기록에서 계산된다. 계약 YAML의 저장된 `state`만 보고 current를 판단하지 않는다.
-2. 코드를 구현하고 필요한 파일을 `git add`한다. **fulfill은 현재 Git stage 전체를 코드 커밋으로 만든다.** `git diff --cached`로 이번에 커밋할 내용을 확인한다.
-3. `ait status`로 `touch`(이번 변경이 확인 범위를 바꾸는 계약)와 `current ?unverified`(이행 뒤 코드가 바뀐 계약)를 본다. 코드 쪽의 `?unverified`는 알림이 오지 않는다. 남의 계약이어도 새 구현이 그 조건과 충돌하지 않는지 확인하고, 충돌하지 않으면 그 ID를 함께 주어 이행해 둔다. 충돌하면 이행하지 않는다. 코드를 고치거나, 조건을 바꿔야 하면 아래의 조건 변경으로 다시 연다.
-4. `ait fulfill <K>... -m "변경 이유"`를 실행한다.
-5. `check results required`이면 stdout의 `request PATH`, `result PATH`를 읽는다. 요청의 `tree`는 검사할 index tree다. 작업 폴더의 다른 내용으로 대신 검사하지 않는다. 필요하면 임시 폴더에 그 tree를 꺼낸다.
+1. Before changing anything, check the contracts, their conditions and their `undertakes` and `undertaken-by` relations in `ait status <scope>`. Whether a contract is current is computed from the code and the fulfillment records; do not judge it from the `state` stored in the contract YAML.
+2. Implement the code and `git add` what is needed. **fulfill turns the whole current Git stage into a code commit.** Check what will be committed with `git diff --cached`.
+3. In `ait status`, look at `touch` (contracts whose checked scopes this change alters) and `current ?unverified` (contracts whose code changed after they were fulfilled). A code-side `?unverified` sends no notification. Even for another agent's contract, check that the new implementation does not conflict with its condition; if it does not, fulfill it now by giving its ID too. If it conflicts, do not fulfill: fix the code, or, if the condition has to change, reopen it as in "Changing, reopening and withdrawing conditions" below.
+4. Run `ait fulfill <K>... -m "reason for the change"`.
+5. On `check results required`, read `request PATH` and `result PATH` from stdout. The request's `tree` is the index tree to check; do not check other contents of the work tree in its place. If needed, check that tree out into a temporary directory.
 
    ```sh
    top=$(git rev-parse --show-toplevel)
@@ -62,65 +62,65 @@ ait future offer src/stock.c specs/stock.yaml as o undertake D0123456789ab o -m 
    GIT_INDEX_FILE="$d/index" git -C "$top" checkout-index -a --prefix="$d/tree/"
    ```
 
-6. 각 과제를 검사하고 결과 파일에 `outcome: pass|fail|unknown`과 `basis`·`reason`을 채운다. 환경 정의가 있으면 `prepare`를 차례로 돌리고, 하나라도 실패하면 확인하지 않고 `unknown`이다. `cleanup`은 무엇이 실패했든 돈 `prepare`까지 역순으로 돌리고, 그 실패는 `reason`에만 적는다. pass에는 실제 검사 근거가 필요하다. 실행하지 않은 검사를 pass로 쓰지 않는다. `condition-ids`와 과제 이름을 고치지 않는다.
-7. 같은 명령에 `-r <결과 경로>`를 붙여 다시 실행한다. 코드가 바뀌었으면 다시 검사한다. `condition-ids`는 계약 조건의 일치만 확인하며 검사 결과를 코드와 묶어 보증하지 않는다.
+6. Check each task and fill in `outcome: pass|fail|unknown`, `basis` and `reason` in the result file. With an environment definition, run its `prepare` steps in order; if any fails, do not check, and the outcome is `unknown`. Whatever failed, run `cleanup` in reverse order for the `prepare` steps that ran, and write its failures only in `reason`. A pass needs real evidence from the check. Do not write pass for a check you did not run. Do not change `condition-ids` or task names.
+7. Run the same command again with `-r <result path>`. If the code changed, check again. `condition-ids` only confirms that the contract's conditions match; it does not bind the check results to the code.
 
 ```sh
-ait fulfill O0123456789ab -r /path/to/check-result.yaml -m "재고 예약 구현"
-ait fulfill O0123456789ab=src/stock.c -r /path/to/check-result.yaml -m "구현 위치 확정"
+ait fulfill O0123456789ab -r /path/to/check-result.yaml -m "implement stock reservation"
+ait fulfill O0123456789ab=src/stock.c -r /path/to/check-result.yaml -m "settle where it is implemented"
 ```
 
-좁힐 범위는 첫 실행과 `-r` 재실행에 똑같이 준다.
+Give the same narrowed scopes in the first run and in the `-r` rerun.
 
-offer를 이행하면 그 offer가 통째로 떠맡은 살아 있는 demand도 함께 이행한다. demand를 이행하면 그것을 부분으로 떠맡은 current가 아닌 offer들이 포함될 수 있다. 요청 파일의 과제 전체를 검사한다.
+Fulfilling an offer also fulfills the live demands it wholly undertook. Fulfilling a demand may include the non-current offers that partially undertook it. Check every task in the request file.
 
-일반 코드 커밋은 `git commit`이다. 이행은 Git의 hook·서명을 거쳐 코드 커밋을 만든 뒤 계약 브랜치에 이행을 기록한다. stage가 비었으면 현재 HEAD를 기록한다. 코드 커밋 뒤 계약 기록이 실패하면 `committed ... but ... not fulfilled`를 따로 알리므로 성공으로 간주하지 않는다.
+An ordinary code commit is `git commit`. A fulfillment makes the code commit through Git's hooks and signing, then records the fulfillment on the contract branch. With an empty stage it records the current HEAD. If recording the contract fails after the code commit, ait reports `committed ... but ... not fulfilled` separately; do not treat that as success.
 
-실제로 사소하다고 판단한 변경만 `-r` 대신 `--force`로 이행한다. `forced`로 기록된다. 명세나 구현을 확인하지 못한 일을 넘기는 수단으로 쓰지 않는다. `fail`인 과제가 있으면 `--force`로 넘기지 않고 코드를 고쳐 다시 검사한다.
+Use `--force` instead of `-r` only for a change you judged truly trivial; it is recorded as `forced`. Do not use it to pass work whose spec or implementation you could not check. If a task is `fail`, do not pass it with `--force`; fix the code and check again.
 
-## 조건 변경·재개·철회
+## Changing, reopening and withdrawing conditions
 
 ```sh
-ait future amend O0123456789ab - specs/new-stock.yaml -m "새 조건"
-ait future amend O0123456789ab -m "여러 커밋에 걸친 재작업"
-ait future cancel O0123456789ab -m "약속 중단"
-ait release D0123456789ab O0123456789ab -m "이 요구의 떠맡기를 놓음"
-ait future drop O0123456789ab -m "현재 보장 철회 제안"
+ait future amend O0123456789ab - specs/new-stock.yaml -m "new condition"
+ait future amend O0123456789ab -m "rework over several commits"
+ait future cancel O0123456789ab -m "stop the promise"
+ait release D0123456789ab O0123456789ab -m "let go of undertaking this demand"
+ait future drop O0123456789ab -m "propose withdrawing the current guarantee"
 ```
 
-D의 amend 인자는 `consumer provider FILES`, O는 `provider FILES`, drop은 `target`이다. 인자의 단독 `-`는 그대로 둔다는 뜻이다. 인자 없는 future amend는 새 조건 ID로 재개하므로 이전 이행이 current의 근거가 되지 않는다. 재작업 후 다시 fulfill한다.
+The amend arguments are `consumer provider FILES` for D, `provider FILES` for O, and `target` for drop. A lone `-` argument keeps what is there. A future amend without arguments reopens with a new condition ID, so an earlier fulfillment no longer makes the contract current. Fulfill again after the rework.
 
-한 요청에 절을 이어 쓸 수 있다. 통째 offer가 기대는 demand의 조건을 다시 열면 그 offer도 같은 요청에서 다시 열어야 할 수 있다. 각 절의 전이는 그 시점에, 떠맡기 섞기·기대는 짝은 요청 전체에 대해 검사하므로 오류의 hint를 따른다.
+One request can chain clauses. Reopening the condition of a demand that a whole offer relies on may require reopening that offer in the same request. Each clause's transition is checked when it is applied, while mixed undertakings and relying pairs are checked over the whole request, so follow the error's hint.
 
-current 보장을 철회하려면 `future drop K`가 만든 X를 확인하고 `ait fulfill X -m "철회"`한다. target은 withdrawn이 된다. 끝난 계약을 직접 되살리거나 이행 파일·첨부 목록을 손으로 고치지 않는다.
+To withdraw a current guarantee, check the X that `future drop K` made and run `ait fulfill X -m "withdraw"`. The target becomes withdrawn. Do not revive an ended contract directly, and do not edit fulfillment files or attachment lists by hand.
 
-## 직접 작성하는 초안
+## Drafts written directly
 
-`ait contract new demand|offer|drop [GROUP]` 또는 `ait contract checkout K...`가 `.ait/`에 초안을 만든다. 필요한 필드를 고친 뒤 별도 계약 stage에 넣는다. 아래는 그룹이 없는 계약의 예다. 그룹이 있으면 checkout이 출력한 `path PATH`의 PATH를 쓴다.
+`ait contract new demand|offer|drop [GROUP]` or `ait contract checkout K...` makes a draft in `.ait/`. Edit the fields you need, then put it in the separate contract stage. The example below is for a contract without a group; with a group, use the PATH of the `path PATH` that checkout printed.
 
 ```sh
 ait contract checkout O0123456789ab
 ait contract add .ait/O0123456789ab.yaml
-ait contract commit -m "계약 초안 변경"
+ait contract commit -m "change the contract draft"
 ```
 
-계약 add·commit은 사용자의 코드 Git stage를 포함하지 않는다. 직접 쓴 신규 계약도 future에서 시작하며 이행은 fulfill만 기록한다. 초안이 낡았다는 오류가 나면 기존 초안을 별도 위치로 보관·이동한 뒤 checkout으로 현재 판을 받는다. 새 초안에 의도한 변경만 다시 적용하여 add·commit한다. checkout은 기존 초안을 덮어쓰지 않는다.
+Contract add and commit do not include the user's code Git stage. A new contract written directly also starts in future, and only fulfill records a fulfillment. If an error says a draft is stale, keep the existing draft elsewhere, then get the current version with checkout. Apply only the intended change to the new draft again, then add and commit. checkout does not overwrite an existing draft.
 
-## 같은 clone·원격·알림
+## Same clone, remotes and notifications
 
-같은 clone의 worktree들은 `ait/*` ref를 공유한다. 상대하는 ait 브랜치가 같으면 다른 에이전트의 계약은 즉시 보이며 ID를 넣어 pull하지 않는다. 원격과 주고받을 때는 계약 브랜치의 Git upstream을 준비한다. 아래 `ait/master`는 status 첫 행에 나오는 실제 이름으로 바꾼다.
+Worktrees of the same clone share the `ait/*` refs. When they work against the same ait branch, other agents' contracts are visible at once; do not pull them by ID. To exchange with a remote, set up the contract branch's Git upstream. Replace `ait/master` below with the actual name on the first line of status.
 
 ```sh
-git push -u origin ait/master   # 처음 upstream을 정할 때
+git push -u origin ait/master   # when setting the upstream the first time
 ait contract push
-ait contract pull              # 원격 이름만 선택적으로 받음
+ait contract pull              # takes an optional remote name only
 ait sub src/stock.c
 ait sub O0123456789ab
 ait listen --fetch 30
 ```
 
-`ait sub`는 ID나 범위를 받는다(`sub id K`를 직접 입력하는 문법이 아니다). 범위 구독은 consumer나 확인 범위가 그 범위와 겹치는 계약의 변경을 알린다. `ait unsub <ID 또는 표시 범위>`로 구독을 제거한다. listen은 현재 session의 새 사건을 stdout으로 내보내며 session마다 하나만 실행한다. 종료할 때 SIGINT·SIGTERM을 사용한다. 내 약속과 내 current demand에 대한 알림도 받는다. 자신의 session이 만든 요청은 알리지 않는다.
+`ait sub` takes an ID or a scope (there is no `sub id K` syntax to type). A scope subscription notifies changes to contracts whose consumer or checked scopes overlap that scope. Remove a subscription with `ait unsub <ID or shown scope>`. listen writes the current session's new events to stdout, and only one runs per session. Stop it with SIGINT or SIGTERM. It also notifies about your promises and your current demands. It does not notify requests made by its own session.
 
-계약 브랜치끼리 충돌하면(`contract branches conflict`) `contract pull`의 hint에 따라 계약 브랜치에서 Git으로 풀고, 코드 브랜치로 돌아온다. 일반 코드 merge와 계약 브랜치 merge는 별개다. ait가 코드 커밋을 자동으로 원격에 보내지 않는다.
+When contract branches conflict (`contract branches conflict`), resolve it with Git on the contract branch as the `contract pull` hint says, then return to the code branch. An ordinary code merge and a contract branch merge are separate. ait never sends code commits to a remote by itself.
 
-`status`의 `current ?unverified`·`?changed`·`?missing`·`?deleted`·`?nobase`(provider와 `fixtures` 행)와 `touch`를 확인한다. 형식 오류는 status가 경고하고 쓰기는 거절한다. `git config hides the trailers`는 사용자 Git 설정과 기록줄이 충돌한 것이므로 설정 원인을 확인하며, 스킬이나 설치기가 설정을 덮어쓰지 않는다.
+Check `current ?unverified`, `?changed`, `?missing`, `?deleted` and `?nobase` (on the provider and `fixtures` lines) and `touch` in `status`. status warns about format errors, and writes refuse them. `git config hides the trailers` means the user's Git configuration conflicts with the record trailers; find the configuration that causes it. Neither the skill nor the installer overwrites the configuration.
