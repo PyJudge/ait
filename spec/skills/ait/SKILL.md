@@ -32,7 +32,7 @@ fixtures: [tests/stock.sh, tests/stock-cases.csv]
 
 `body`는 필수다. exec는 `command`가 필요하고, `success` 생략은 `[0]`이다. prompt는 `body`와 `fixtures`만 쓴다. exec는 선택적으로 `environment: NAME`을 쓰며 이행할 index의 `specs/environments/NAME.yaml`을 참조한다. ait가 검사를 실행하지 않으므로 에이전트가 직접 실행·확인한다.
 
-`fixtures`에는 검사가 읽는 코드 쪽 파일(테스트, 데이터, 근거 자료)을 provider처럼 파일이나 행 범위(`tests/stock.sh:10-40`)로 적는다. 계약을 만들 때 그 파일이 있어야 하고, 디렉터리는 쓸 수 없다. 이행하면 provider와 함께 그 파일들의 내용 지문이 기록되고, 환경 정의 파일도 저절로 들어간다. 이행 뒤 fixture나 환경 정의를 고치면 계약은 `current ?unverified`가 되고 status의 `fixtures` 행에 `?changed`가 붙는다. 바꾼 것이 맞으면 다시 확인해 이행하고, 아니면 이행 파일의 `commit`의 판으로 되돌린다. 테스트나 데이터를 고치기 전에 `ait status tests/stock.sh`로 그 파일을 확인 범위에 둔 계약을 본다. 검사를 통과시키려고 fixture를 약하게 고치지 않는다.
+`fixtures`에는 검사가 읽는 코드 쪽 파일(테스트, 데이터, 근거 자료)을 provider처럼 파일이나 행 범위(`tests/stock.sh:10-40`)로 적는다. 바뀌면 검사 결과가 달라질 수 있는 것은 빠짐없이 적고 그 밖은 적지 않는다(적은 것이 바뀔 때만 `touch`·`?unverified`로 드러난다). 계약을 만들 때 그 파일이 있어야 하고, 디렉터리는 쓸 수 없다. 이행하면 provider와 함께 그 파일들의 내용 지문이 기록되고, 환경 정의 파일도 저절로 들어간다. 이행 뒤 fixture나 환경 정의를 고치면 계약은 `current ?unverified`가 되고 status의 `fixtures` 행에 `?changed`가 붙는다. 바꾼 것이 맞으면 다시 확인해 이행하고, 아니면 이행 파일의 `commit`의 판으로 되돌린다. 테스트나 데이터를 고치기 전에 `ait status tests/stock.sh`로 그 파일을 확인 범위에 둔 계약을 본다. 검사를 통과시키려고 fixture를 약하게 고치지 않는다.
 
 새 조건을 적거나 바꾸기 전에 `ait status <범위>`로 그 범위에 걸린 계약을 보고, 새 조건이 그 조건들과 충돌하지 않는지 확인한다.
 
