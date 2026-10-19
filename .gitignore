@@ -1,5 +1,6 @@
 .DS_Store
 /ait
+/AIT-CFLAGS
 *.o
 /t/trash*/
 *.dSYM/

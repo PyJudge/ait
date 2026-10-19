@@ -22,7 +22,7 @@ v1.1의 ait 자체 코드(`ait.c`, `ait.h`, `request.c`, `contract.c`, `notify.c
 ait는 git 확장이다. 코드도 출력도 git의 선례를 따른다. 기준은 git v2.53.0의 `Documentation/CodingGuidelines`와 코드(`../git-ref/`)다. 정하지 않은 것이 나오면 git이 같은 경우에 어떻게 하는지 먼저 찾는다.
 
 **C 코드**
-- gnu99. 경고는 Makefile의 DEVELOPER_CFLAGS(`-Wall -Werror -Wdeclaration-after-statement` 등)를 그대로 지킨다.
+- gnu99. 경고는 Makefile의 DEVELOPER_CFLAGS(`-Werror -Wdeclaration-after-statement` 등)를 그대로 지킨다. `make test`와 `make DEVELOPER=1`이 그것을 더하고, 설치·배포 빌드는 git처럼 `-Wall`만 쓴다(U69).
 - 들여쓰기는 탭. 선언은 블록 맨 앞에 두고, 선언과 문장 사이는 빈 줄로 나눈다. 구조체 멤버는 한 줄에 하나다.
 - 중괄호: 함수는 다음 줄에, 그 밖에는 같은 줄에 연다. 한 문장짜리 몸체에는 중괄호를 쓰지 않는다. 다만 if/else 중 한 갈래라도 중괄호가 필요하면 모든 갈래에 쓴다.
 - 여러 줄 주석은 `/*`와 ` */`를 각자 한 줄에 둔다. 주석은 코드가 하는 일이 아니라 왜 그런지(명세 조항, git의 근거)를 쓴다.

@@ -1,8 +1,17 @@
-# C standard and warnings follow git v2.53.0 config.mak.dev:25-37 (DEVELOPER_CFLAGS)
+# Warnings as git v2.53.0 builds: -Wall always (Makefile:966); the developer
+# warnings, errors among them, only with DEVELOPER (Makefile:1045, config.mak.dev:5-40),
+# which "make test" sets, so a new compiler's warning cannot stop an install
 CC ?= cc
-CFLAGS = -std=gnu99 -O2 -Wall -Werror \
+CFLAGS = -std=gnu99 -O2 -Wall
+DEVELOPER_CFLAGS = -Werror \
 	-Wdeclaration-after-statement -Wformat-security -Wold-style-definition \
 	-Woverflow -Wpointer-arith -Wstrict-prototypes -Wunused -Wvla -Wwrite-strings
+# exported, so the make a check runs (t50) does not rebuild ait under the others
+ifneq ($(filter test,$(MAKECMDGOALS)),)
+DEVELOPER = 1
+export DEVELOPER
+endif
+ALL_CFLAGS = $(strip $(if $(DEVELOPER),$(DEVELOPER_CFLAGS)) $(CFLAGS))
 SRC = $(wildcard *.c)
 # libyaml 0.2.5 (libyaml/, as released; yaml-0.2.5.tar.gz sha256 c642ae9b...678ef4), built as its own code
 YAML = $(patsubst %.c,%.o,$(wildcard libyaml/*.c))
@@ -24,8 +33,14 @@ ifeq ($(uname_S),Darwin)
 	LDLIBS += -liconv
 endif
 
+# flags other than the last build's rebuild, as git's GIT-CFLAGS (Makefile:3255-3260);
+# compared by content, since a file time can miss a change within its second
+ifneq ($(ALL_CFLAGS),$(shell cat AIT-CFLAGS 2>/dev/null))
+ait: FORCE
+endif
 ait: $(SRC) $(wildcard *.h) $(YAML)
-	$(CC) $(CFLAGS) -Ilibyaml -o $@ $(SRC) $(YAML) $(LDLIBS)
+	$(CC) $(ALL_CFLAGS) -Ilibyaml -o $@ $(SRC) $(YAML) $(LDLIBS)
+	@echo '$(ALL_CFLAGS)' >AIT-CFLAGS
 
 libyaml/%.o: libyaml/%.c libyaml/yaml.h libyaml/yaml_private.h
 	$(CC) $(YAML_CFLAGS) -c -o $@ $<
@@ -61,6 +76,8 @@ cloud:
 	tar -czf dist/ait-v1.1-cloud.tar.gz -C dist ait-cloud
 
 clean:
-	rm -f ait $(YAML)
+	rm -f ait AIT-CFLAGS $(YAML)
 
-.PHONY: test install bundle cloud clean
+FORCE:
+
+.PHONY: test install bundle cloud clean FORCE
