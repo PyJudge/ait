@@ -2,9 +2,6 @@
 # A release carries the current executable, skill and working repository setup.
 . "$(dirname "$0")/lib.sh"
 setup
-# the installer replaces a symlink and restores the execute bit; Windows has neither
-test_have_prereq POSIXPERM "the release installs this build" || { done_testing; exit $?; }
-test_have_prereq SYMLINKS "the release installs this build" || { done_testing; exit $?; }
 make -C "$AIT_DIR" bundle >"$T/build" 2>&1 || { cat "$T/build"; exit 1; }
 mkdir "$T/unpack"
 tar -xzf "$AIT_DIR/dist/ait.tar.gz" -C "$T/unpack" || exit 1
@@ -13,29 +10,35 @@ check 'the release has an explicit v1.1 version' "test -f '$package/VERSION' && 
 prefix="$T/install prefix"
 run env PREFIX="$prefix" sh "$package/install.sh"
 check_rc 'install the executable in a path containing spaces' 0
-check 'the installed executable matches this build' "cmp -s '$AIT_DIR/ait' '$prefix/bin/ait'"
+check 'the installed executable matches this build' "cmp -s '$AIT_DIR/ait$X' '$prefix/bin/ait$X'"
 check 'installation includes the skill and repository helper scripts' "cmp -s '$package/skills/ait/SKILL.md' '$prefix/share/ait/skills/ait/SKILL.md' && test -f '$prefix/share/ait/setup.sh' && test -f '$prefix/share/ait/try.sh'"
 run env PREFIX="$prefix" sh "$package/install.sh"
 check_rc 'installing the same release twice succeeds' 0
 check 'the same ait is installed again without a warning' "! has err 'warning:'"
-chmod 644 "$prefix/bin/ait"
-run env PREFIX="$prefix" sh "$package/install.sh"
-check 'installation restores execution permission for identical bytes' "test $rc = 0 && test -x '$prefix/bin/ait' && cmp -s '$AIT_DIR/ait' '$prefix/bin/ait'"
+if test_have_prereq POSIXPERM 'installation restores execution permission for identical bytes'
+then
+	chmod 644 "$prefix/bin/ait$X"
+	run env PREFIX="$prefix" sh "$package/install.sh"
+	check 'installation restores execution permission for identical bytes' "test $rc = 0 && test -x '$prefix/bin/ait$X' && cmp -s '$AIT_DIR/ait$X' '$prefix/bin/ait$X'"
+fi
 run env PREFIX="$package" sh "$package/install.sh"
 check_rc 'installing over the extracted release itself succeeds' 0
-mkdir -p "$T/link prefix/bin"
-printf 'keep target\n' >"$T/link-target"
-ln -s "$T/link-target" "$T/link prefix/bin/ait"
-run env PREFIX="$T/link prefix" sh "$package/install.sh"
-check 'installation replaces a link without changing its target' "test $rc = 0 && grep -qx 'keep target' '$T/link-target' && test ! -L '$T/link prefix/bin/ait' && cmp -s '$AIT_DIR/ait' '$T/link prefix/bin/ait'"
-check 'replacing another ait warns that its hooks now run this one' "has err \"warning: replacing the ait at '$T/link prefix/bin/ait'\""
-cp "$AIT_DIR/ait" "$T/link-same-target"
-chmod 755 "$T/link-same-target"
-rm "$T/link prefix/bin/ait"
-ln -s "$T/link-same-target" "$T/link prefix/bin/ait"
-run env PREFIX="$T/link prefix" sh "$package/install.sh"
-check 'identical linked binaries are replaced without changing their target' "test $rc = 0 && test ! -L '$T/link prefix/bin/ait' && cmp -s '$AIT_DIR/ait' '$T/link-same-target' && test -x '$T/link-same-target'"
-export PATH="$prefix/bin:$PATH"
+if test_have_prereq SYMLINKS "installation replaces a link without changing its target"
+then
+	mkdir -p "$T/link prefix/bin"
+	printf 'keep target\n' >"$T/link-target"
+	ln -s "$T/link-target" "$T/link prefix/bin/ait"
+	run env PREFIX="$T/link prefix" sh "$package/install.sh"
+	check 'installation replaces a link without changing its target' "test $rc = 0 && grep -qx 'keep target' '$T/link-target' && test ! -L '$T/link prefix/bin/ait' && cmp -s '$AIT_DIR/ait$X' '$T/link prefix/bin/ait'"
+	check 'replacing another ait warns that its hooks now run this one' "has err \"warning: replacing the ait at '$T/link prefix/bin/ait'\""
+	cp "$AIT_DIR/ait$X" "$T/link-same-target"
+	chmod 755 "$T/link-same-target"
+	rm "$T/link prefix/bin/ait"
+	ln -s "$T/link-same-target" "$T/link prefix/bin/ait"
+	run env PREFIX="$T/link prefix" sh "$package/install.sh"
+	check 'identical linked binaries are replaced without changing their target' "test $rc = 0 && test ! -L '$T/link prefix/bin/ait' && cmp -s '$AIT_DIR/ait$X' '$T/link-same-target' && test -x '$T/link-same-target'"
+fi
+export PATH="$TP/install prefix/bin:$PATH"
 git init -q "$T/empty repo"
 run sh "$package/setup.sh" "$T/empty repo"
 check_rc 'setup accepts an unborn code branch' 0
@@ -46,8 +49,8 @@ mkdir "$T/other-ait"
 printf '#!/bin/sh\nexit 0\n' >"$T/other-ait/ait"
 chmod 755 "$T/other-ait/ait"
 git init -q "$T/other repo"
-run env PATH="$T/other-ait:$PATH" sh "$package/setup.sh" "$T/other repo"
-check 'setup warns when the agents would run another ait' "test $rc = 0 && has err \"warning: the ait on PATH ('$T/other-ait/ait') is not this release's\""
+run env PATH="$TP/other-ait:$PATH" sh "$package/setup.sh" "$T/other repo"
+check 'setup warns when the agents would run another ait' "test $rc = 0 && has err \"warning: the ait on PATH ('$TP/other-ait/ait') is not this release's\""
 printf 'staged\n' >>src/stock.c
 git add src/stock.c
 head_before=$(git rev-parse HEAD)
@@ -103,16 +106,16 @@ cat >"$T/old-git/git" <<'GIT'
 if [ "$1" = version ]; then echo 'git version 2.37.0'; else exec "$REAL_GIT" "$@"; fi
 GIT
 chmod +x "$T/old-git/git"
-run env PATH="$T/old-git:$PATH" PREFIX="$T/old-install" sh "$package/install.sh"
+run env PATH="$TP/old-git:$PATH" PREFIX="$T/old-install" sh "$package/install.sh"
 check 'an unsupported Git version creates no installation' "test $rc = 128 && test ! -e '$T/old-install' && has err 'git 2.38 or later'"
 cat >"$T/old-git/git" <<'GIT'
 #!/bin/sh
 exit 1
 GIT
-run env PATH="$T/old-git:$PATH" PREFIX="$T/failed-git-install" sh "$package/install.sh"
+run env PATH="$TP/old-git:$PATH" PREFIX="$T/failed-git-install" sh "$package/install.sh"
 check 'a failed Git version query creates no installation' "test $rc = 128 && test ! -e '$T/failed-git-install'"
 printf '#!/bin/sh\nexit 0\n' >"$T/old-git/git"
-run env PATH="$T/old-git:$PATH" PREFIX="$T/empty-git-install" sh "$package/install.sh"
+run env PATH="$TP/old-git:$PATH" PREFIX="$T/empty-git-install" sh "$package/install.sh"
 check 'an empty Git version response creates no installation' "test $rc = 128 && test ! -e '$T/empty-git-install'"
 cp "$package/PLATFORM" "$T/platform"
 printf 'different platform\n' >"$package/PLATFORM"
@@ -120,5 +123,5 @@ run env PREFIX="$T/wrong-platform" sh "$package/install.sh"
 cp "$T/platform" "$package/PLATFORM"
 check 'a wrong platform creates no installation' "test $rc = 128 && test ! -e '$T/wrong-platform'"
 run make -C "$AIT_DIR" install "prefix=$T/make prefix"
-check 'make install uses the same complete installer' "test $rc = 0 && cmp -s '$AIT_DIR/ait' '$T/make prefix/bin/ait' && cmp -s '$package/skills/ait/SKILL.md' '$T/make prefix/share/ait/skills/ait/SKILL.md'"
+check 'make install uses the same complete installer' "test $rc = 0 && cmp -s '$AIT_DIR/ait$X' '$T/make prefix/bin/ait$X' && cmp -s '$package/skills/ait/SKILL.md' '$T/make prefix/share/ait/skills/ait/SKILL.md'"
 done_testing

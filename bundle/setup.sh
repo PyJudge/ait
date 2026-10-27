@@ -2,10 +2,11 @@
 # Initialize ait and install repository-local agent instructions; do not commit code.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
-if [ -x "$here/bin/ait" ]; then
-	ait_bin="$here/bin/ait"
+case $(uname -s) in *_NT-*) x=.exe ;; *) x= ;; esac
+if [ -x "$here/bin/ait$x" ]; then
+	ait_bin="$here/bin/ait$x"
 else
-	ait_bin="$here/../../bin/ait"
+	ait_bin="$here/../../bin/ait$x"
 fi
 [ -x "$ait_bin" ] || { echo "fatal: install this release first" >&2; exit 128; }
 top=$(git -C "${1:-.}" rev-parse --show-toplevel 2>/dev/null) || {
@@ -15,6 +16,7 @@ top=$(git -C "${1:-.}" rev-parse --show-toplevel 2>/dev/null) || {
 (cd "$top" && "$ait_bin" init)
 # the agents there run the ait found on PATH, which may be another ait than this one
 on_path=$(command -v ait 2>/dev/null || true)
+[ -z "$x" ] || [ ! -f "$on_path$x" ] || on_path=$on_path$x
 if [ -z "$on_path" ] || ! cmp -s "$ait_bin" "$on_path"; then
 	echo "warning: the ait on PATH ('${on_path:-none}') is not this release's; agents in '$top' run that one" >&2
 	echo "hint: put '$(cd "$(dirname "$ait_bin")" && pwd)' first on PATH" >&2

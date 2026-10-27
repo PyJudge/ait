@@ -1,6 +1,6 @@
 # ait v1.1 배포 묶음
 
-현재 빌드의 실행 파일, 에이전트 스킬, 설치·저장소 설정·실험 스크립트다. `VERSION`은 ait 판, `PLATFORM`은 실행 파일을 빌드한 OS·CPU다. 실행 파일은 `PLATFORM`에 적힌 OS·CPU에서만 설치된다(macOS는 11 이상). ait는 macOS와 Linux에서 돈다. Windows는 지원하지 않는다. Git 2.38 이상이 필요하다. Git 커밋을 만들 사용자 이름·이메일도 설정되어 있어야 한다.
+현재 빌드의 실행 파일, 에이전트 스킬, 설치·저장소 설정·실험 스크립트다. `VERSION`은 ait 판, `PLATFORM`은 실행 파일을 빌드한 OS·CPU다. 실행 파일은 `PLATFORM`에 적힌 OS·CPU에서만 설치된다(macOS는 11 이상). ait는 macOS와 Linux, 그리고 Windows의 Git for Windows(Git Bash)에서 돈다. Git 2.38 이상이 필요하다. Git 커밋을 만들 사용자 이름·이메일도 설정되어 있어야 한다.
 
 ## 설치와 프로젝트 설정
 
@@ -12,7 +12,7 @@ export PATH="$HOME/.local/bin:$PATH"
 sh "$HOME/.local/share/ait/setup.sh" /path/to/project
 ```
 
-`PREFIX=/원하는/위치 sh install.sh`로 설치 위치를 바꾼다. 실행 파일은 `PREFIX/bin/ait`, 스킬과 보조 스크립트는 `PREFIX/share/ait/`에 설치한다. PATH 설정은 사용하는 셸의 설정에도 넣는다.
+`PREFIX=/원하는/위치 sh install.sh`로 설치 위치를 바꾼다. 실행 파일은 `PREFIX/bin/ait`(Windows는 `ait.exe`), 스킬과 보조 스크립트는 `PREFIX/share/ait/`에 설치한다. PATH 설정은 사용하는 셸의 설정에도 넣는다.
 
 `setup.sh`는 Git 작업 폴더에서 `ait init`을 실행하고 `.agents/skills/ait/`, `.claude/skills/ait/`, `AGENTS.md`·`CLAUDE.md`의 ait 안내를 준비한다. 기존 코드 HEAD와 Git stage를 커밋하지 않는다. 첫 코드 커밋이 없는 저장소에서도 쓸 수 있다. 추가 worktree마다 setup을 실행하거나, 에이전트 파일을 먼저 커밋한 뒤 worktree를 만든다.
 

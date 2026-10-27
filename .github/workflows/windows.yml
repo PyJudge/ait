@@ -18,7 +18,11 @@ jobs:
           install: mingw-w64-ucrt-x86_64-gcc make
       - name: build
         shell: msys2 {0}
-        run: make DEVELOPER=1
+        # a user has Git for Windows, not MSYS2: ait.exe may need Windows' own DLLs only
+        run: |
+          make DEVELOPER=1
+          objdump -p ait.exe | grep 'DLL Name'
+          ! objdump -p ait.exe | grep 'DLL Name' | grep -viE 'kernel32|advapi32|user32|ws2_32|ntdll|api-ms-win-crt|ucrtbase|msvcrt'
       - name: versions
         shell: bash
         run: |

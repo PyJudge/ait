@@ -84,7 +84,7 @@ bundle: ait$X
 	cp -R spec/skills/ait dist/ait/skills/
 	cp bundle/README.md bundle/install.sh bundle/setup.sh bundle/try.sh bundle/ait-graph.sh dist/ait/
 	printf '1.1\n' > dist/ait/VERSION
-	uname -sm > dist/ait/PLATFORM
+	uname -sm | sed 's/^[A-Z0-9]*_NT-[^ ]*/Windows/' > dist/ait/PLATFORM
 	tar -czf dist/ait-v1.1.tar.gz -C dist ait
 	cp dist/ait-v1.1.tar.gz dist/ait.tar.gz
 
