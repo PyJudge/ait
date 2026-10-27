@@ -4,7 +4,8 @@
 setup
 make -C "$AIT_DIR" bundle >"$T/build" 2>&1 || { cat "$T/build"; exit 1; }
 mkdir "$T/unpack"
-tar -xzf "$AIT_DIR/dist/ait.tar.gz" -C "$T/unpack" || exit 1
+# relative: GNU tar reads 'D:/...' as a remote host's archive
+(cd "$AIT_DIR/dist" && tar -xzf ait.tar.gz -C "$T/unpack") || exit 1
 package="$T/unpack/ait"
 check 'the release has an explicit v1.1 version' "test -f '$package/VERSION' && grep -qx 1.1 '$package/VERSION' && test -f '$AIT_DIR/dist/ait-v1.1.tar.gz'"
 prefix="$T/install prefix"
