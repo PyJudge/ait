@@ -11,6 +11,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
+      # the repository's bytes, as on macOS and Linux: the runner's git would
+      # check out CRLF (core.autocrlf), and the bundle would carry it
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: msys2/setup-msys2@v2
         with:
@@ -62,7 +65,9 @@ jobs:
         shell: bash
         env:
           DEVELOPER: 1
-        run: make bundle && cat dist/ait/VERSION dist/ait/PLATFORM
+        run: |
+          make bundle && cat dist/ait/VERSION dist/ait/PLATFORM
+          ! grep -rl $'\r' dist/ait --exclude=ait.exe
       - uses: actions/upload-artifact@v4
         with:
           name: ait-windows-bundle
