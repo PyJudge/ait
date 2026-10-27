@@ -16,7 +16,7 @@ jobs:
       - name: build
         shell: msys2 {0}
         run: |
-          git apply .github/diag/remove-tree.patch
+          "/c/Program Files/Git/cmd/git.exe" apply .github/diag/remove-tree.patch
           make
       - name: leftovers
         shell: pwsh
