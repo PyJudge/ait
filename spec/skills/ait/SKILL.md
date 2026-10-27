@@ -36,6 +36,8 @@ In `fixtures`, list the code-side files the check reads (tests, data, sources) a
 
 Before writing or changing a condition, run `ait status <scope>` to see the contracts on that scope, and check that the new condition does not conflict with theirs.
 
+A decision that sets or changes what the code is expected to do, whether a spec you write or a behavior you were asked to decide, goes into a contract first: write it with `future demand|offer`, or reopen the existing one with `future amend`. Do not change the behavior in code alone. Every commit that carries the behavior fulfills that contract, and the work is not done until `ait status` shows it `current`, not `future` or `current ?unverified`.
+
 A condition file is copied into the contract's `specs`. Editing the original file does not change the contract; give the edited file to amend again. Do not assume another worktree has the original file.
 
 ```sh
