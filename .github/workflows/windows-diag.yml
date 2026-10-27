@@ -43,8 +43,8 @@ jobs:
         shell: bash
         run: |
           . t/lib.sh; setup
-          ait future demand src/order.c src/stock.c cond.yaml -m d >/dev/null
-          ait fulfill $(newest D 2>/dev/null) -m f > "$T/out" 2>&1; cat "$T/out"
+          run ait future demand src/order.c src/stock.c cond.yaml -m d; D=$(newest D)
+          run ait fulfill "$D" -m f; cat "$T/out" "$T/err"
           res=$(git rev-parse --absolute-git-dir)/ait/check-result.yaml
           echo "res=$res"; od -c "$res" | head -20
           sed -i.bak 's/^  outcome:$/  outcome: pass/; s/^  basis: |$/  basis: |\n    checked/' "$res"; echo "sed rc=$?"
