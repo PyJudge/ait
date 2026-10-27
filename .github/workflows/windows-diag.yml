@@ -15,7 +15,9 @@ jobs:
           install: mingw-w64-ucrt-x86_64-gcc make
       - name: build
         shell: msys2 {0}
-        run: make DEVELOPER=1
+        run: |
+          git apply .github/diag/remove-tree.patch
+          make
       - name: leftovers
         shell: pwsh
         run: |
