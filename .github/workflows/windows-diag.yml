@@ -1,6 +1,8 @@
-# Quick checks on real Windows, run by hand (gh workflow run windows-diag)
+# Quick checks on real Windows, on a push to windows-diag
 name: windows-diag
-on: workflow_dispatch
+on:
+  push:
+    branches: [windows-diag]
 jobs:
   diag:
     runs-on: windows-latest
