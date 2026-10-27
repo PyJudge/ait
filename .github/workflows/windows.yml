@@ -1,4 +1,5 @@
-# Build ait natively for Windows as Git for Windows builds git (MINGW64),
+# Build ait natively for Windows as Git for Windows builds git (UCRT64, the
+# runtime this repository's cross build uses; MINGW64's msvcrt lacks %zu),
 # then run the suite in Git Bash against Git for Windows' own git
 name: windows
 on:
@@ -12,8 +13,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
-          install: mingw-w64-x86_64-gcc make
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc make
       - name: build
         shell: msys2 {0}
         run: make DEVELOPER=1
