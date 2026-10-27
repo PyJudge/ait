@@ -1,6 +1,6 @@
 ---
 name: ait
-description: Handles demands, promises, undertakings, fulfillments and notifications in a repository that keeps ait v1.1 contracts on separate contract branches. Read it before changing or committing code when the user asks for ait or the repository uses ait contracts.
+description: ait records what the code is expected to do (specs, as conditions with checks) on separate `ait/*` git branches, and shows when the code no longer matches what was checked. Use it in any repository that has `ait/*` branches or whose AGENTS.md or CLAUDE.md mentions ait - read it before you change how the code behaves, write or change a spec, decide a behavior you were asked to decide, or commit - and whenever the user mentions ait, contracts, specs or fulfilling.
 ---
 
 # ait v1.1
