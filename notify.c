@@ -865,8 +865,12 @@ int cmd_listen(int argc, const char **argv)
 	sfd = lock_session(sid);
 	if ((fd = listener_lock(sid)) < 0)
 		reject(128, NULL, "cannot run now: a listener is already running for session '%s'", sid);
-	if (ftruncate(fd, 0) == 0)
-		dprintf(fd, "%d\n", (int)getpid());
+	if (ftruncate(fd, 0) == 0) {
+		char *pid = xstrfmt("%d\n", (int)getpid());
+
+		write_in_full(fd, pid, strlen(pid));
+		free(pid);
+	}
 	close(sfd);
 	signal(SIGINT, stop);
 	signal(SIGTERM, stop);

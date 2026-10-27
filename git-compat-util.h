@@ -1,6 +1,16 @@
 #ifndef GIT_COMPAT_UTIL_H
 #define GIT_COMPAT_UTIL_H
 #define _GNU_SOURCE
+/* git v2.53.0 compat/posix.h:77-87 */
+#if defined(WIN32) && !defined(__CYGWIN__)
+# if !defined(_WIN32_WINNT)
+#  define _WIN32_WINNT 0x0600
+# endif
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <windows.h>
+#define GIT_WINDOWS_NATIVE
+#endif
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -18,7 +28,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifndef GIT_WINDOWS_NATIVE
 #include <sys/wait.h>
+#endif
 #include <unistd.h>
 
 /* git v2.53.0 git-compat-util.h:378-379 */
@@ -34,6 +46,38 @@
 /* git v2.53.0 compat/posix.h:42-43 */
 #define UNUSED __attribute__((unused)) \
 	__attribute__((deprecated))
+
+#ifdef GIT_WINDOWS_NATIVE
+/* git v2.53.0 git-compat-util.h:152-155 */
+static inline int is_xplatform_dir_sep(int c)
+{
+	return c == '/' || c == '\\';
+}
+
+/* git v2.53.0 compat/posix.h:129-130, git-compat-util.h:161-164 */
+#include <sys/time.h>
+#include <utime.h>
+#include "compat/mingw-posix.h"
+#include "compat/win32/path-utils.h"
+struct strbuf;
+#include "compat/mingw.h"
+
+/*
+ * ait's, beside git v2.53.0 compat/mingw-posix.h:149-154: Windows has no
+ * signal mask; ait's blocking (2.6.4) is a no-op there, as git's is
+ */
+/* git v2.53.0 compat/posix.h:326-333 (NO_SETENV, NO_MKDTEMP in config.mak.uname's MINGW) */
+#define setenv gitsetenv
+int gitsetenv(const char *, const char *, int);
+#define mkdtemp git_mkdtemp
+char *git_mkdtemp(char *pattern);
+
+#define SIG_SETMASK 0
+static inline int sigfillset(sigset_t *set UNUSED)
+{
+	return 0;
+}
+#endif
 
 /* git v2.53.0 compat/posix.h:155-160 */
 #ifdef HAVE_ARC4RANDOM_LIBBSD
@@ -118,7 +162,7 @@ void write_file(const char *path, const char *fmt, ...);
 #define trace_argv_printf(argv, fmt) do { } while (0)
 #define odb_close(odb) do { } while (0)
 #define invalidate_lstat_cache() do { } while (0)
-#define prepare_git_cmd(out, argv) BUG("git_cmd is not used by ait")
+#define prepare_git_cmd(out, argv) (BUG("git_cmd is not used by ait"), (const char **)NULL)
 #define git_env_ulong(key, val) (val)
 #define advise_get_color(slot) ""
 
@@ -153,7 +197,9 @@ static inline int git_has_dir_sep(const char *path)
 }
 
 /* git v2.53.0 git-compat-util.h:354-354 */
+#ifndef has_dir_sep
 #define has_dir_sep(path) git_has_dir_sep(path)
+#endif
 
 /* git v2.53.0 git-compat-util.h:490 */
 static inline bool skip_prefix(const char *str, const char *prefix,

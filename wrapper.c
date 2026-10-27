@@ -1,6 +1,13 @@
 #include "git-compat-util.h"
 #include "strbuf.h"
 
+#ifdef HAVE_RTLGENRANDOM
+/* git v2.53.0 wrapper.c:15-19: this is required to get access to RtlGenRandom */
+#define SystemFunction036 NTAPI SystemFunction036
+#include <ntsecapi.h>
+#undef SystemFunction036
+#endif
+
 /* git v2.53.0 wrapper.c:21 */
 static int memory_limit_check(size_t size, int gentle)
 {
@@ -381,7 +388,8 @@ int csprng_bytes(void *buf, size_t len, MAYBE_UNUSED unsigned flags)
 #endif
 }
 
-/* git v2.53.0 compat/nonblock.c:6 */
+/* git v2.53.0 compat/nonblock.c:4-40 */
+#ifdef O_NONBLOCK
 int enable_pipe_nonblock(int fd)
 {
 	int flags = fcntl(fd, F_GETFL);
@@ -390,6 +398,30 @@ int enable_pipe_nonblock(int fd)
 	flags |= O_NONBLOCK;
 	return fcntl(fd, F_SETFL, flags);
 }
+#else
+int enable_pipe_nonblock(int fd)
+{
+	HANDLE h = (HANDLE)_get_osfhandle(fd);
+	DWORD mode;
+	DWORD type = GetFileType(h);
+	if (type == FILE_TYPE_UNKNOWN && GetLastError() != NO_ERROR) {
+		errno = EBADF;
+		return -1;
+	}
+	if (type != FILE_TYPE_PIPE)
+		BUG("unsupported file type: %lu", type);
+	if (!GetNamedPipeHandleState(h, &mode, NULL, NULL, NULL, NULL, 0)) {
+		errno = err_win_to_posix(GetLastError());
+		return -1;
+	}
+	mode |= PIPE_NOWAIT;
+	if (!SetNamedPipeHandleState(h, &mode, NULL, NULL)) {
+		errno = err_win_to_posix(GetLastError());
+		return -1;
+	}
+	return 0;
+}
+#endif
 
 /* git v2.53.0 compat/qsort_s.c:9 */
 static void msort_with_tmp(void *b, size_t n, size_t s,

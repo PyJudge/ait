@@ -1,0 +1,28 @@
+# Build ait natively for Windows as Git for Windows builds git (MINGW64),
+# then run the suite in Git Bash against Git for Windows' own git
+name: windows
+on:
+  push:
+    branches: [windows]
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc make
+      - name: build
+        shell: msys2 {0}
+        run: make DEVELOPER=1
+      - name: versions
+        shell: bash
+        run: |
+          git --version
+          command -v git sh
+          ls -la ait.exe
+      - name: test
+        shell: bash
+        run: JOBS=4 sh t/run.sh

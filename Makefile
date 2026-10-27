@@ -32,18 +32,41 @@ ifeq ($(uname_S),Darwin)
 	CFLAGS += -DPRECOMPOSE_UNICODE
 	LDLIBS += -liconv
 endif
+# Windows as Git for Windows builds git (git v2.53.0 config.mak.uname:697-760, MINGW):
+# git's compat layer (git/, as v2.53.0 has it) built as its own code, beside windows.c
+ifneq ($(findstring MINGW,$(uname_S)),)
+	CFLAGS += -DWIN32 -DHAVE_RTLGENRANDOM -DNO_POLL -DNO_SETENV -DNO_OPENSSL -DNOGDI \
+		-D__USE_MINGW_ANSI_STDIO=0 -DDETECT_MSYS_TTY -Igit -Igit/compat/poll
+	LDLIBS += -municode -lws2_32 -lntdll
+	GIT_OBJS = $(patsubst %.c,%.o,git/compat/mingw.c git/compat/winansi.c git/compat/poll/poll.c \
+		git/compat/win32/path-utils.c git/compat/win32/dirent.c git/compat/win32/pthread.c \
+		git/compat/setenv.c git/ctype.c git/stable-qsort.c)
+else
+	SRC := $(filter-out windows.c,$(SRC))
+endif
+# git v2.53.0 Makefile's flags for its MINGW64 objects (make -n compat/mingw.o)
+GIT_CFLAGS = -std=gnu99 -O2 -Igit -Igit/compat -Igit/compat/win32 -Igit/compat/poll -Igit/compat/regex \
+	-DWIN32 -DNO_ICONV -DNO_GETTEXT -DNO_OPENSSL -DHAVE_ALLOCA_H -DNO_ST_BLOCKS_IN_STRUCT_STAT \
+	-DNO_SYMLINK_HEAD -DNO_POLL_H -DNO_SYS_POLL_H -DMMAP_PREVENTS_DELETE -DNO_POSIX_GOODIES \
+	-DUNRELIABLE_FSTAT -DNATIVE_CRLF -DHAVE_RTLGENRANDOM -DHAVE_WPGMPTR -DNOGDI \
+	-DSTRIP_EXTENSION='".exe"' -D__USE_MINGW_ANSI_STDIO=0 -DDETECT_MSYS_TTY -DNO_LIBGEN_H -DNO_POLL \
+	-DNO_STRCASESTR -DNO_STRLCPY -DNO_STRTOUMAX -DNO_SETENV -DNO_MKDTEMP -DUSE_WIN32_MMAP -DNO_PREAD \
+	-DNO_MEMMEM -DRUNTIME_PREFIX -DSHELL_PATH='"/bin/sh"'
 
 # flags other than the last build's rebuild, as git's GIT-CFLAGS (Makefile:3255-3260);
 # compared by content, since a file time can miss a change within its second
 ifneq ($(ALL_CFLAGS),$(shell cat AIT-CFLAGS 2>/dev/null))
 ait: FORCE
 endif
-ait: $(SRC) $(wildcard *.h) $(YAML)
-	$(CC) $(ALL_CFLAGS) -Ilibyaml -o $@ $(SRC) $(YAML) $(LDLIBS)
+ait: $(SRC) $(wildcard *.h) $(YAML) $(GIT_OBJS)
+	$(CC) $(ALL_CFLAGS) -Ilibyaml -o $@ $(SRC) $(YAML) $(GIT_OBJS) $(LDLIBS)
 	@echo '$(ALL_CFLAGS)' >AIT-CFLAGS
 
 libyaml/%.o: libyaml/%.c libyaml/yaml.h libyaml/yaml_private.h
 	$(CC) $(YAML_CFLAGS) -c -o $@ $<
+
+git/%.o: git/%.c
+	$(CC) $(GIT_CFLAGS) -c -o $@ $<
 
 test: ait
 	@sh t/run.sh
@@ -76,7 +99,7 @@ cloud:
 	tar -czf dist/ait-v1.1-cloud.tar.gz -C dist ait-cloud
 
 clean:
-	rm -f ait AIT-CFLAGS $(YAML)
+	rm -f ait ait.exe AIT-CFLAGS $(YAML) $(GIT_OBJS)
 
 FORCE:
 

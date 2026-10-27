@@ -176,6 +176,17 @@ static char *git_failed(void)
  * another signal from reentering cleanup while a publishing child is being
  * reaped (t11).
  */
+#ifdef GIT_WINDOWS_NATIVE
+/* git v2.53.0 sigchain.c:45: Windows' sigaction takes only SIGALRM (compat/mingw.c:2745) */
+void sigchain_push_common(sigchain_fun f)
+{
+	sigchain_push(SIGINT, f);
+	sigchain_push(SIGHUP, f);
+	sigchain_push(SIGTERM, f);
+	sigchain_push(SIGQUIT, f);
+	sigchain_push(SIGPIPE, f);
+}
+#else
 void sigchain_push_common(sigchain_fun f)
 {
 	static const int cleanup_signals[] = { SIGINT, SIGHUP, SIGTERM, SIGQUIT, SIGPIPE };
@@ -194,6 +205,7 @@ void sigchain_push_common(sigchain_fun f)
 			die_errno("cannot install cleanup signal handler");
 	}
 }
+#endif
 
 static int git_children_guarded;
 
@@ -591,8 +603,23 @@ static int lock_path(const char *path, int nowait)
 	state_dirs();
 	if ((fd = open(path, O_RDWR | O_CREAT, 0666)) < 0)
 		write_error(path);
+#ifdef GIT_WINDOWS_NATIVE
+	{
+		/*
+		 * Windows' locks are mandatory: lock a byte past any content, so
+		 * the pid in '.listen' stays readable (v14 4.5)
+		 */
+		OVERLAPPED at = { .Offset = 0xffffffff, .OffsetHigh = 0x7fffffff };
+
+		if (LockFileEx((HANDLE)_get_osfhandle(fd),
+			       LOCKFILE_EXCLUSIVE_LOCK | (nowait ? LOCKFILE_FAIL_IMMEDIATELY : 0),
+			       0, 1, 0, &at))
+			return fd;
+	}
+#else
 	if (!flock(fd, LOCK_EX | (nowait ? LOCK_NB : 0)))
 		return fd;
+#endif
 	if (!nowait)
 		write_error(path);
 	close(fd);
@@ -1099,8 +1126,11 @@ int create_file(const char *path, const char *text, mode_t mode)
 		write_error(path);
 	}
 	failed = write_in_full(fd, text, strlen(text)) < 0;
+#ifndef GIT_WINDOWS_NATIVE
+	/* Windows has no mode bits; git runs a hook by its '#!' line (compat/mingw.c:1602) */
 	if (!failed && mode)
 		failed = fchmod(fd, mode);
+#endif
 	saved = errno;
 	if (close(fd) && !failed) {
 		failed = 1;
