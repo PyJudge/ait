@@ -32,7 +32,7 @@ jobs:
         run: |
           mkdir -p out
           cd t
-          ls t[0-9]*.sh | xargs -P 4 -I{} sh -c 'timeout 300 sh "$1" > "../out/$1.out" 2>&1; echo $? > "../out/$1.rc"' _ {}
+          ls t[0-9]*.sh | xargs -P 6 -I{} sh -c 'timeout 120 sh "$1" > "../out/$1.out" 2>&1; echo $? > "../out/$1.rc"' _ {}
           cd ..
           failed=0
           for f in out/*.rc; do

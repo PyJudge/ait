@@ -6,6 +6,34 @@
 #include "strbuf.h"
 #include "run-command.h"
 
+#ifdef GIT_WINDOWS_NATIVE
+
+/*
+ * ait's unlink on Windows (git-compat-util.h): with POSIX semantics the name
+ * is gone at once, as unlink(2) leaves it, even while another handle (a
+ * virus scanner, a git that has just exited) still has the file open;
+ * where the file system has none, git's mingw_unlink
+ */
+int ait_unlink(const char *path)
+{
+	wchar_t wpath[MAX_PATH];
+	FILE_DISPOSITION_INFO_EX info = { FILE_DISPOSITION_FLAG_DELETE |
+		FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE };
+	HANDLE h;
+	BOOL done;
+
+	if (xutftowcs_path(wpath, path) < 0)
+		return -1;
+	h = CreateFileW(wpath, DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+			OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	if (h == INVALID_HANDLE_VALUE)
+		return mingw_unlink(path, 1);
+	/* FileDispositionInfoEx (Windows 10 1709), declared only past git's _WIN32_WINNT 0x0600 */
+	done = SetFileInformationByHandle(h, (FILE_INFO_BY_HANDLE_CLASS)21, &info, sizeof(info));
+	CloseHandle(h);
+	return done ? 0 : mingw_unlink(path, 1);
+}
+
 /* git v2.53.0 environment.c: core.symlinks, core.ignorecase, core.protectNTFS as git starts */
 int has_symlinks = 1;
 int ignore_case;
@@ -180,3 +208,4 @@ int git_mkstemp_mode(char *pattern, int mode)
 void invalidate_lstat_cache(void)
 {
 }
+#endif

@@ -62,21 +62,26 @@ static inline int is_xplatform_dir_sep(int c)
 struct strbuf;
 #include "compat/mingw.h"
 
-/*
- * ait's, beside git v2.53.0 compat/mingw-posix.h:149-154: Windows has no
- * signal mask; ait's blocking (2.6.4) is a no-op there, as git's is
- */
 /* git v2.53.0 compat/posix.h:326-333 (NO_SETENV, NO_MKDTEMP in config.mak.uname's MINGW) */
 #define setenv gitsetenv
 int gitsetenv(const char *, const char *, int);
 #define mkdtemp git_mkdtemp
 char *git_mkdtemp(char *pattern);
 
+/*
+ * ait's, beside git v2.53.0 compat/mingw-posix.h:149-154: Windows has no
+ * signal mask; ait's blocking (2.6.4) is a no-op there, as git's is
+ */
 #define SIG_SETMASK 0
 static inline int sigfillset(sigset_t *set UNUSED)
 {
 	return 0;
 }
+
+/* unlink(2)'s semantics on Windows (windows.c) */
+#undef unlink
+#define unlink ait_unlink
+int ait_unlink(const char *path);
 #endif
 
 /* git v2.53.0 compat/posix.h:155-160 */

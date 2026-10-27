@@ -10,6 +10,7 @@ export PATH
 case $(uname -s) in
 *MINGW*)
 	pwd() { builtin pwd -W; }
+	AIT_DIR=$(cd "$AIT_DIR" && pwd)
 	MSYS_NO_PATHCONV=1
 	export MSYS_NO_PATHCONV
 	;;

@@ -41,8 +41,6 @@ ifneq ($(findstring MINGW,$(uname_S)),)
 	GIT_OBJS = $(patsubst %.c,%.o,git/compat/mingw.c git/compat/winansi.c git/compat/poll/poll.c \
 		git/compat/win32/path-utils.c git/compat/win32/dirent.c git/compat/win32/pthread.c \
 		git/compat/setenv.c git/ctype.c git/stable-qsort.c)
-else
-	SRC := $(filter-out windows.c,$(SRC))
 endif
 # git v2.53.0 Makefile's flags for its MINGW64 objects (make -n compat/mingw.o)
 GIT_CFLAGS = -std=gnu99 -O2 -Igit -Igit/compat -Igit/compat/win32 -Igit/compat/poll -Igit/compat/regex \
