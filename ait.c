@@ -1287,9 +1287,8 @@ static char *message_directory;
 
 /*
  * PATH and all below it, as git's remove_dir_recurse (dir.c:3393) without
- * its repository-aware dir.c: a directory is closed before it is removed,
- * which Windows requires, and git's mingw_unlink also clears the read-only
- * bit of a loose object
+ * its repository-aware dir.c; not nftw, whose Windows walk reads entries
+ * through the C library's struct dirent while git's readdir is linked
  */
 static int remove_tree(struct strbuf *path)
 {

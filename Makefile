@@ -33,10 +33,11 @@ ifeq ($(uname_S),Darwin)
 	LDLIBS += -liconv
 endif
 # Windows as Git for Windows builds git (git v2.53.0 config.mak.uname:697-760, MINGW):
-# git's compat layer (git/, as v2.53.0 has it) built as its own code, beside windows.c
+# git's compat layer (git/, as v2.53.0 has it) built as its own code, beside windows.c;
+# ait's sources see its headers as git's do (-Icompat/win32: dirent.h matches its readdir)
 ifneq ($(findstring MINGW,$(uname_S)),)
 	CFLAGS += -DWIN32 -DHAVE_RTLGENRANDOM -DNO_POLL -DNO_SETENV -DNO_OPENSSL -DNOGDI \
-		-D__USE_MINGW_ANSI_STDIO=0 -DDETECT_MSYS_TTY -Igit -Igit/compat/poll
+		-D__USE_MINGW_ANSI_STDIO=0 -DDETECT_MSYS_TTY -Igit -Igit/compat/win32 -Igit/compat/poll
 	LDLIBS += -municode -lws2_32 -lntdll
 	GIT_OBJS = $(patsubst %.c,%.o,git/compat/mingw.c git/compat/winansi.c git/compat/poll/poll.c \
 		git/compat/win32/path-utils.c git/compat/win32/dirent.c git/compat/win32/pthread.c \

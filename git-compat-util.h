@@ -77,11 +77,6 @@ static inline int sigfillset(sigset_t *set UNUSED)
 {
 	return 0;
 }
-
-/* unlink(2)'s semantics on Windows (windows.c) */
-#undef unlink
-#define unlink ait_unlink
-int ait_unlink(const char *path);
 #endif
 
 /* git v2.53.0 compat/posix.h:155-160 */
