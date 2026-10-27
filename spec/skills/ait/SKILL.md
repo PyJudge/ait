@@ -56,8 +56,9 @@ Never commit code that leaves a contract broken: other agents build on every con
 - **Your code provides a behavior that others may rely on, and no demand asks for that behavior**: `ait future offer <provider> <spec file> -m <why>`.
 - **Your implementation is done**: fulfill the contracts.
   1. Stage the change with `git add`. `ait fulfill` commits the **whole** Git stage, so check `git diff --cached` first.
-  2. Run `ait fulfill <K>... -m <why>` with the ID of every contract the change affects, **yours and other agents'**. Narrow a provider written as `/`, `DIR/` or `new:PATH` to real files with `<K>=<scope>`, as in `ait fulfill O0123456789ab=src/stock.c -m <why>`.
-  3. `ait fulfill` prints `request PATH` and `result PATH`. Run the checks on the request's `tree`, which is the staged code, not on your work tree:
+  2. Run `ait status` to find the contracts to fulfill: the contracts you implemented, and every contract marked `touch` or `current ?unverified`, **yours and other agents'**, since the staged change may break those contracts.
+  3. Run `ait fulfill <K>... -m <why>` with the IDs of all those contracts. Narrow a provider written as `/`, `DIR/` or `new:PATH` to real files with `<K>=<scope>`, as in `ait fulfill O0123456789ab=src/stock.c -m <why>`.
+  4. `ait fulfill` prints `request PATH` and `result PATH`. Run the checks on the request's `tree`, which is the staged code, not on your work tree:
 
      ```sh
      d=$(mktemp -d)
@@ -65,8 +66,8 @@ Never commit code that leaves a contract broken: other agents build on every con
      GIT_INDEX_FILE="$d/index" git checkout-index -a --prefix="$d/tree/"
      ```
 
-  4. Run every task's check yourself; ait runs none. In the result file, fill in each task's `outcome: pass|fail|unknown`, `basis` and `reason`. Write `pass` only for a check you ran and saw pass: a fulfillment is the record other agents trust instead of checking again. If the spec file names an environment, run the environment's `prepare` steps in order (if one fails, the outcome is `unknown`), and afterwards the environment's `cleanup` steps in reverse order for the `prepare` steps that ran.
-  5. Run the same `ait fulfill` command again with `-r <result PATH>`.
+  5. Run every task's check yourself; ait runs none. In the result file, fill in each task's `outcome: pass|fail|unknown`, `basis` and `reason`. Write `pass` only for a check you ran and saw pass: a fulfillment is the record other agents trust instead of checking again. If the spec file names an environment, run the environment's `prepare` steps in order (if one fails, the outcome is `unknown`), and afterwards the environment's `cleanup` steps in reverse order for the `prepare` steps that ran.
+  6. Run the same `ait fulfill` command again with `-r <result PATH>`.
 
   `--force` instead of `-r` fulfills without checks and is recorded as `forced`. Use `--force` only for a change you judged trivial, such as a comment or a rename that no check can tell apart; never for a task that failed or a task you could not check, because a forced fulfillment tells other agents the code was checked when it was not.
 - **You need to change a test or data file**: run `ait status <file>` first; the output lists the contracts that use the file as a fixture. After the change, `ait status` shows `?changed` on those contracts' `fixtures` line: if the change is right, check those contracts again and fulfill them; if not, restore the file from the commit on the contract's `fulfilled` line. Never weaken a fixture or a test to make a check pass: a weakened check passes while the behavior it guarded is broken.
