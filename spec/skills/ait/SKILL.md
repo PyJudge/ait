@@ -3,7 +3,7 @@ name: ait
 description: ait keeps the code's expected behavior as contracts, each with a check, on `ait/*` git branches, and shows which contracts a code change may break. Use this skill whenever you work in a repository that has `ait/*` branches or whose AGENTS.md or CLAUDE.md mentions ait, even if the user never says "ait". Read it before you change what the code is expected to do (an output, an expected value, a spec, a behavior you were asked to decide), before you commit, and whenever the user mentions ait, contracts, specs or fulfilling.
 ---
 
-# ait v1.1
+# ait v1.11
 
 ## Concepts
 

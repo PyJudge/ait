@@ -76,17 +76,17 @@ prefix ?= $(HOME)/.local
 install: bundle
 	PREFIX="$(prefix)" sh dist/ait/install.sh
 
-# The v1.1 release: native executable, skill and setup scripts.
+# The v1.11 release: native executable, skill and setup scripts.
 bundle: ait$X
 	rm -rf dist/ait
 	mkdir -p dist/ait/bin dist/ait/skills
 	cp ait$X dist/ait/bin/
 	cp -R spec/skills/ait dist/ait/skills/
 	cp bundle/README.md bundle/install.sh bundle/setup.sh bundle/try.sh bundle/ait-graph.sh dist/ait/
-	printf '1.1\n' > dist/ait/VERSION
+	printf '1.11\n' > dist/ait/VERSION
 	uname -sm | sed 's/^[A-Z0-9]*_NT-[^ ]*/Windows/' > dist/ait/PLATFORM
-	tar -czf dist/ait-v1.1.tar.gz -C dist ait
-	cp dist/ait-v1.1.tar.gz dist/ait.tar.gz
+	tar -czf dist/ait-v1.11.tar.gz -C dist ait
+	cp dist/ait-v1.11.tar.gz dist/ait.tar.gz
 
 # The Claude cloud kit: the committed source, built by the session's own compiler
 # (spec/drafts/v1.1-cloud-plan.md); a Linux binary is not built here.
@@ -96,7 +96,7 @@ cloud:
 	git archive --prefix=src/ HEAD -- Makefile '*.c' '*.h' libyaml bundle spec/skills/ait t | tar -x -C dist/ait-cloud
 	cp bundle/cloud/README.md bundle/cloud/session-start.sh bundle/cloud/settings.json dist/ait-cloud/
 	git rev-parse HEAD > dist/ait-cloud/COMMIT
-	tar -czf dist/ait-v1.1-cloud.tar.gz -C dist ait-cloud
+	tar -czf dist/ait-v1.11-cloud.tar.gz -C dist ait-cloud
 
 clean:
 	rm -f ait$X AIT-CFLAGS $(YAML) $(GIT_OBJS)

@@ -1,4 +1,4 @@
-# ait v1.1 Claude 클라우드 묶음
+# ait v1.11 Claude 클라우드 묶음
 
 Claude 클라우드 세션(Ubuntu 24.04, x86_64)에서 ait를 쓰게 하는 묶음이다. 실행 파일 대신 소스를 싣고, 세션의 VM이 자기 컴파일러(gcc)로 빌드한다. 계획과 근거는 ait 저장소의 `spec/drafts/v1.1-cloud-plan.md`다.
 
@@ -11,7 +11,7 @@ Claude 클라우드 세션(Ubuntu 24.04, x86_64)에서 ait를 쓰게 하는 묶�
 
 ## 넣는 법
 
-1. 이 폴더를 쓰는 저장소의 `tools/ait/`에 푼다(`tar -xzf ait-v1.1-cloud.tar.gz` 뒤 `ait-cloud/`를 `tools/ait/`로 옮긴다).
+1. 이 폴더를 쓰는 저장소의 `tools/ait/`에 푼다(`tar -xzf ait-v1.11-cloud.tar.gz` 뒤 `ait-cloud/`를 `tools/ait/`로 옮긴다).
 2. `settings.json`의 hook을 저장소의 `.claude/settings.json`에 넣는다(파일이 없으면 그대로 복사한다). 커밋하고 push한다. git은 Ubuntu 24.04의 것(2.43)을 그대로 쓰므로 setup script는 필요 없다(ait는 2.38 이상을 요구한다).
 
 ## 첫 세션에서 확인할 것
