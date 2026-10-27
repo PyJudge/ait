@@ -16,26 +16,22 @@ jobs:
       - name: build
         shell: msys2 {0}
         run: make DEVELOPER=1
-      - name: scripts
-        shell: bash
-        run: |
-          for t in t02-request t05-contract t07-session t25-subscription-path-context t43-checked-input; do
-            echo "===== $t"; timeout 300 sh t/$t.sh 2>&1 | head -150; echo "rc=${PIPESTATUS[0]}"
-          done
-      - name: exitcode
-        if: always()
+      - name: leftovers
         shell: pwsh
         run: |
           $env:PATH = "$PWD;$env:PATH"; $env:GIT_CONFIG_NOSYSTEM = "1"
           $t = Join-Path $env:TEMP ("pw" + (Get-Random)); New-Item -ItemType Directory $t | Out-Null
           $env:HOME = "$t/home"; New-Item -ItemType Directory $env:HOME | Out-Null
+          $env:TMPDIR = "$t/tmp"; New-Item -ItemType Directory $env:TMPDIR | Out-Null
           git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master
           git init -q "$t/r"; Set-Location "$t/r"
           New-Item -ItemType Directory src | Out-Null
           Set-Content src/order.c ((1..50) | % { "o$_" }); Set-Content src/stock.c ((1..50) | % { "s$_" })
           git add -A; git commit -qm base
-          & ait init; "init exit 0x{0:X}" -f $LASTEXITCODE
-          & ait session open --agent alice; "open exit 0x{0:X}" -f $LASTEXITCODE
-          [IO.File]::WriteAllText("$t/r/cond.yaml", "body: |`n  stock never goes below zero`nengine: exec`ncommand: [sh, -c, `"exit 0`"]`n")
-          & ait future demand src/order.c:10-20 src/stock.c:5-9 cond.yaml -m "need stock"; "future exit 0x{0:X} ({0})" -f $LASTEXITCODE
-          & ait status; "status exit 0x{0:X}" -f $LASTEXITCODE
+          & ait init; & ait session open --agent alice
+          [IO.File]::WriteAllText("$t/r/cond.yaml", "body: |`n  stock never goes below zero`n")
+          & ait future demand src/order.c:10-20 src/stock.c:5-9 cond.yaml -m "need stock"; "future exit 0x{0:X}" -f $LASTEXITCODE
+          "--- left in TMPDIR:"
+          Get-ChildItem -Recurse -Force $env:TMPDIR | % { "{0}  [{1}]  {2}" -f $_.FullName, $_.Attributes, $_.Length }
+          "--- cmd dir /a /s:"
+          cmd /c "dir /a /s `"$env:TMPDIR`""
