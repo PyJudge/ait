@@ -1,4 +1,4 @@
-# ait v1.1 배포 묶음
+# ait v1.11 배포 묶음
 
 현재 빌드의 실행 파일, 에이전트 스킬, 설치·저장소 설정·실험 스크립트다. `VERSION`은 ait 판, `PLATFORM`은 실행 파일을 빌드한 OS·CPU다. 실행 파일은 `PLATFORM`에 적힌 OS·CPU에서만 설치된다(macOS는 11 이상). ait는 macOS와 Linux에서 돈다. Windows는 지원하지 않는다. Git 2.38 이상이 필요하다. Git 커밋을 만들 사용자 이름·이메일도 설정되어 있어야 한다.
 

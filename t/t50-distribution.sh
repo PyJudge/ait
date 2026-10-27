@@ -6,7 +6,7 @@ make -C "$AIT_DIR" bundle >"$T/build" 2>&1 || { cat "$T/build"; exit 1; }
 mkdir "$T/unpack"
 tar -xzf "$AIT_DIR/dist/ait.tar.gz" -C "$T/unpack" || exit 1
 package="$T/unpack/ait"
-check 'the release has an explicit v1.1 version' "test -f '$package/VERSION' && grep -qx 1.1 '$package/VERSION' && test -f '$AIT_DIR/dist/ait-v1.1.tar.gz'"
+check 'the release has an explicit v1.11 version' "test -f '$package/VERSION' && grep -qx 1.11 '$package/VERSION' && test -f '$AIT_DIR/dist/ait-v1.11.tar.gz'"
 prefix="$T/install prefix"
 run env PREFIX="$prefix" sh "$package/install.sh"
 check_rc 'install the executable in a path containing spaces' 0
