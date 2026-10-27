@@ -12,7 +12,6 @@
 #include "wt-status.h"
 #include "tempfile.h"
 #include <dirent.h>
-#include <ftw.h>
 #include <sys/file.h>
 
 const char *top, *head, *gitdir;
@@ -1282,25 +1281,63 @@ static char *trailer_message(const char *msg, const char *rid, const char *who, 
 
 /*
  * Like Git's tmp_objdir_destroy(), own the entire private ODB, including
- * interrupted loose writes. nftw avoids importing repository-aware dir.c.
+ * interrupted loose writes.
  */
 static char *message_directory;
 
 /*
- * rmdir or unlink, not remove(): Windows' remove() takes no directory, and
- * git's mingw_unlink also clears the read-only bit of a loose object
+ * PATH and all below it, as git's remove_dir_recurse (dir.c:3393) without
+ * its repository-aware dir.c: a directory is closed before it is removed,
+ * which Windows requires, and git's mingw_unlink also clears the read-only
+ * bit of a loose object
  */
-static int remove_message_entry(const char *path, const struct stat *st UNUSED,
-				int type, struct FTW *walk UNUSED)
+static int remove_tree(struct strbuf *path)
 {
-	return !(type == FTW_DP ? rmdir(path) : unlink(path)) || errno == ENOENT ? 0 : -1;
+	DIR *dir = opendir(path->buf);
+	struct dirent *e;
+	size_t len = path->len;
+	int ret = 0, saved;
+
+	if (!dir)
+		return errno == ENOENT ? 0 : -1;
+	while (!ret && (e = readdir(dir))) {
+		struct stat st;
+
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+			continue;
+		strbuf_addf(path, "/%s", e->d_name);
+		if (lstat(path->buf, &st))
+			ret = errno == ENOENT ? 0 : -1;
+		else if (S_ISDIR(st.st_mode))
+			ret = remove_tree(path);
+		else
+			ret = unlink(path->buf) && errno != ENOENT ? -1 : 0;
+		strbuf_setlen(path, len);
+	}
+	saved = errno;
+	closedir(dir);
+	errno = saved;
+	return ret ? ret : rmdir(path->buf);
+}
+
+static int remove_message_tree(const char *directory)
+{
+	struct strbuf path = STRBUF_INIT;
+	int ret, saved;
+
+	strbuf_addstr(&path, directory);
+	ret = remove_tree(&path);
+	saved = errno;
+	strbuf_release(&path);
+	errno = saved;
+	return ret;
 }
 
 /* Like builtin/clone.c:396-423, clean on exit and signals below child cleanup. */
 static void remove_message_directory(void)
 {
 	if (message_directory)
-		nftw(message_directory, remove_message_entry, 8, FTW_DEPTH | FTW_PHYS);
+		remove_message_tree(message_directory);
 }
 
 static void remove_message_on_signal(int signo)
@@ -1351,7 +1388,7 @@ static char *read_message(const char *message)
 		out = git_argv_n(NULL, 0, NULL, &rc,
 			(const char *[]){ "log", "--no-walk", format.buf, oid, "--", NULL }, env);
 	}
-	cleanup_rc = nftw(dir, remove_message_entry, 8, FTW_DEPTH | FTW_PHYS);
+	cleanup_rc = remove_message_tree(dir);
 	cleanup_errno = errno;
 	/* Deactivate the file even after a failed directory cleanup. */
 	delete_tempfile(&probe);

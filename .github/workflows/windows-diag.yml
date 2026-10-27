@@ -15,61 +15,27 @@ jobs:
           install: mingw-w64-ucrt-x86_64-gcc make
       - name: build
         shell: msys2 {0}
-        run: |
-          make DEVELOPER=1
-          cat > nftwtest.c <<'C'
-          #include <stdio.h>
-          #include <errno.h>
-          #include <string.h>
-          #include <ftw.h>
-          #include <direct.h>
-          static int cb(const char *p, const struct stat *s, int t, struct FTW *f)
-          { printf("  cb %d %s\n", t, p); return 0; }
-          int main(int argc, char **argv)
-          {
-          	int flags[] = { 0, FTW_PHYS, FTW_DEPTH, FTW_DEPTH | FTW_PHYS };
-          	for (int i = 0; i < 4; i++) {
-          		errno = 0;
-          		int rc = nftw(argv[1], cb, 8, flags[i]);
-          		printf("flags %d rc %d errno %d %s\n", flags[i], rc, errno, strerror(errno));
-          	}
-          	return 0;
-          }
-          C
-          gcc -o nftwtest.exe nftwtest.c
-      - name: nftw
+        run: make DEVELOPER=1
+      - name: scripts
         shell: bash
         run: |
-          d="$TEMP/ait-message-test"; mkdir -p "$d/ab"; echo x > "$d/owner"; echo y > "$d/ab/obj"; chmod -w "$d/ab/obj"
-          echo "TEMP=$TEMP TMPDIR=$TMPDIR"
-          ./nftwtest.exe "$d"
-          ./nftwtest.exe "$(cygpath -w "$d")"
-      - name: future
-        shell: bash
-        run: |
-          set -x
-          export PATH="$PWD:$PATH" MSYS_NO_PATHCONV=1 GIT_CONFIG_NOSYSTEM=1
-          T=$(cd "$(mktemp -d)" && pwd -W); export HOME=$T/home; mkdir -p $HOME
-          git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master
-          git init -q "$T/r" && cd "$T/r"
-          mkdir src; seq 1 50 > src/stock.c; git add -A; git commit -qm base
-          ait init; echo "init rc=$?"
-          ait session open --agent alice; echo "open rc=$?"
-          printf 'body: |\n  x\nengine: exec\ncommand: [sh, -c, "exit 0"]\n' > cond.yaml
-          ait future demand src/stock.c:5-9 cond.yaml -m need; echo "future rc=$?"
-          printf 'body: |\n  x\nbad: 1\n' > bad.yaml
-          ait future demand src/stock.c bad.yaml -m bad; echo "bad rc=$?"
-          ait status; echo "status rc=$?"
-      - name: future-exitcode
+          for t in t02-request t05-contract t07-session t25-subscription-path-context t43-checked-input; do
+            echo "===== $t"; timeout 300 sh t/$t.sh 2>&1 | head -150; echo "rc=${PIPESTATUS[0]}"
+          done
+      - name: exitcode
+        if: always()
         shell: pwsh
         run: |
-          $env:PATH = "$PWD;$env:PATH"
-          $t = Join-Path $env:TEMP ("pw" + (Get-Random)); New-Item -ItemType Directory $t | Out-Null; Set-Location $t
-          git init -q r; Set-Location r
-          git -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
-          New-Item -ItemType Directory src | Out-Null; Set-Content src/stock.c "1`n2`n3`n4`n5`n6`n7`n8`n9"
-          git add -A; git -c user.name=t -c user.email=t@t commit -qm code
+          $env:PATH = "$PWD;$env:PATH"; $env:GIT_CONFIG_NOSYSTEM = "1"
+          $t = Join-Path $env:TEMP ("pw" + (Get-Random)); New-Item -ItemType Directory $t | Out-Null
+          $env:HOME = "$t/home"; New-Item -ItemType Directory $env:HOME | Out-Null
+          git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master
+          git init -q "$t/r"; Set-Location "$t/r"
+          New-Item -ItemType Directory src | Out-Null
+          Set-Content src/order.c ((1..50) | % { "o$_" }); Set-Content src/stock.c ((1..50) | % { "s$_" })
+          git add -A; git commit -qm base
           & ait init; "init exit 0x{0:X}" -f $LASTEXITCODE
           & ait session open --agent alice; "open exit 0x{0:X}" -f $LASTEXITCODE
-          Set-Content cond.yaml "body: |`n  x`n"
-          & ait future demand src/stock.c cond.yaml -m need; "future exit 0x{0:X} ({0})" -f $LASTEXITCODE
+          [IO.File]::WriteAllText("$t/r/cond.yaml", "body: |`n  stock never goes below zero`nengine: exec`ncommand: [sh, -c, `"exit 0`"]`n")
+          & ait future demand src/order.c:10-20 src/stock.c:5-9 cond.yaml -m "need stock"; "future exit 0x{0:X} ({0})" -f $LASTEXITCODE
+          & ait status; "status exit 0x{0:X}" -f $LASTEXITCODE
