@@ -35,6 +35,8 @@ check_rc 'a full status runs' 0
 cp "$T/diffs" "$T/full-diffs"
 check 'one consumer pair is diffed once for display' "[ \$(diffs) = 1 ] && has out '^consumer src/order.c:1-2,src/order.c:10-12\$'"
 
+if test_have_prereq FUNNYNAMES "fulfil a path that holds a question mark"
+then
 printf 'a\n' >'q?x'
 printf 'b\n' >plain
 git add -A && git commit -qm q
@@ -46,4 +48,5 @@ printf 'a2\n' >'q?x'
 git add -A
 run ait status
 check 'a changed file whose path holds ? is marked ?changed' "has out '^provider q?x ?changed\$'"
+fi
 done_testing

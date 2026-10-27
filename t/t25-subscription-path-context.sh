@@ -34,7 +34,7 @@ check "listen can add an abstract subscription while Git owns the index lock" "g
 kill -TERM "$listener" 2>/dev/null
 wait "$listener" 2>/dev/null
 rc=$?
-check_rc "the subscribed listener terminates normally" 0
+test_have_prereq SIGNALS "the subscribed listener terminates normally" && check_rc "the subscribed listener terminates normally" 0
 check "subscriptions preserve the foreign lock and code index bytes" "cmp -s $T/lock-before $index.lock && cmp -s $T/index-before $index"
 rm "$index.lock"
 

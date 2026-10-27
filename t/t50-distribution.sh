@@ -2,6 +2,9 @@
 # A release carries the current executable, skill and working repository setup.
 . "$(dirname "$0")/lib.sh"
 setup
+# the installer replaces a symlink and restores the execute bit; Windows has neither
+test_have_prereq POSIXPERM "the release installs this build" || { done_testing; exit $?; }
+test_have_prereq SYMLINKS "the release installs this build" || { done_testing; exit $?; }
 make -C "$AIT_DIR" bundle >"$T/build" 2>&1 || { cat "$T/build"; exit 1; }
 mkdir "$T/unpack"
 tar -xzf "$AIT_DIR/dist/ait.tar.gz" -C "$T/unpack" || exit 1

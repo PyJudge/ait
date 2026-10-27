@@ -120,8 +120,8 @@ run ait status src/
 at_line "a missing attachment retains its contract list-item line" "$D.yaml" "$nline"
 
 # File-level failures have line one; known byte offsets retain their actual line.
-printf 'first\nsecond\n\000tail\n' > "$T/nul"
-branch_entry O222222222222.yaml 100644 "$(git hash-object -w "$T/nul")"
+printf 'first\nsecond\n\000tail\n' > "$T/nul-bytes"
+branch_entry O222222222222.yaml 100644 "$(git hash-object -w "$T/nul-bytes")"
 run ait status src/
 at_line "the byte boundary locates a raw NUL in the complete blob" O222222222222.yaml 3
 branch_entry not-a-blob.yaml 160000 "$(git rev-parse HEAD)"

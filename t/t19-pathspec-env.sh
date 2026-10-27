@@ -2,6 +2,7 @@
 # Ait's repository paths are literal; native Git keeps the caller's pathspec environment.
 . "$(dirname "$0")/lib.sh"
 setup
+test_have_prereq FUNNYNAMES "pathspec modes over the filename 'src/name*'" || { done_testing; exit $?; }
 printf 'original\n' > src/f
 printf 'original\n' > 'src/name*'
 printf 'original\n' > src/nameX

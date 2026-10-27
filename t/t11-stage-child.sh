@@ -4,6 +4,7 @@
 setup
 # the delayed publishing child is a Perl helper
 test_have_prereq PERL "the stage lock outlives the children which could publish" || { done_testing; exit $?; }
+test_have_prereq SIGNALS "the stage lock outlives the children which could publish" || { done_testing; exit $?; }
 
 stage=$(git rev-parse --absolute-git-dir)/ait/index
 stage_test_git=$(command -v git)

@@ -2,6 +2,7 @@
 # spec 7.2 and v14 8.2: emitted YAML preserves every scope path byte.
 . "$(dirname "$0")/lib.sh"
 setup
+test_have_prereq FUNNYNAMES "emitted YAML preserves the scope paths 'a\"b' and 'a\\b'" || { done_testing; exit $?; }
 
 run "${CC:-cc}" -std=gnu99 -Wall -Werror -I"$AIT_DIR/libyaml" "$AIT_DIR/t/helper-check-request.c" "$AIT_DIR"/libyaml/*.o -o "$T/check-request"
 check_rc "the independent check-request YAML reader builds" 0

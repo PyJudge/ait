@@ -99,6 +99,9 @@ git add src/stock.c && git commit -qm outside
 run env PATH="$TP/diff-bin:$PATH" ait fulfill "$THREE" -m 'prepare tasks'
 check_rc 'all three tasks consume the same prepared scope positions' 1
 check 'validation and all spec displays share one map' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 1 && has err 'check results required: 3 task(s)'"
+# the round ends by a signal the fake git sends listen
+if test_have_prereq SIGNALS "one round delivers exactly three captured events"
+then
 RECEIVER=$(AIT_SESSION=- ait session open --agent alice 2>/dev/null)
 AIT_SESSION="$RECEIVER" ait sub "$R" >/dev/null
 for event_number in 1 2 3; do
@@ -109,4 +112,5 @@ done
 run env AIT_SESSION="$RECEIVER" ONE_ROUND=1 PATH="$TP/diff-bin:$PATH" ait listen
 check 'one round delivers exactly three captured events' "test $rc = 0 && test \"\$(grep -c '^ait-event 1$' '$T/out')\" = 3"
 check 'one receiving snapshot is judged once across its events' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 1"
+fi
 done_testing

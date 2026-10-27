@@ -10,10 +10,13 @@ cp .ait/new/deep/condition.yaml "$T/first"
 run ait contract new spec .ait/new/deep/condition.yaml exec
 check_rc "new spec refuses an existing file" 1
 check "an existing user file keeps its bytes" "cmp -s .ait/new/deep/condition.yaml $T/first"
-ln -s "$T/absent" .ait/new/deep/dangling.yaml
-run ait contract new spec .ait/new/deep/dangling.yaml prompt
-check_rc "new spec refuses a dangling leaf symlink" 1
-check "a dangling leaf and its absent target stay unchanged" "test -L .ait/new/deep/dangling.yaml && ! test -e $T/absent"
+if test_have_prereq SYMLINKS "new spec refuses a dangling leaf symlink"
+then
+	ln -s "$T/absent" .ait/new/deep/dangling.yaml
+	run ait contract new spec .ait/new/deep/dangling.yaml prompt
+	check_rc "new spec refuses a dangling leaf symlink" 1
+	check "a dangling leaf and its absent target stay unchanged" "test -L .ait/new/deep/dangling.yaml && ! test -e $T/absent"
+fi
 mkdir .ait/new/deep/directory.yaml
 run ait contract new spec .ait/new/deep/directory.yaml prompt
 check_rc "new spec refuses a directory at the leaf" 1

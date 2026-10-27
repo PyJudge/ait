@@ -50,17 +50,24 @@ printf 'changed\n' >> src/order.c
 run ait status /
 check_rc "status accepts the repository scope" 0
 check "the repository scope reaches git status" "has out 'modified:.*src/order.c'"
-printf 'star\n' > 'src/star*'; printf 'other\n' > src/starX
-git add -- 'src/star*' src/starX && git commit -qm stars
-printf 'changed\n' >> 'src/star*'; printf 'changed\n' >> src/starX
-run ait status 'src/star*'
-check "status preserves literal filename characters" "has out 'modified:.*src/star\*' && ! has out 'modified:.*src/starX'"
-git reset -q --hard
+if test_have_prereq FUNNYNAMES "status preserves literal filename characters"
+then
+	printf 'star\n' > 'src/star*'; printf 'other\n' > src/starX
+	git add -- 'src/star*' src/starX && git commit -qm stars
+	printf 'changed\n' >> 'src/star*'; printf 'changed\n' >> src/starX
+	run ait status 'src/star*'
+	check "status preserves literal filename characters" "has out 'modified:.*src/star\*' && ! has out 'modified:.*src/starX'"
+	git reset -q --hard
+fi
 
 BOB=$(AIT_SESSION=- ait session open --agent bob-quotes 2>/dev/null)
 AIT_SESSION=$BOB ait sub src/stock.c >/dev/null
 IDS=
-for group in plain 한글 'back\slash' 'double"quote'; do
+if test_have_prereq FUNNYNAMES "the groups 'back\\slash' and 'double\"quote'"
+then set -- plain 한글 'back\slash' 'double"quote'
+else set -- plain 한글
+fi
+for group in "$@"; do
 	run ait future offer src/stock.c cond.yaml -g "$group" -m grouped
 	check_rc "a valid group is accepted: $group" 0
 	IDS="$IDS $(newest O)"

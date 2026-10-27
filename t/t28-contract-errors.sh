@@ -19,16 +19,20 @@ branch_file() {
 
 base=$(git rev-parse ait/master)
 printf 'kind: demand\n' > "$T/malformed"
-path="bad': path.yaml"
-branch_file "$path" "$T/malformed"
-run ait status src/
-check "a malformed Git pathname is kept intact in the status diagnostic" \
-	"grep -Fq \"warning: bad format: '$path' at 'ait/master': not a contract path\" $T/err"
-run ait future demand src/order.c src/stock.c cond.yaml -m blocked
-check_rc "the malformed path blocks a writer" 128
-check "the fatal diagnostic and repair hint use the same complete raw path" \
-	"grep -Fq \"fatal: bad format: '$path' at 'ait/master': not a contract path\" $T/err && grep -Fq \"hint: fix '$path' in 'ait/master'\" $T/err"
-git update-ref refs/heads/ait/master "$base"
+# a ':' in a path, which Git for Windows refuses to index (core.protectNTFS)
+if test_have_prereq FUNNYNAMES "a malformed Git pathname is kept intact in the status diagnostic"
+then
+	path="bad': path.yaml"
+	branch_file "$path" "$T/malformed"
+	run ait status src/
+	check "a malformed Git pathname is kept intact in the status diagnostic" \
+		"grep -Fq \"warning: bad format: '$path' at 'ait/master': not a contract path\" $T/err"
+	run ait future demand src/order.c src/stock.c cond.yaml -m blocked
+	check_rc "the malformed path blocks a writer" 128
+	check "the fatal diagnostic and repair hint use the same complete raw path" \
+		"grep -Fq \"fatal: bad format: '$path' at 'ait/master': not a contract path\" $T/err && grep -Fq \"hint: fix '$path' in 'ait/master'\" $T/err"
+	git update-ref refs/heads/ait/master "$base"
+fi
 branch_file D111111111111.yaml missing
 run ait status src/
 check "an unreadable branch blob is identified as missing, without claiming a NUL" \
@@ -88,15 +92,15 @@ check_rc "a result file with raw NUL is refused before any fulfillment" 128
 check "the result parser identifies its actual source path" "grep -Fq \"bad format: '$result': a NUL character\" $T/err"
 
 mkdir -p specs/environments
-printf 'cwd: .\n\000ignored: bytes\n' > specs/environments/nul.yaml
-git add specs/environments/nul.yaml
+printf 'cwd: .\n\000ignored: bytes\n' > specs/environments/raw-nul.yaml
+git add specs/environments/raw-nul.yaml
 git commit -qm 'environment source'
-printf 'body: condition\nengine: exec\ncommand: [sh, -c, "exit 0"]\nenvironment: nul\n' > env-cond.yaml
+printf 'body: condition\nengine: exec\ncommand: [sh, -c, "exit 0"]\nenvironment: raw-nul\n' > env-cond.yaml
 run ait future demand src/order.c src/stock.c env-cond.yaml -m 'environment target'
 ENV_D=$(newest D)
 run ait fulfill "$ENV_D" -m 'NUL environment'
 check_rc "an environment source with raw NUL is refused before embedding its text" 128
-check "the environment parser identifies its source file" "has err \"bad format: 'specs/environments/nul.yaml': a NUL character\""
+check "the environment parser identifies its source file" "has err \"bad format: 'specs/environments/raw-nul.yaml': a NUL character\""
 
 printf 'prefix\000suffix\n' > "$T/message"
 run ait future demand src/order.c src/stock.c cond.yaml -F "$T/message"

@@ -2,6 +2,8 @@
 # spec 9: one receiving/ref snapshot supplies candidate, reason, ref and in-head.
 . "$(dirname "$0")/lib.sh"
 setup
+# each round ends by a signal the fake git sends listen
+test_have_prereq SIGNALS "one receiving snapshot supplies candidate, reason, ref and in-head" || { done_testing; exit $?; }
 base=$(git rev-parse ait/master)
 REAL_GIT=$(command -v git); export REAL_GIT
 checkout=$(git rev-parse --path-format=absolute --git-path ait-branch)

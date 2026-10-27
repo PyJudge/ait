@@ -2,8 +2,12 @@
 # spec 2.1.3, 6.5.3-4 and 6.5.6: Git path lists preserve valid group bytes.
 . "$(dirname "$0")/lib.sh"
 setup
+if test_have_prereq FUNNYNAMES "the groups 'a\"b' and 'a\\b'"
+then set -- 'a"b' 'a\b' '한글'
+else set -- '한글'
+fi
 
-for group in 'a"b' 'a\b' '한글'
+for group in "$@"
 do
 	run ait contract new demand "$group"
 	P=$(sed -n 's/^path //p' "$T/out")
@@ -17,8 +21,8 @@ do
 	rm -f "$(git rev-parse --absolute-git-dir)/ait/index" "$(git rev-parse --absolute-git-dir)/ait/index.lock"
 done
 
-# Both sides edit each of three valid paths; merge-tree must report their bytes.
-for group in 'a"b' 'a\b' '한글'
+# Both sides edit each valid path; merge-tree must report their bytes.
+for group in "$@"
 do
 	run ait future demand src/order.c src/stock.c cond.yaml -g "$group" -m shared
 	printf '%s %s\n' "$(newest D)" "$group" >> "$T/shared"
@@ -43,7 +47,8 @@ tip=$(git rev-parse ait/master)
 # A real merge-tree failure must remain a Git failure, never an empty path list.
 racing_git
 id=$(sed -n '1s/ .*//p' "$T/shared")
-blob=$(git rev-parse "ait/master:a\"b/$id.yaml")
+group=$(sed -n '1s/^[^ ]* //p' "$T/shared")
+blob=$(git rev-parse "ait/master:$group/$id.yaml")
 blobfile="$(git rev-parse --absolute-git-dir)/objects/$(printf '%s' "$blob" | cut -c1-2)/$(printf '%s' "$blob" | cut -c3-)"
 printf 'mv "%s" "%s"\n' "$blobfile" "$T/removed-blob" > "$T/before-merge-tree"
 run env PATH="$TP/bin:$PATH" ait contract pull

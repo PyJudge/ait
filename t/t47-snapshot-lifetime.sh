@@ -8,6 +8,7 @@ setup
 } >cond.yaml
 run ait future offer src/stock.c cond.yaml -m snapshot
 check_rc 'prepare a stored snapshot' 0
+test_have_prereq RLIMIT "each snapshot has one owner, measured by the helper" || { done_testing; exit $?; }
 set -- -std=gnu99 -O1 -Wall -Werror -Wdeclaration-after-statement -I"$AIT_DIR" -I"$AIT_DIR/libyaml"
 case $(uname -s) in Linux) set -- "$@" -DHAVE_GETRANDOM ;; Darwin) set -- "$@" -DHAVE_ARC4RANDOM -DPRECOMPOSE_UNICODE ;;
 *MINGW*) set -- "$@" -DWIN32 -DHAVE_RTLGENRANDOM -DNO_POLL -DNO_SETENV -DNO_OPENSSL -DNOGDI -D__USE_MINGW_ANSI_STDIO=0 \

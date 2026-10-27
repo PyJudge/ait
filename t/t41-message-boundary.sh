@@ -246,6 +246,9 @@ rm -f "$T/before-log" "$T/before-log.done"
 
 
 # A real failed loose-object writer leaves tmp_obj_* before the parent cleans the ODB.
+# (ulimit -f and SIGXFSZ make it, SIGTERM interrupts it)
+if test_have_prereq SIGNALS "a failed real object writer is fatal"
+then
 mkdir "$T/writer-bin" "$T/writer-tmp"
 REAL_GIT=$(command -v git); export REAL_GIT
 cat >"$T/writer-bin/git" <<'GIT'
@@ -298,6 +301,7 @@ else
 	kill -TERM "$parent" 2>/dev/null || :
 	wait "$parent"
 	say_fail 'the signal fixture reaches the real partial object writer'
+fi
 fi
 
 # A relative TMPDIR is interpreted at the caller, even when Git runs at the repository root.

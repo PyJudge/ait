@@ -2,6 +2,8 @@
 # spec 9.8: Git ignores a nonexecutable hook, including a symlink to one.
 . "$(dirname "$0")/lib.sh"
 setup
+test_have_prereq POSIXPERM "Git ignores a nonexecutable hook" || { done_testing; exit $?; }
+test_have_prereq SYMLINKS "Git ignores a symlink to a nonexecutable hook" || { done_testing; exit $?; }
 
 BOB=$(AIT_SESSION=- ait session open --agent bob 2>/dev/null)
 AIT_SESSION=$BOB ait sub src/stock.c >/dev/null

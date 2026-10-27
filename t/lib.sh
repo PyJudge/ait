@@ -34,6 +34,17 @@ prereq_SANITY() {
 	chmod +w "$T/sanity" && rm -rf "$T/sanity"
 	return $sane
 }
+# Windows lacks these, as git v2.53.0 t/test-lib.sh:1664-1679 and 1746-1775 find:
+# POSIX permissions, symbolic links, names with a tab, quote, newline or '?*:\\',
+# POSIX signals (its kill is TerminateProcess), and flock as ait locks
+windows() { case $(uname -s) in *MINGW*) ;; *) return 1 ;; esac; }
+prereq_POSIXPERM() { ! windows; }
+prereq_SYMLINKS() { ! windows; }
+prereq_FUNNYNAMES() { ! windows; }
+prereq_SIGNALS() { ! windows; }
+prereq_FLOCK() { ! windows && prereq_PERL; }
+# a helper that measures itself with <sys/resource.h>, which Windows lacks
+prereq_RLIMIT() { ! windows; }
 # core.commentString came in Git 2.45 (RelNotes 2.45.0); an older Git ignores it
 prereq_COMMENT_STRING() { test "$(printf 'x\n' | git -c core.commentString=';;' stripspace --comment-lines)" = ';; x'; }
 # test_have_prereq PREREQ WHAT: PREREQ holds, or WHAT is reported skipped (git v2.53.0 t/test-lib.sh:1146)

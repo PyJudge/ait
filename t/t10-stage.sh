@@ -3,8 +3,14 @@
 . "$(dirname "$0")/lib.sh"
 setup
 racing_git
-run "${CC:-cc}" -Wall -Werror -o "$T/alarm" "$AIT_DIR/t/helper-alarm.c"
-check_rc "the alarm helper builds" 0
+# a watchdog: SIGALRM where POSIX signals reach a program, else coreutils' timeout
+if test_have_prereq SIGNALS "the alarm helper builds"
+then
+	run "${CC:-cc}" -Wall -Werror -o "$T/alarm" "$AIT_DIR/t/helper-alarm.c"
+	check_rc "the alarm helper builds" 0
+else
+	printf '#!/bin/sh\nexec timeout "$@"\n' >"$T/alarm" && chmod +x "$T/alarm"
+fi
 
 stage=$(git rev-parse --absolute-git-dir)/ait/index
 export stage
@@ -200,6 +206,8 @@ seed_stage "$Q"
 cp "$stage" "$T/stage-before"
 tip=$(git rev-parse ait/master)
 rm -f "$T/ready" "$T/continue" "$T/update-ref.pid" "$T/ref-committed"
+if test_have_prereq SIGNALS "SIGTERM terminates the committing process"
+then
 cat >.git/hooks/reference-transaction <<'HOOK'
 #!/bin/sh
 updates=$(cat)
@@ -260,6 +268,7 @@ else
 	say_fail "the real update-ref transaction reached the interruption point"
 fi
 rm .git/hooks/reference-transaction
+fi
 run ait contract add "$Q"
 check_rc "add works after the interrupted Git child has exited" 0
 run ait contract commit -m after-signal
@@ -272,6 +281,8 @@ check "an empty stage refusal releases the lock" "! test -e $stage.lock"
 
 
 # An inherited ignored signal must not run cleanup and resume without the lock.
+if test_have_prereq SIGNALS "an inherited ignored SIGINT keeps the live commit locked"
+then
 rm -f "$stage" "$stage.lock"
 I=.ait/stage/D666666666666.yaml
 J=.ait/stage/D777777777777.yaml
@@ -340,5 +351,6 @@ else
 	say_fail "the ignored-signal commit reached its ref transaction"
 fi
 rm .git/hooks/reference-transaction
+fi
 
 done_testing

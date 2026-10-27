@@ -74,20 +74,27 @@ rm "$T/contracts with spaces.git/hooks/pre-receive"
 
 # The YAML spelling carries escaped bytes; Git stores the actual path bytes.
 mkdir -p specs/environments
+if test_have_prereq FUNNYNAMES "environment names with a newline or a tab"
+then set -- normal 'space name' 'line\nbreak' 'tab\tname'
+else set -- normal 'space name'
+fi
 number=0
-for spelling in normal 'space name' 'line\nbreak' 'tab\tname'; do
+for spelling in "$@"; do
 	number=$((number + 1))
 	name=$(printf '%b' "$spelling")
 	printf 'cwd: environment-%s\ntimeout_ms: 17\n' "$number" >"specs/environments/$name.yaml"
 done
-bad_name=$(printf 'bad\nname')
-printf 'cwd: []\n' >"specs/environments/$bad_name.yaml"
+if test_have_prereq FUNNYNAMES "a newline-named environment"
+then
+	bad_name=$(printf 'bad\nname')
+	printf 'cwd: []\n' >"specs/environments/$bad_name.yaml"
+fi
 git add specs/environments
 git commit -qm environments
 code=$(git rev-parse HEAD)
 tip=$(git rev-parse ait/master)
 number=0
-for spelling in normal 'space name' 'line\nbreak' 'tab\tname'; do
+for spelling in "$@"; do
 	number=$((number + 1))
 	printf 'body: condition\nengine: exec\ncommand: [true]\nenvironment: "%s"\n' "$spelling" >cond.yaml
 	run ait offer src/stock.c cond.yaml -m 'read environment'
@@ -98,6 +105,8 @@ for spelling in normal 'space name' 'line\nbreak' 'tab\tname'; do
 	check 'requesting results changes neither code nor the contract ref' \
 		"test \"\$(git rev-parse HEAD)\" = $code && test \"\$(git rev-parse ait/master)\" = $tip"
 done
+if test_have_prereq FUNNYNAMES "a newline-named environment still receives schema validation"
+then
 printf 'body: condition\nengine: exec\ncommand: [true]\nenvironment: "bad\\nname"\n' >cond.yaml
 run ait offer src/stock.c cond.yaml -m 'invalid environment'
 check_rc 'a newline-named environment still receives schema validation' 128
@@ -108,5 +117,6 @@ run ait offer src/stock.c cond.yaml -m 'missing environment'
 check_rc 'a missing newline-named environment is refused' 128
 check 'as a witnessed scope not in the code (6.7.4, C77)' \
 	"has err '^fatal: bad scope: .* is not in the code$'"
+fi
 
 done_testing

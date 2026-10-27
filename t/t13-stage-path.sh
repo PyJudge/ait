@@ -2,6 +2,7 @@
 # Git's index reader, writer and the commit lock must use one resolved path.
 . "$(dirname "$0")/lib.sh"
 setup
+test_have_prereq SYMLINKS "the stage path is resolved through its symbolic links" || { done_testing; exit $?; }
 racing_git
 
 stage=$(git rev-parse --absolute-git-dir)/ait/index

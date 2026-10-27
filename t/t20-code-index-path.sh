@@ -42,11 +42,14 @@ check "fulfill preserves the ordinary code index" "test \"\$(git write-tree)\" =
 check "the alternate code index matches the new HEAD" "GIT_INDEX_FILE=\"$selected\" git diff --cached --quiet HEAD"
 
 # Git also supports a symlink spelling of the selected index.
-ln -s "$selected" "$T/index-alias"
-printf 'alias stock\n' >> src/stock.c
-GIT_INDEX_FILE="$T/index-alias" git add src/stock.c
-run env GIT_INDEX_FILE="$T/index-alias" ait fulfill "$O" --force -m alias
-check_rc "fulfill accepts an index symlink alias" 0
-check "the alias remains and its target supplies the code commit" "test -L $T/index-alias && git show HEAD:src/stock.c | grep -qx 'alias stock'"
+if test_have_prereq SYMLINKS "fulfill accepts an index symlink alias"
+then
+	ln -s "$selected" "$T/index-alias"
+	printf 'alias stock\n' >> src/stock.c
+	GIT_INDEX_FILE="$T/index-alias" git add src/stock.c
+	run env GIT_INDEX_FILE="$T/index-alias" ait fulfill "$O" --force -m alias
+	check_rc "fulfill accepts an index symlink alias" 0
+	check "the alias remains and its target supplies the code commit" "test -L $T/index-alias && git show HEAD:src/stock.c | grep -qx 'alias stock'"
+fi
 
 done_testing

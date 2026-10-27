@@ -9,6 +9,10 @@ cat > "$T/env-value.c" <<'C'
 #include <stdlib.h>
 #include <string.h>
 #include <yaml.h>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 int main(int argc, char **argv)
 {
 	yaml_parser_t parser;
@@ -18,6 +22,9 @@ int main(int argc, char **argv)
 	char want[2048], path[2048], *found = NULL;
 	size_t len = 0;
 	int depth = 0, done = 0, rc = 1;
+#ifdef _WIN32
+	_setmode(_fileno(stdout), _O_BINARY);
+#endif
 	if (argc < 3 || !(file = fopen(argv[1], "rb")))
 		return 2;
 	snprintf(want, sizeof(want), "tasks/0/environment%s%s", *argv[2] ? "/" : "", argv[2]);

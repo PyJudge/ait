@@ -2,6 +2,7 @@
 # spec 6.1: a scalar path from Git retains embedded newlines.
 . "$(dirname "$0")/lib.sh"
 setup
+test_have_prereq FUNNYNAMES "a scalar path from Git retains embedded newlines" || { done_testing; exit $?; }
 
 hooks=$(printf '%s/hook prefix\nsecond line' "$T")
 git config core.hooksPath "$hooks"

@@ -16,16 +16,20 @@ chmod 0644 "$hook"
 cp "$hook" "$T/foreign"
 run ait init
 check_rc 'init accepts a foreign hook without changing it' 0
+test_have_prereq POSIXPERM 'the foreign hook keeps its bytes and permissions' &&
 check 'the foreign hook keeps its bytes and permissions' "cmp \"$hook\" $T/foreign && ! test -x \"$hook\""
 check 'a foreign hook reports polling fallback' "has err 'wakes by polling only'"
 
 rm "$hook"
-ln -s "$T/missing-hook-target" "$hook"
-run ait init
-check_rc 'init accepts a dangling hook symlink' 0
-check 'a dangling hook symlink and its absent target stay unchanged' "test -L \"$hook\" && ! test -e $T/missing-hook-target"
-check 'a dangling hook symlink reports polling fallback' "has err 'wakes by polling only'"
-rm "$hook"
+if test_have_prereq SYMLINKS 'init accepts a dangling hook symlink'
+then
+	ln -s "$T/missing-hook-target" "$hook"
+	run ait init
+	check_rc 'init accepts a dangling hook symlink' 0
+	check 'a dangling hook symlink and its absent target stay unchanged' "test -L \"$hook\" && ! test -e $T/missing-hook-target"
+	check 'a dangling hook symlink reports polling fallback' "has err 'wakes by polling only'"
+	rm "$hook"
+fi
 
 case $(uname -s) in
 Darwin)
