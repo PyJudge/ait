@@ -4,6 +4,16 @@
 AIT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 PATH="$AIT_DIR:$PATH"
 export PATH
+# Windows as git v2.53.0 t/test-lib.sh:1664-1679 runs: Windows-style paths, which
+# Git Bash and the native ait both take (after PATH, where a colon would split
+# them); Git Bash's own conversion off, so an argument such as '/' arrives as typed
+case $(uname -s) in
+*MINGW*)
+	pwd() { builtin pwd -W; }
+	MSYS_NO_PATHCONV=1
+	export MSYS_NO_PATHCONV
+	;;
+esac
 
 n=0 failed=0
 say_ok() { n=$((n+1)); echo "ok $n - $1"; }
@@ -34,7 +44,7 @@ test_have_prereq() {
 
 # a repository with code and an ait branch; alice's session is the worktree's default
 setup() {
-	T=$(mktemp -d); export T HOME=$T/home GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=: LANG=C LC_ALL=C; mkdir -p "$HOME"
+	T=$(cd "$(mktemp -d)" && pwd); export T HOME=$T/home GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=: LANG=C LC_ALL=C; mkdir -p "$HOME"
 	unset AIT_SESSION
 	git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master
 	git init -q --bare "$T/origin.git"

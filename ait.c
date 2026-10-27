@@ -1286,10 +1286,14 @@ static char *trailer_message(const char *msg, const char *rid, const char *who, 
  */
 static char *message_directory;
 
+/*
+ * rmdir or unlink, not remove(): Windows' remove() takes no directory, and
+ * git's mingw_unlink also clears the read-only bit of a loose object
+ */
 static int remove_message_entry(const char *path, const struct stat *st UNUSED,
-				int type UNUSED, struct FTW *walk UNUSED)
+				int type, struct FTW *walk UNUSED)
 {
-	return !remove(path) || errno == ENOENT ? 0 : -1;
+	return !(type == FTW_DP ? rmdir(path) : unlink(path)) || errno == ENOENT ? 0 : -1;
 }
 
 /* Like builtin/clone.c:396-423, clean on exit and signals below child cleanup. */
