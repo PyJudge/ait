@@ -1,6 +1,6 @@
 ---
 name: ait
-description: ait records what the code is expected to do (specs, as conditions with checks) on separate `ait/*` git branches, and shows when the code no longer matches what was checked. Use it in any repository that has `ait/*` branches or whose AGENTS.md or CLAUDE.md mentions ait - read it before you change how the code behaves, write or change a spec, decide a behavior you were asked to decide, or commit - and whenever the user mentions ait, contracts, specs or fulfilling.
+description: ait records what the code is expected to do (specs, as conditions with checks) on separate `ait/*` git branches, and shows when the code no longer matches what was checked. Use it in any repository that has `ait/*` branches or whose AGENTS.md or CLAUDE.md mentions ait - whenever you change anything that could change what the code is expected to do (an output, an expected value, a spec, a behavior you were asked to decide), and before you commit - and whenever the user mentions ait, contracts, specs or fulfilling.
 ---
 
 # ait v1.1
@@ -36,7 +36,7 @@ In `fixtures`, list the code-side files the check reads (tests, data, sources) a
 
 Before writing or changing a condition, run `ait status <scope>` to see the contracts on that scope, and check that the new condition does not conflict with theirs.
 
-A decision that sets or changes what the code is expected to do, whether a spec you write or a behavior you were asked to decide, goes into a contract first: write it with `future demand|offer`, or reopen the existing one with `future amend`. Do not change the behavior in code alone. Every commit that carries the behavior fulfills that contract, and the work is not done until `ait status` shows it `current`, not `future` or `current ?unverified`.
+Whenever you change something that could change what the code is expected to do (an output, an expected value, a spec, a behavior you were asked to decide), run `ait status` to see whether a contract is affected; a change that leaves every expected result as it was, such as fixing a memory leak, does not need it. You need not know beforehand whether you are fulfilling something; status tells you. A contract shown as `touch` or `current ?unverified` is affected: handle it as in step 3 below. If the new behavior is in no contract yet, write it into one (`future demand|offer`, or `future amend`), not into the code alone.
 
 A condition file is copied into the contract's `specs`. Editing the original file does not change the contract; give the edited file to amend again. Do not assume another worktree has the original file.
 
