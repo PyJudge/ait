@@ -58,7 +58,7 @@ exec $ENV{stage_test_git}, @ARGV;
 die $!;
 PERL
 chmod +x "$T/slow-bin/git"
-env PATH="$T/slow-bin:$PATH" ait contract commit -m child-lifetime >"$T/out" 2>"$T/err" &
+env PATH="$TP/slow-bin:$PATH" ait contract commit -m child-lifetime >"$T/out" 2>"$T/err" &
 committer=$!
 for i in $(seq 1 100)
 do

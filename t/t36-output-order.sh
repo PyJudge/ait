@@ -6,7 +6,7 @@ setup
 # A branch removed after start() exercises the root checkin through the real CAS.
 racing_git
 printf 'git update-ref -d refs/heads/ait/master\n' >"$T/before-fetch"
-run env PATH="$T/bin:$PATH" ait future demand src/order.c src/stock.c cond.yaml as d -m root
+run env PATH="$TP/bin:$PATH" ait future demand src/order.c src/stock.c cond.yaml as d -m root
 D=$(newest D)
 check_rc "a root request succeeds" 0
 cat >"$T/expect" <<EOF
@@ -121,7 +121,7 @@ git add src/order.c
 code=$(git rev-parse HEAD)
 tip=$(git rev-parse ait/master)
 printf 'git reset -q\n' >"$T/before-commit"
-run env PATH="$T/bin:$PATH" ait fulfill "$O" --force -m rejected
+run env PATH="$TP/bin:$PATH" ait fulfill "$O" --force -m rejected
 check_rc "a Git commit failure returns E_COMMIT" 1
 check "a failed Git commit retains its complete stdout and prints no success rows" "test $git_rc = 1 && test -s $T/git-out && cmp -s $T/git-out $T/out && ! has out '^fulfilled ' && ! has out '^\\[ait/'"
 cat "$T/git-err" >"$T/expect-err"

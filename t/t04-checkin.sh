@@ -8,14 +8,14 @@ run ait future demand src/order.c src/stock.c cond.yaml -m d1
 D=$(newest D)
 
 # another request lands on the branch just before this one's CAS: different files, so it is judged again and lands
-echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$T/bin:||")\" ait future demand src/order.c src/stock.c:1-2 cond.yaml -m other >/dev/null" > "$T/before-update-ref"
-run env PATH="$T/bin:$PATH" ait future offer src/stock.c cond.yaml -m o1
+echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$TP/bin:||")\" ait future demand src/order.c src/stock.c:1-2 cond.yaml -m other >/dev/null" > "$T/before-update-ref"
+run env PATH="$TP/bin:$PATH" ait future offer src/stock.c cond.yaml -m o1
 check_rc "a lost CAS on other files is judged again and checks in (4.4-4)" 0
 check "both requests are on the branch" "test \"\$(git rev-list --count ait/master)\" = 4"
 
 # the same contract changed meanwhile: stop
-echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$T/bin:||")\" ait future amend $D - src/stock.c:3-4 - -m meanwhile >/dev/null" > "$T/before-update-ref"
-run env PATH="$T/bin:$PATH" ait future amend "$D" - src/stock.c:5-6 - -m mine
+echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$TP/bin:||")\" ait future amend $D - src/stock.c:3-4 - -m meanwhile >/dev/null" > "$T/before-update-ref"
+run env PATH="$TP/bin:$PATH" ait future amend "$D" - src/stock.c:5-6 - -m mine
 check_rc "a lost CAS on the same file stops (4.4-4)" 1
 check "the message" "has err \"'ait/master' moved while running; nothing changed\""
 check "the other change stands" "yaml $D | grep -q 'src/stock.c:3-4'"
@@ -23,8 +23,8 @@ check "the other change stands" "yaml $D | grep -q 'src/stock.c:3-4'"
 # a drop's fulfilment, and its target changes meanwhile: nothing recorded; the drop itself did not change, so fulfill again
 ait fulfill "$D" --force -m now >/dev/null 2>&1
 X=$(ait future drop "$D" -m retire | sed -n 's/^new //p')
-echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$T/bin:||")\" ait future amend $D src/order.c:1-2 - - --force -m meanwhile >/dev/null" > "$T/before-update-ref"
-run env PATH="$T/bin:$PATH" ait fulfill "$X" -m withdraw
+echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$TP/bin:||")\" ait future amend $D src/order.c:1-2 - - --force -m meanwhile >/dev/null" > "$T/before-update-ref"
+run env PATH="$TP/bin:$PATH" ait fulfill "$X" -m withdraw
 check_rc "a lost CAS after the code step records nothing (6.7.5-3)" 1
 check "the message says what is not fulfilled" "has err \"error: '$X' not fulfilled: 'ait/master' moved while running; nothing changed\""
 check "the hint fulfills again, as the drop is as it was" "has err \"hint: ait fulfill $X -m withdraw\""
@@ -41,7 +41,7 @@ git update-ref refs/heads/ait/master "$good"
 cp "$T/prompt.yaml" cond2.yaml
 echo 'ait future offer src/order.c cond.yaml -m unrelated >/dev/null' > "$T/before-update-ref"
 echo "ait future amend $D - src/order.c - -m other >/dev/null" > "$T/before-diff-tree"
-run env PATH="$T/bin:$PATH" ait future amend "$D" - - cond2.yaml -m ours
+run env PATH="$TP/bin:$PATH" ait future amend "$D" - - cond2.yaml -m ours
 check_rc "the tip compared is the tip judged on: a second move is not missed (4.4-4)" 1
 check "the message" "has err \"'ait/master' moved while running\""
 rm -f "$T"/before-*
@@ -79,7 +79,7 @@ GIT_INDEX_FILE=\$idx git update-index --cacheinfo 100644,\$b,$P
 t=\$(GIT_INDEX_FILE=\$idx git write-tree); c=\$(git commit-tree -p ait/master -m broken \$t)
 git update-ref refs/heads/ait/master \$c
 X
-run env PATH="$T/bin:$PATH" ait future demand src/order.c src/stock.c cond.yaml -m d2
+run env PATH="$TP/bin:$PATH" ait future demand src/order.c src/stock.c cond.yaml -m d2
 check_rc "a tip that breaks meanwhile is refused by 4.3-3 (no BUG)" 128
 check "the message" "has err \"fatal: bad format: '$P' at 'ait/master'\""
 

@@ -106,7 +106,7 @@ done
 # The parser decides; a failed Git parser cannot be replaced by a C cutoff verdict.
 racing_git
 printf '%s\n' "git config core.commentChar ''" >"$T/before-log"
-run env PATH="$T/bin:$PATH" ait future offer src/stock.c cond.yaml -m "$message"
+run env PATH="$TP/bin:$PATH" ait future offer src/stock.c cond.yaml -m "$message"
 check_rc 'an actual Git parser failure precedes a scissors diagnosis' 128
 check 'a parser failure retains E_GIT rather than a guessed usage error' "has err \"git failed: 'git log'\""
 git config --unset-all core.commentChar || :
@@ -115,7 +115,7 @@ git update-ref refs/heads/ait/master "$good"
 
 # Git 2.38 is the minimum runtime; the shim changes the reported version only.
 printf '%s\n' "printf 'git version 2.37.0\\n'" >"$T/before-version"
-run env PATH="$T/bin:$PATH" ait future offer src/stock.c cond.yaml -m version
+run env PATH="$TP/bin:$PATH" ait future offer src/stock.c cond.yaml -m version
 check_rc 'Git 2.37 is below the supported runtime' 128
 check 'the upgrade hint matches the supported Git 2.38 floor' "has err '^fatal: git 2.37 is too old for ait$' && has err '^hint: install git 2.38 or later$'"
 rm -f "$T/before-version" "$T/before-version.done"
@@ -237,7 +237,7 @@ check 'validation adds no real repository objects for a no-op checkin' \
 # A failure of the actual metadata reader cleans its private temporary resources.
 mkdir "$T/probe-tmp"
 printf '%s\n' "git config core.commentChar ''" >"$T/before-log"
-run env PATH="$T/bin:$PATH" TMPDIR="$T/probe-tmp" ait future offer src/stock.c cond.yaml -m reader
+run env PATH="$TP/bin:$PATH" TMPDIR="$T/probe-tmp" ait future offer src/stock.c cond.yaml -m reader
 check_rc 'an actual metadata reader failure remains E_GIT' 128
 check 'a reader failure leaves no temporary validation files' "test -z \"\$(find '$T/probe-tmp' -mindepth 1 -print -quit)\""
 git config --unset-all core.commentChar || :
@@ -264,7 +264,7 @@ fi
 exec "$REAL_GIT" "$@"
 GIT
 chmod +x "$T/writer-bin/git"
-run env PATH="$T/writer-bin:$PATH" TMPDIR="$T/writer-tmp" ait future offer src/stock.c cond.yaml -m writer
+run env PATH="$TP/writer-bin:$PATH" TMPDIR="$T/writer-tmp" ait future offer src/stock.c cond.yaml -m writer
 check_rc 'a failed real object writer is fatal' 128
 check 'the fixture actually creates an incomplete Git loose object' 'test -s "$T/partial-object"'
 check 'partial-object cleanup preserves the original Git error and has no IO hint' \
@@ -273,7 +273,7 @@ check 'a failed writer leaves no private object directory or files' "test -z \"\
 # Retain failed-fixture evidence above, but isolate the signal case.
 rm -rf "$T/writer-tmp"
 mkdir "$T/writer-tmp"
-env PATH="$T/writer-bin:$PATH" TMPDIR="$T/writer-tmp" WAIT_FOR_CLEANUP=1 \
+env PATH="$TP/writer-bin:$PATH" TMPDIR="$T/writer-tmp" WAIT_FOR_CLEANUP=1 \
 	ait future offer src/stock.c cond.yaml -m interrupted >"$T/out" 2>"$T/err" &
 parent=$!
 for attempt in $(seq 1 100); do

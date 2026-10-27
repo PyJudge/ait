@@ -60,7 +60,7 @@ echo $? >"$T/nested.rc"
 exit 0
 HOOK
 	rm -f "$T/nested.rc" "$T/nested.out" "$T/nested.err"
-	run env PATH="$T/bin:$PATH" GIT_INDEX_FILE="$code_index" ait contract commit -m "$shape index"
+	run env PATH="$TP/bin:$PATH" GIT_INDEX_FILE="$code_index" ait contract commit -m "$shape index"
 	check_rc "$shape index alias commits its snapshot" 0
 	check "$shape index alias excludes a concurrent add" "test \"\$(cat $T/nested.rc)\" = 128 && ! grep -q '^add ' $T/nested.out"
 	check "$shape index alias remains while its consumed target is empty" "test -L $stage && ! test -e $stage && ! test -e $backing"

@@ -10,7 +10,7 @@ case " \$* " in *' -U0 '*) printf '%s\n' "\$*" >>"$T/diffs" ;; esac
 exec "$real_git" "\$@"
 GIT
 chmod +x "$T/trace-bin/git"
-traced() { : >"$T/diffs"; run env PATH="$T/trace-bin:$PATH" "$@"; }
+traced() { : >"$T/diffs"; run env PATH="$TP/trace-bin:$PATH" "$@"; }
 diffs() { wc -l <"$T/diffs" | tr -d ' '; }
 
 printf 'x\n' >src/other.c

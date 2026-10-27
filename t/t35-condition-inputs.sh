@@ -32,7 +32,7 @@ cat > "$T/before-diff" <<'H'
 printf 'body: changed A\n' > a.yaml
 H
 # The first offer reads A. Drop's target judgment changes A before the second list is read.
-run env PATH="$T/bin:$PATH" ait future offer src/order.c a.yaml as first \
+run env PATH="$TP/bin:$PATH" ait future offer src/order.c a.yaml as first \
 	future drop "$D" future offer src/order.c a.yaml,b.yaml as second -m 'overlapping input lists'
 check_rc 'overlapping FILES lists can share one condition snapshot' 0
 FIRST=$(sed -n 's/^new \(O[0-9a-f]*\) first$/\1/p' "$T/out")

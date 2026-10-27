@@ -45,7 +45,8 @@ test_have_prereq() {
 
 # a repository with code and an ait branch; alice's session is the worktree's default
 setup() {
-	T=$(cd "$(mktemp -d)" && pwd); export T HOME=$T/home GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=: LANG=C LC_ALL=C; mkdir -p "$HOME"
+	# T as ait takes it; TP as a PATH entry, which on Windows takes no drive colon
+	T=$(cd "$(mktemp -d)" && pwd); TP=$(cd "$T" && builtin pwd); export T TP HOME=$T/home GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR=: LANG=C LC_ALL=C; mkdir -p "$HOME"
 	unset AIT_SESSION
 	git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master
 	git init -q --bare "$T/origin.git"
@@ -83,12 +84,12 @@ pass_all() {
 }
 
 # a git that first runs "$T/before-SUB" once when it is about to run SUB (update-ref, commit-tree, ...):
-# a deterministic race at that point; `run env PATH="$T/bin:$PATH" ait ...` uses it
+# a deterministic race at that point; `run env PATH="$TP/bin:$PATH" ait ...` uses it
 racing_git() {
 	mkdir -p "$T/bin"
 	cat > "$T/bin/git" <<'GIT'
 #!/bin/sh
-real=$(PATH=$(echo "$PATH" | sed "s|$T/bin:||") command -v git)
+real=$(PATH=$(echo "$PATH" | sed "s|$TP/bin:||") command -v git)
 for a; do
 	case $a in -*|*=*|/*) continue ;; esac
 	f="$T/before-$a"

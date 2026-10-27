@@ -22,7 +22,7 @@ race() {
 	git update-ref refs/heads/ait/master "$oldtip"
 	rm -f "$T/before-ls-tree.done"
 	printf '%s\n' "git update-ref refs/heads/ait/master $newtip" >"$T/before-ls-tree"
-	run env PATH="$T/bin:$PATH" "$@"
+	run env PATH="$TP/bin:$PATH" "$@"
 }
 
 race ait status src/order.c
@@ -55,7 +55,7 @@ check 'a refused fresh subscription is not saved' "! grep -qx 'sub id $NEW' '$se
 git update-ref refs/heads/ait/master "$oldtip"
 rm -f "$T/before-ls-tree.done"
 printf '%s\n' "git update-ref refs/heads/ait/master $newtip" >"$T/before-ls-tree"
-env PATH="$T/bin:$PATH" ait listen "$OLD" >"$T/out" 2>"$T/err" &
+env PATH="$TP/bin:$PATH" ait listen "$OLD" >"$T/out" 2>"$T/err" &
 listener=$!
 for attempt in $(seq 1 100); do
 	grep -qx "sub id $OLD" "$session_file" && break
@@ -74,7 +74,7 @@ check 'a refused fresh listen does not subscribe the newer ID' "! grep -qx 'sub 
 # Writers still capture their own T later; deletion after that capture is E_GIT.
 git update-ref refs/heads/ait/master "$oldtip"
 printf '%s\n' 'git update-ref -d refs/heads/ait/master' >"$T/before-update-ref"
-run env PATH="$T/bin:$PATH" ait future offer src/order.c cond.yaml -m late-delete
+run env PATH="$TP/bin:$PATH" ait future offer src/order.c cond.yaml -m late-delete
 check_rc 'deletion just before CAS remains a Git failure' 128
 check 'late deletion does not recreate the branch or print success' \
 	"! git show-ref --verify --quiet refs/heads/ait/master && ! has out '^new ' && has err 'git failed'"

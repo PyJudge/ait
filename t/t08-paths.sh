@@ -44,8 +44,8 @@ check "the hint for an abstract provider is the same command, narrowed (3.3)" "h
 
 # the covered set grows while the code is committed: step 0's set holds, so nothing is recorded
 run ait future demand src/order.c src/stock.c:5-6 cond.yaml -m d2; D2=$(newest D)
-echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$T/bin:||")\" ait future offer src/stock.c cond.yaml as o undertake -p $D2 o -m meanwhile >/dev/null" > "$T/before-update-ref"
-run env PATH="$T/bin:$PATH" ait fulfill "$D2" --force -m mine
+echo "cd $T/r && PATH=\"$(echo "$PATH" | sed "s|$TP/bin:||")\" ait future offer src/stock.c cond.yaml as o undertake -p $D2 o -m meanwhile >/dev/null" > "$T/before-update-ref"
+run env PATH="$TP/bin:$PATH" ait fulfill "$D2" --force -m mine
 check_rc "a covered set changed after step 0 is not recorded (6.7.2)" 1
 check "the message" "has err \"'$D2' not fulfilled: 'ait/master' moved while running\""
 
@@ -76,7 +76,7 @@ res=$(pass_all)
 echo more >> src/order.c; git add src/order.c
 printf 'body: |\n  NEVER CHECKED\n' > "$T/never.yaml"
 echo "cp $T/never.yaml cond.yaml" > "$T/before-commit"
-run env PATH="$T/bin:$PATH" ait demand src/order.c src/stock.c:30-31 cond.yaml -r "$res" -m need
+run env PATH="$TP/bin:$PATH" ait demand src/order.c src/stock.c:30-31 cond.yaml -r "$res" -m need
 check_rc "a demand made and fulfilled with results" 0
 check "the contract recorded holds the specs step 0 checked (6.7.5)" "yaml \$(newest D) | grep -q 'stock never goes below zero'"
 cp "$T/exec.yaml" cond.yaml

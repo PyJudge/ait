@@ -46,7 +46,7 @@ id=$(sed -n '1s/ .*//p' "$T/shared")
 blob=$(git rev-parse "ait/master:a\"b/$id.yaml")
 blobfile="$(git rev-parse --absolute-git-dir)/objects/$(printf '%s' "$blob" | cut -c1-2)/$(printf '%s' "$blob" | cut -c3-)"
 printf 'mv "%s" "%s"\n' "$blobfile" "$T/removed-blob" > "$T/before-merge-tree"
-run env PATH="$T/bin:$PATH" ait contract pull
+run env PATH="$TP/bin:$PATH" ait contract pull
 check_rc "a native merge failure is a fatal Git error" 128
 check "a native merge failure identifies Git instead of crashing" "has err \"fatal: git failed: 'git merge-tree':\""
 check "a native merge failure keeps the contract tip and stage" "test \"\$(git rev-parse ait/master)\" = $tip && ! test -e \"\$(git rev-parse --absolute-git-dir)/ait/index\""

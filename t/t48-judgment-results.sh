@@ -28,7 +28,7 @@ fi
 exec "$REAL_GIT" "$@"
 GIT
 chmod +x "$T/diff-bin/git"
-run env PATH="$T/diff-bin:$PATH" ait status src/stock.c
+run env PATH="$TP/diff-bin:$PATH" ait status src/stock.c
 check_rc 'one result serves selection, display and touch' 0
 check 'one ordered blob pair is diffed once' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 1"
 check 'outside-range edits preserve current state and coordinates' "has out '^state current$' && has out '^provider src/stock.c:2-2$' && ! has out '^touch$'"
@@ -82,12 +82,12 @@ for version in 2 3 4 5 6; do
 	ait fulfill "$R" --force -m later >/dev/null 2>&1
 done
 : >"$T/diff.trace"
-run env PATH="$T/diff-bin:$PATH" ait future drop "$R" -m 'first witness suffices'
+run env PATH="$TP/diff-bin:$PATH" ait future drop "$R" -m 'first witness suffices'
 check_rc 'an early whole witness satisfies verdict-only callers' 0
 check 'later witnesses cannot add matches after a whole match' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 1"
 # Nothing staged: the index and the committed code hold the same blob, one pair mapped once.
 : >"$T/diff.trace"
-run env PATH="$T/diff-bin:$PATH" ait fulfill "$R" --force -m 'record mapped code once'
+run env PATH="$TP/diff-bin:$PATH" ait fulfill "$R" --force -m 'record mapped code once'
 check_rc 'recording consumes its validated provider positions' 0
 check 'the same blob pair is mapped once for validation and recording' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 1"
 for spec_number in 1 2 3; do printf 'body: condition %s\n' "$spec_number" >"c$spec_number.yaml"; done
@@ -96,7 +96,7 @@ THREE=$(newest O)
 sed -i.bak '4s/.*/one more outside change/' src/stock.c
 git add src/stock.c && git commit -qm outside
 : >"$T/diff.trace"
-run env PATH="$T/diff-bin:$PATH" ait fulfill "$THREE" -m 'prepare tasks'
+run env PATH="$TP/diff-bin:$PATH" ait fulfill "$THREE" -m 'prepare tasks'
 check_rc 'all three tasks consume the same prepared scope positions' 1
 check 'validation and all spec displays share one map' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 1 && has err 'check results required: 3 task(s)'"
 RECEIVER=$(AIT_SESSION=- ait session open --agent alice 2>/dev/null)
@@ -106,7 +106,7 @@ for event_number in 1 2 3; do
 	ait future amend "$R" - cond.yaml --force -m "event $event_number" >/dev/null
 done
 : >"$T/diff.trace"
-run env AIT_SESSION="$RECEIVER" ONE_ROUND=1 PATH="$T/diff-bin:$PATH" ait listen
+run env AIT_SESSION="$RECEIVER" ONE_ROUND=1 PATH="$TP/diff-bin:$PATH" ait listen
 check 'one round delivers exactly three captured events' "test $rc = 0 && test \"\$(grep -c '^ait-event 1$' '$T/out')\" = 3"
 check 'one receiving snapshot is judged once across its events' "test \"\$(wc -l <\"$T/diff.trace\" | tr -d ' ')\" = 1"
 done_testing

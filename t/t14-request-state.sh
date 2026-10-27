@@ -68,7 +68,7 @@ H
 echo durable >> src/order.c
 git add src/order.c
 two_moves
-run env PATH="$T/bin:$PATH" ait future amend "$BASE" - - cond-b.yaml future amend "$BASE" - - cond-a.yaml \
+run env PATH="$TP/bin:$PATH" ait future amend "$BASE" - - cond-b.yaml future amend "$BASE" - - cond-a.yaml \
 	future demand src/order.c src/stock.c:3-4 cond-a.yaml as d \
 	offer src/stock.c:3-4 cond-a.yaml as o undertake d o -r "$res" -m durable-request
 check_rc "the request survives two failed CAS operations" 0
@@ -92,7 +92,7 @@ cat > "$T/on-second" <<H
 ait future offer src/stock.c:7-8 cond.yaml as p undertake -p $COVERED p -m new-covered > "\$T/new-covered.out"
 H
 two_moves
-run env PATH="$T/bin:$PATH" ait fulfill "$COVERED" --force -m fixed-covered
+run env PATH="$TP/bin:$PATH" ait fulfill "$COVERED" --force -m fixed-covered
 check_rc "a covered set changed after a safe retry is not recorded" 1
 check "the fixed-set refusal retains its context and gives no retry hint (C67)" \
 	"test \"\$(cat $T/round)\" = 2 && has err \"'$COVERED' not fulfilled: 'ait/master' moved while running\" && ! has err '^hint:' && ! has out '^fulfilled '"
@@ -110,7 +110,7 @@ cat > "$T/on-second" <<H
 ait future amend $TARGET src/order.c:1-2 - - --force -m changed-target >/dev/null
 H
 two_moves
-run env PATH="$T/bin:$PATH" ait fulfill "$DROP" -m durable-retry
+run env PATH="$TP/bin:$PATH" ait fulfill "$DROP" -m durable-retry
 check_rc "a target collision after one safe retry still stops" 1
 check "the retry hint retains the original fulfill arguments" \
 	"test \"\$(cat $T/round)\" = 2 && has err \"hint: ait fulfill $DROP -m durable-retry\" && ! has out '^withdrawn '"
@@ -133,7 +133,7 @@ printf 'no longer the staged draft\n' > ".ait/$draft.yaml"
 sh "$T/empty-move"
 H
 two_moves
-run env PATH="$T/bin:$PATH" ait contract commit -m durable-draft
+run env PATH="$TP/bin:$PATH" ait contract commit -m durable-draft
 check_rc "the fixed staged draft is reparsed after two failed CAS operations" 0
 candidates '[CONTRACT] durable-draft'
 check "each draft judgment produces the same contract and request ID" \

@@ -76,7 +76,7 @@ receiver() {
 	rm -f "$T/round-injected" "$T/checkout-reads"
 }
 one_round() {
-	run env AIT_SESSION="$BOB" PATH="$T/round-bin:$PATH" MODE="$1" ait listen
+	run env AIT_SESSION="$BOB" PATH="$TP/round-bin:$PATH" MODE="$1" ait listen
 }
 no_seen() { ! test -s "$receiver_file.seen"; }
 unchanged_tips() { grep '^tip ' "$receiver_file" >"$T/tips-after"; cmp -s "$T/tips-before" "$T/tips-after"; }
@@ -164,7 +164,7 @@ reset_refs
 receiver /
 run ait future offer src/stock.c cond.yaml -m failed-output
 : >"$T/read-only"
-env AIT_SESSION="$BOB" PATH="$T/round-bin:$PATH" MODE=normal ait listen 1<"$T/read-only" 2>"$T/err"
+env AIT_SESSION="$BOB" PATH="$TP/round-bin:$PATH" MODE=normal ait listen 1<"$T/read-only" 2>"$T/err"
 rc=$?
 check_rc 'an ordinary output failure is E_IO' 128
 check 'an ordinary output failure retains its stdout diagnostic' "has err '^fatal: write error: standard output:'"
@@ -176,7 +176,7 @@ run ait future offer src/stock.c cond.yaml -m broken-pipe
 mkfifo "$T/events-pipe"
 (exec 3<"$T/events-pipe"; exec 3<&-; touch "$T/pipe-closed") &
 reader=$!
-env AIT_SESSION="$BOB" PATH="$T/round-bin:$PATH" MODE=pipe ait listen >"$T/events-pipe" 2>"$T/err" &
+env AIT_SESSION="$BOB" PATH="$TP/round-bin:$PATH" MODE=pipe ait listen >"$T/events-pipe" 2>"$T/err" &
 listener=$!
 wait "$reader"
 wait "$listener"

@@ -141,7 +141,7 @@ fi
 sh "$T/try-add"
 HOOK
 rm -f "$T/nested.rc" "$T/nested.out" "$T/nested.err"
-run env PATH="$T/bin:$PATH" ait contract commit -m before-read
+run env PATH="$TP/bin:$PATH" ait contract commit -m before-read
 check_rc "commit succeeds while an add at its stage read is refused" 0
 check "stage is locked before its first read, without blocking the add" "test \"\$(cat $T/nested.rc)\" = 128 && grep -q 'index.lock' $T/nested.err && ! grep -q '^add ' $T/nested.out"
 check "the rejected concurrent draft was not committed" "yaml D111111111111 | grep -q 'added content'"
@@ -153,7 +153,7 @@ sed -i.bak 's/added content/next version/' "$Q"
 seed_stage "$Q"
 cp "$T/try-add" "$T/before-update-ref"
 rm -f "$T/nested.rc" "$T/nested.out" "$T/nested.err"
-run env PATH="$T/bin:$PATH" ait contract commit -m before-cas
+run env PATH="$TP/bin:$PATH" ait contract commit -m before-cas
 check_rc "commit succeeds while an add at its CAS is refused" 0
 check "the stage stays locked through the CAS without blocking add" "test \"\$(cat $T/nested.rc)\" = 128 && grep -q 'index.lock' $T/nested.err"
 git show ait/master:stage/D111111111111.yaml >"$P"

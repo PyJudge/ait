@@ -7,7 +7,7 @@ git worktree add -qb other-code "$T/other" master
 mkdir -p "$T/bin"
 cat > "$T/bin/git" <<'GIT'
 #!/bin/sh
-real=$(PATH=$(echo "$PATH" | sed "s|$T/bin:||") command -v git)
+real=$(PATH=$(echo "$PATH" | sed "s|$TP/bin:||") command -v git)
 case " $* " in
 *' update-ref '*' --stdin '*)
 	if [ ! -e "$T/raced" ]; then
@@ -19,7 +19,7 @@ case " $* " in
 		if [ "$collision" = same ]; then rival=$path; else rival=rival/$id.yaml; fi
 		mkdir -p "$T/other/.ait/$(dirname "$rival")"
 		"$real" show "$new:$path" > "$T/other/.ait/$rival"
-		(cd "$T/other" && PATH=$(echo "$PATH" | sed "s|$T/bin:||") && export PATH &&
+		(cd "$T/other" && PATH=$(echo "$PATH" | sed "s|$TP/bin:||") && export PATH &&
 		 ait contract add ".ait/$rival" >/dev/null &&
 		 ait contract commit -m 'concurrent same identity' >/dev/null) || exit 1
 		"$real" rev-parse ait/master > "$T/rival-tip"
@@ -44,9 +44,9 @@ for entry in request draft; do
 			stage=$(git rev-parse --git-dir)/ait/index
 			cp "$stage" "$T/saved-stage"
 			cp "$draft" "$T/saved-draft"
-			run env PATH="$T/bin:$PATH" ait contract commit -m 'new staged identity'
+			run env PATH="$TP/bin:$PATH" ait contract commit -m 'new staged identity'
 		else
-			run env PATH="$T/bin:$PATH" ait future offer src/stock.c cond.yaml -g ours -m 'new generated identity'
+			run env PATH="$TP/bin:$PATH" ait future offer src/stock.c cond.yaml -g ours -m 'new generated identity'
 		fi
 		check_rc "$entry safely refuses a concurrent ID in the $collision group" 1
 		check "$entry leaves only the concurrent $collision-group checkin" \

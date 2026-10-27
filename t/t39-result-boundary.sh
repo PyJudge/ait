@@ -139,7 +139,7 @@ racing_git
 cat > "$T/before-diff" <<'RACE'
 printf 'condition-ids: {}\nresults: []\n' > "$T/result.yaml"
 RACE
-run env PATH="$T/bin:$PATH" ait fulfill "$K" -r "$T/result.yaml" -m 'one parsed input'
+run env PATH="$TP/bin:$PATH" ait fulfill "$K" -r "$T/result.yaml" -m 'one parsed input'
 check_rc 'provider location and task validation share the first parsed result' 0
 check 'the race ran, but the fulfillment uses the first result body' \
 	"test -e $T/before-diff.done && git show ait/master:fulfill/\$(git ls-tree --name-only ait/master fulfill/ | sed -n \"s|fulfill/\\($K-.*\\)|\\1|p\") | grep -q 'first snapshot'"

@@ -1,4 +1,5 @@
-# Quick checks on real Windows, on a push to windows-diag
+# Quick checks on real Windows, on a push to windows-diag: each failing
+# script traced up to its first failing check
 name: windows-diag
 on:
   push:
@@ -6,7 +7,7 @@ on:
 jobs:
   diag:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: msys2/setup-msys2@v2
@@ -15,25 +16,36 @@ jobs:
           install: mingw-w64-ucrt-x86_64-gcc make
       - name: build
         shell: msys2 {0}
+        run: make DEVELOPER=1
+      - name: traces
+        shell: bash
         run: |
-          "/c/Program Files/Git/cmd/git.exe" apply .github/diag/remove-tree.patch
-          make
-      - name: leftovers
-        shell: pwsh
+          trace() { # SCRIPT CHECK: the trace up to 'not ok CHECK'
+            echo "======== $1 (to not ok $2)"
+            timeout 120 sh -x "t/$1.sh" > "trace.$1" 2>&1
+            awk -v k="not ok $2 " 'index($0, k) == 1 { print; for (i = 0; i < 6 && (getline l) > 0; i++) print l; exit } { buf[NR % 70] = $0 } NR > 70 { } END { }' "trace.$1" > /dev/null
+            n=$(grep -n "^not ok $2 " "trace.$1" | head -1 | cut -d: -f1)
+            if [ -n "$n" ]; then sed -n "$((n > 60 ? n - 60 : 1)),$((n + 6))p" "trace.$1"; else tail -60 "trace.$1"; fi
+          }
+          trace t03-fulfill 9
+          trace t09-rounds 6
+          trace t18-check-request-paths 2
+          trace t11-stage-child 3
+          trace t16-request-paths 1
+          trace t16-request-paths 10
+          trace t17-new-file 6
+          trace t25-subscription-path-context 7
+          trace t41-message-boundary 52
+          trace t19-draft-batch 999
+          trace t44-notification-input 999
+      - name: result-file
+        if: always()
+        shell: bash
         run: |
-          $env:PATH = "$PWD;$env:PATH"; $env:GIT_CONFIG_NOSYSTEM = "1"
-          $t = Join-Path $env:TEMP ("pw" + (Get-Random)); New-Item -ItemType Directory $t | Out-Null
-          $env:HOME = "$t/home"; New-Item -ItemType Directory $env:HOME | Out-Null
-          $env:TMPDIR = "$t/tmp"; New-Item -ItemType Directory $env:TMPDIR | Out-Null
-          git config --global user.name t; git config --global user.email t@t; git config --global init.defaultBranch master
-          git init -q "$t/r"; Set-Location "$t/r"
-          New-Item -ItemType Directory src | Out-Null
-          Set-Content src/order.c ((1..50) | % { "o$_" }); Set-Content src/stock.c ((1..50) | % { "s$_" })
-          git add -A; git commit -qm base
-          & ait init; & ait session open --agent alice
-          [IO.File]::WriteAllText("$t/r/cond.yaml", "body: |`n  stock never goes below zero`n")
-          & ait future demand src/order.c:10-20 src/stock.c:5-9 cond.yaml -m "need stock"; "future exit 0x{0:X}" -f $LASTEXITCODE
-          "--- left in TMPDIR:"
-          Get-ChildItem -Recurse -Force $env:TMPDIR | % { "{0}  [{1}]  {2}" -f $_.FullName, $_.Attributes, $_.Length }
-          "--- cmd dir /a /s:"
-          cmd /c "dir /a /s `"$env:TMPDIR`""
+          . t/lib.sh; setup
+          ait future demand src/order.c src/stock.c cond.yaml -m d >/dev/null
+          ait fulfill $(newest D 2>/dev/null) -m f > "$T/out" 2>&1; cat "$T/out"
+          res=$(git rev-parse --absolute-git-dir)/ait/check-result.yaml
+          echo "res=$res"; od -c "$res" | head -20
+          sed -i.bak 's/^  outcome:$/  outcome: pass/; s/^  basis: |$/  basis: |\n    checked/' "$res"; echo "sed rc=$?"
+          od -c "$res" | head -20

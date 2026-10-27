@@ -8,7 +8,7 @@ racing_git
 cat > "$T/before-ls-tree" <<'HOOK'
 git branch ait/later ait/master
 HOOK
-run env PATH="$T/bin:$PATH" AIT_SESSION=- ait status
+run env PATH="$TP/bin:$PATH" AIT_SESSION=- ait status
 check_rc "status keeps its selected branch when another ref appears during loading" 0
 check "the controlled race really creates the second local contract branch" \
 	"git show-ref --verify --quiet refs/heads/ait/later"
@@ -72,7 +72,7 @@ done
 exec "$real" "$@"
 GIT
 chmod +x "$T/tip-race-bin/git"
-run env PATH="$T/tip-race-bin:$PATH" AIT_SESSION=- ait session open --agent snapshot-race
+run env PATH="$TP/tip-race-bin:$PATH" AIT_SESSION=- ait session open --agent snapshot-race
 check_rc "session open succeeds when refs change after its first complete listing" 0
 race_sid=$(cat "$T/out")
 race_snapshot="$(git rev-parse --path-format=absolute --git-common-dir)/ait/sessions/$race_sid"
