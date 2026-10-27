@@ -51,38 +51,44 @@ for state in no-branch malformed invalid-session; do
 
 
 # Every readable sentinel value must be unique, even if config hides the RID key.
-git config core.commentString Ait-Request
-partial=$(printf 'explain\n\nAit-Agent: ait\nAit-Session: S000000000000\n\nAit-Request ------------------------ >8 ------------------------\nhidden\n')
-git update-ref -d refs/heads/ait/master
-run ait future offer src/stock.c cond.yaml -m "$partial"
-check_rc 'a partially hidden probe cannot be impersonated before common state' 129
-check 'a partially hidden probe reports the actual scissors line' "has err \"the message hides the trailers: 'Ait-Request ------------------------ >8 ------------------------'\""
-git config --unset-all core.commentString
+if test_have_prereq COMMENT_STRING 'a prefix that hides the RID key'; then
+	git config core.commentString Ait-Request
+	partial=$(printf 'explain\n\nAit-Agent: ait\nAit-Session: S000000000000\n\nAit-Request ------------------------ >8 ------------------------\nhidden\n')
+	git update-ref -d refs/heads/ait/master
+	run ait future offer src/stock.c cond.yaml -m "$partial"
+	check_rc 'a partially hidden probe cannot be impersonated before common state' 129
+	check 'a partially hidden probe reports the actual scissors line' "has err \"the message hides the trailers: 'Ait-Request ------------------------ >8 ------------------------'\""
+	git config --unset-all core.commentString
+fi
 
 # Git writes and decodes the message; the raw input bytes are not the history view.
 git config i18n.commitEncoding ISO-8859-1
-git config core.commentString 'é'
 printf 'explain\n\n\351 ------------------------ >8 ------------------------\nhidden\n' >"$T/encoded-message"
-for state in no-branch valid; do
-	case $state in
-	no-branch) git update-ref -d refs/heads/ait/master ;;
-	valid) git update-ref refs/heads/ait/master "$good" ;;
-	esac
-	run ait future offer src/stock.c cond.yaml -F "$T/encoded-message"
-	check_rc "a cutoff created by Git decoding is usage before $state" 129
-	check "a decoded cutoff reports the exact history LINE before $state" "has err \"the message hides the trailers: 'é ------------------------ >8 ------------------------'\""
-done
-check 'an encoded rejected message preserves the contract ref' "test \"\$(git rev-parse ait/master)\" = $good"
+if test_have_prereq COMMENT_STRING 'a non-ASCII prefix decoded by Git'; then
+	git config core.commentString 'é'
+	for state in no-branch valid; do
+		case $state in
+		no-branch) git update-ref -d refs/heads/ait/master ;;
+		valid) git update-ref refs/heads/ait/master "$good" ;;
+		esac
+		run ait future offer src/stock.c cond.yaml -F "$T/encoded-message"
+		check_rc "a cutoff created by Git decoding is usage before $state" 129
+		check "a decoded cutoff reports the exact history LINE before $state" "has err \"the message hides the trailers: 'é ------------------------ >8 ------------------------'\""
+	done
+	check 'an encoded rejected message preserves the contract ref' "test \"\$(git rev-parse ait/master)\" = $good"
+fi
 printf 'caf\351\n' >"$T/encoded-readable"
 run ait future offer src/stock.c cond.yaml -F "$T/encoded-readable"
 check_rc 'a readable non-UTF8 commit encoding remains supported' 0
 check 'the real encoded commit retains its three metadata values' \
 	"test \"\$(git -c i18n.logOutputEncoding=UTF-8 log -1 --format='%(trailers:key=Ait-Agent,valueonly)' ait/master)\" = alice && test \"\$(git -c i18n.logOutputEncoding=UTF-8 log -1 --format='%(trailers:key=Ait-Session,valueonly)' ait/master)\" = $ALICE && git cat-file commit ait/master | grep -qx 'encoding ISO-8859-1'"
 git config --unset-all i18n.commitEncoding
-run ait future offer src/stock.c cond.yaml -F "$T/encoded-message"
-check_rc 'Git UTF8 repair cannot create an unchecked cutoff either' 129
-check 'the repaired cutoff reports the decoded LINE' "has err \"the message hides the trailers: 'é ------------------------ >8 ------------------------'\""
-git config --unset-all core.commentString
+if test_have_prereq COMMENT_STRING 'a non-ASCII prefix after Git UTF8 repair'; then
+	run ait future offer src/stock.c cond.yaml -F "$T/encoded-message"
+	check_rc 'Git UTF8 repair cannot create an unchecked cutoff either' 129
+	check 'the repaired cutoff reports the decoded LINE' "has err \"the message hides the trailers: 'é ------------------------ >8 ------------------------'\""
+	git config --unset-all core.commentString
+fi
 
 git update-ref refs/heads/ait/master "$good"
 for source in argument file stdin; do
@@ -99,19 +105,19 @@ done
 
 # The parser decides; a failed Git parser cannot be replaced by a C cutoff verdict.
 racing_git
-printf '%s\n' "git config core.commentString ''" >"$T/before-log"
+printf '%s\n' "git config core.commentChar ''" >"$T/before-log"
 run env PATH="$T/bin:$PATH" ait future offer src/stock.c cond.yaml -m "$message"
 check_rc 'an actual Git parser failure precedes a scissors diagnosis' 128
 check 'a parser failure retains E_GIT rather than a guessed usage error' "has err \"git failed: 'git log'\""
-git config --unset-all core.commentString || :
+git config --unset-all core.commentChar || :
 rm -f "$T/before-log" "$T/before-log.done"
 git update-ref refs/heads/ait/master "$good"
 
-# Git 2.53 is the minimum runtime; the shim changes the reported version only.
-printf '%s\n' "printf 'git version 2.52.0\\n'" >"$T/before-version"
+# Git 2.38 is the minimum runtime; the shim changes the reported version only.
+printf '%s\n' "printf 'git version 2.37.0\\n'" >"$T/before-version"
 run env PATH="$T/bin:$PATH" ait future offer src/stock.c cond.yaml -m version
-check_rc 'Git 2.52 is below the supported runtime' 128
-check 'the upgrade hint matches the supported Git 2.53 floor' "has err '^fatal: git 2.52 is too old for ait$' && has err '^hint: install git 2.53 or later$'"
+check_rc 'Git 2.37 is below the supported runtime' 128
+check 'the upgrade hint matches the supported Git 2.38 floor' "has err '^fatal: git 2.37 is too old for ait$' && has err '^hint: install git 2.38 or later$'"
 rm -f "$T/before-version" "$T/before-version.done"
 git update-ref refs/heads/ait/master "$good"
 
@@ -130,7 +136,9 @@ for setting in separators-empty separators-equals comment-prefix key-with-colon 
 	case $setting in
 	separators-empty) key=trailer.separators; value='' ;;
 	separators-equals) key=trailer.separators; value='=' ;;
-	comment-prefix) key=core.commentstring; value=Ait- ;;
+	comment-prefix)
+		test_have_prereq COMMENT_STRING 'a multi-character prefix that hides the keys' || continue
+		key=core.commentstring; value=Ait- ;;
 	key-with-colon) key=trailer.request.key; value='Ait-Request: ' ;;
 	key-renamed) key=trailer.Ait-Request.key; value=Hidden-Request ;;
 	esac
@@ -161,10 +169,12 @@ done
 
 # The effective prefix comes from Git's config ordering, including environment overrides.
 git config core.commentString //
-slash=$(printf 'explain\n\n// ------------------------ >8 ------------------------\nhidden\n')
-run ait future offer src/stock.c cond.yaml -m "$slash"
-check_rc 'a multi-character prefix supplies the actual scissors line' 129
-check 'the multi-character LINE is reported exactly' "has err \"the message hides the trailers: '// ------------------------ >8 ------------------------'\""
+if test_have_prereq COMMENT_STRING 'a multi-character prefix'; then
+	slash=$(printf 'explain\n\n// ------------------------ >8 ------------------------\nhidden\n')
+	run ait future offer src/stock.c cond.yaml -m "$slash"
+	check_rc 'a multi-character prefix supplies the actual scissors line' 129
+	check 'the multi-character LINE is reported exactly' "has err \"the message hides the trailers: '// ------------------------ >8 ------------------------'\""
+fi
 run env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.commentChar GIT_CONFIG_VALUE_0=';' \
 	ait future offer src/stock.c cond.yaml -m "$(printf 'explain\n\n; ------------------------ >8 ------------------------\nhidden\n')"
 check_rc 'environment commentChar overrides the earlier local commentString' 129
@@ -226,11 +236,11 @@ check 'validation adds no real repository objects for a no-op checkin' \
 
 # A failure of the actual metadata reader cleans its private temporary resources.
 mkdir "$T/probe-tmp"
-printf '%s\n' "git config core.commentString ''" >"$T/before-log"
+printf '%s\n' "git config core.commentChar ''" >"$T/before-log"
 run env PATH="$T/bin:$PATH" TMPDIR="$T/probe-tmp" ait future offer src/stock.c cond.yaml -m reader
 check_rc 'an actual metadata reader failure remains E_GIT' 128
 check 'a reader failure leaves no temporary validation files' "test -z \"\$(find '$T/probe-tmp' -mindepth 1 -print -quit)\""
-git config --unset-all core.commentString || :
+git config --unset-all core.commentChar || :
 rm -f "$T/before-log" "$T/before-log.done"
 
 

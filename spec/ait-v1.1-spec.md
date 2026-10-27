@@ -265,7 +265,7 @@ ait 브랜치의 tree 하나에 대해 판정한다: (a) 형식(2.3, 2.5, 배치
 
 ### 6.1 `ait init`
 
-1. git 작업 폴더 안이 아니면 E_GIT(2.6.5). ait는 지원·검증 기준인 git 2.53 이상을 요구한다. 낮으면 `fatal: git X.Y is too old for ait`와 `hint: install git 2.53 or later`.
+1. git 작업 폴더 안이 아니면 E_GIT(2.6.5). ait는 git 2.38 이상을 요구한다(pull의 `git merge-tree --write-tree`가 2.38에서 들어왔다, U70). 낮으면 `fatal: git X.Y is too old for ait`와 `hint: install git 2.38 or later`.
 1a. `git rev-parse --git-path hooks/reference-transaction`이 없으면 알림 hook(9.8)을 쓴다. 이미 다른 내용이 있으면 고치지 않고 `warning: '<path>' exists; 'ait listen' wakes by polling only`.
 2. `git rev-parse --git-path info/exclude` 파일에 `/.ait/` 행이 없으면 더한다.
 3. 원격 추적 `refs/remotes/<remote>/ait/<name>`(2.1.2) 중 로컬에 없는 이름마다, 원격 하나에만 있거나 `checkout.defaultRemote`가 그 원격이면 `git branch -q ait/<name> <remote>/ait/<name>`(upstream이 설정된다). 여러 원격에 있고 고를 수 없으면 `warning: 'ait/<name>' matched multiple (N) remote tracking branches`(`builtin/checkout.c:1321`의 문구)를 쓰고 그 이름은 만들지 않는다.

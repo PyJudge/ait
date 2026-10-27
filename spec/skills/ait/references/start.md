@@ -1,6 +1,6 @@
 # Setting up, sessions, remotes and notifications
 
-ait needs Git 2.53 or later. ait takes only its own commands; do ordinary Git work with `git`.
+ait needs Git 2.38 or later. ait takes only its own commands; do ordinary Git work with `git`.
 
 1. Run `ait init` in the repository. Contracts live on `ait/<name>` branches, apart from the code; `.ait/` in the work tree holds contract drafts.
 2. Reuse your session from `ait session list` (the one with your agent name and your worktree), or open one with `ait session open --agent <name>`. Each agent has its own worktree and session. Set `AIT_SESSION=<SID>` to act as another session.

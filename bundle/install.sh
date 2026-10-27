@@ -10,10 +10,10 @@ if ! git_version=$(git version) ||
 	! printf '%s\n' "$git_version" | awk '
 		$1 == "git" && $2 == "version" {
 			split($3, v, ".")
-			supported = v[1] > 2 || (v[1] == 2 && v[2] >= 53)
+			supported = v[1] > 2 || (v[1] == 2 && v[2] >= 38)
 		}
 		END { exit !supported }'; then
-	echo "fatal: git 2.53 or later is required" >&2
+	echo "fatal: git 2.38 or later is required" >&2
 	exit 128
 fi
 prefix=${PREFIX:-$HOME/.local}

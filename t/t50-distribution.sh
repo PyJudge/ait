@@ -97,11 +97,11 @@ REAL_GIT=$(command -v git); export REAL_GIT
 mkdir "$T/old-git"
 cat >"$T/old-git/git" <<'GIT'
 #!/bin/sh
-if [ "$1" = version ]; then echo 'git version 2.38.0'; else exec "$REAL_GIT" "$@"; fi
+if [ "$1" = version ]; then echo 'git version 2.37.0'; else exec "$REAL_GIT" "$@"; fi
 GIT
 chmod +x "$T/old-git/git"
 run env PATH="$T/old-git:$PATH" PREFIX="$T/old-install" sh "$package/install.sh"
-check 'an unsupported Git version creates no installation' "test $rc = 128 && test ! -e '$T/old-install' && has err 'git 2.53 or later'"
+check 'an unsupported Git version creates no installation' "test $rc = 128 && test ! -e '$T/old-install' && has err 'git 2.38 or later'"
 cat >"$T/old-git/git" <<'GIT'
 #!/bin/sh
 exit 1

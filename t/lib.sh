@@ -23,6 +23,8 @@ prereq_SANITY() {
 	chmod +w "$T/sanity" && rm -rf "$T/sanity"
 	return $sane
 }
+# core.commentString came in Git 2.45 (RelNotes 2.45.0); an older Git ignores it
+prereq_COMMENT_STRING() { test "$(printf 'x\n' | git -c core.commentString=';;' stripspace --comment-lines)" = ';; x'; }
 # test_have_prereq PREREQ WHAT: PREREQ holds, or WHAT is reported skipped (git v2.53.0 t/test-lib.sh:1146)
 test_have_prereq() {
 	"prereq_$1" && return 0

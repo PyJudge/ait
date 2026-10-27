@@ -448,10 +448,10 @@ static void setup(void)
 	const char *index_env = getenv("GIT_INDEX_FILE");
 
 	if (sscanf(git_run(NULL, NULL, &rc, "version"), "git version %d.%d", &major, &minor) != 2)
-		reject(128, "install git 2.53 or later", "cannot run git");
-	/* Git 2.53 is the supported and verified runtime (spec 6.1-1). */
-	if (major < 2 || (major == 2 && minor < 53))
-		reject(128, "install git 2.53 or later", "git %d.%d is too old for ait", major, minor);
+		reject(128, "install git 2.38 or later", "cannot run git");
+	/* pull's 'git merge-tree --write-tree' came in Git 2.38 (spec 6.1-1) */
+	if (major < 2 || (major == 2 && minor < 38))
+		reject(128, "install git 2.38 or later", "git %d.%d is too old for ait", major, minor);
 	string_list_split(&lines, git_run(NULL, NULL, &rc, "rev-parse", "--absolute-git-dir",
 		"--path-format=absolute", "--git-common-dir", "--show-object-format", "--show-toplevel"), "\n", -1);
 	if (lines.nr < 4)
