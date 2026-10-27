@@ -990,8 +990,12 @@ static char *write_check_files(struct request_input *q, struct request_result *r
 	if (!tasks)
 		return NULL;
 	write_state(rq, req.buf);
-	/* 7.4: a template with these condition-ids and tasks stays, filled or not */
-	if (input && !stat(q->result, &supplied) && !stat(rs, &stored) &&
+	/*
+	 * 7.4: a template with these condition-ids and tasks stays, filled or
+	 * not; a file is the same only by a known identity, as git's abspath.c:16
+	 * asks (Windows' stat gives none)
+	 */
+	if (input && !stat(q->result, &supplied) && !stat(rs, &stored) && (stored.st_dev || stored.st_ino) &&
 	    supplied.st_dev == stored.st_dev && supplied.st_ino == stored.st_ino)
 		existing = input;
 	else if (strbuf_read_file(&old, rs, 0) >= 0)

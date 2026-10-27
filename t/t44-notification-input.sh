@@ -11,7 +11,7 @@ cat >"$T/round-bin/git" <<'GIT'
 #!/bin/sh
 sub=
 for arg; do
-	case $arg in -*|*=*|/*) continue ;; esac
+	case $arg in -*|*=*|/*|[A-Za-z]:/*) continue ;; esac
 	sub=$arg; break
 done
 if test "$sub" = for-each-ref && test -e "$receiver_file.listen" &&

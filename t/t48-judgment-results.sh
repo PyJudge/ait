@@ -15,7 +15,7 @@ case " $* " in *' -U0 '*) printf '%s\n' "$*" >>"$T/diff.trace" ;; esac
 if test "$ONE_ROUND" = 1; then
 	sub=
 	for arg; do
-		case $arg in -*|*=*|/*) continue ;; esac
+		case $arg in -*|*=*|/*|[A-Za-z]:/*) continue ;; esac
 		sub=$arg; break
 	done
 	if test "$sub" = rev-list; then

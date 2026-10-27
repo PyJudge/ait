@@ -91,7 +91,7 @@ racing_git() {
 #!/bin/sh
 real=$(PATH=$(echo "$PATH" | sed "s|$TP/bin:||") command -v git)
 for a; do
-	case $a in -*|*=*|/*) continue ;; esac
+	case $a in -*|*=*|/*|[A-Za-z]:/*) continue ;; esac
 	f="$T/before-$a"
 	[ -f "$f" ] && { mv "$f" "$f.done"; sh "$f.done" || exit 1; }
 	break

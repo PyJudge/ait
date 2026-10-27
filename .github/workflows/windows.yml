@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: msys2/setup-msys2@v2
@@ -29,10 +29,13 @@ jobs:
       # reported instead of holding the suite; every output is kept
       - name: test
         shell: bash
+        # as "make test" exports it, so the make a check runs (t50) keeps this build
+        env:
+          DEVELOPER: 1
         run: |
           mkdir -p out
           cd t
-          ls t[0-9]*.sh | xargs -P 6 -I{} sh -c 'timeout 120 sh "$1" > "../out/$1.out" 2>&1; echo $? > "../out/$1.rc"' _ {}
+          ls t[0-9]*.sh | xargs -P 6 -I{} sh -c 'timeout 900 sh "$1" > "../out/$1.out" 2>&1; echo $? > "../out/$1.rc"' _ {}
           cd ..
           failed=0
           for f in out/*.rc; do

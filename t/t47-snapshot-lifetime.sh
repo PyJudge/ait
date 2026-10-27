@@ -9,7 +9,10 @@ setup
 run ait future offer src/stock.c cond.yaml -m snapshot
 check_rc 'prepare a stored snapshot' 0
 set -- -std=gnu99 -O1 -Wall -Werror -Wdeclaration-after-statement -I"$AIT_DIR" -I"$AIT_DIR/libyaml"
-case $(uname -s) in Linux) set -- "$@" -DHAVE_GETRANDOM ;; Darwin) set -- "$@" -DHAVE_ARC4RANDOM -DPRECOMPOSE_UNICODE ;; esac
+case $(uname -s) in Linux) set -- "$@" -DHAVE_GETRANDOM ;; Darwin) set -- "$@" -DHAVE_ARC4RANDOM -DPRECOMPOSE_UNICODE ;;
+*MINGW*) set -- "$@" -DWIN32 -DHAVE_RTLGENRANDOM -DNO_POLL -DNO_SETENV -DNO_OPENSSL -DNOGDI -D__USE_MINGW_ANSI_STDIO=0 \
+	-DDETECT_MSYS_TTY -I"$AIT_DIR/git" -I"$AIT_DIR/git/compat/win32" -I"$AIT_DIR/git/compat/poll" ;;
+esac
 # macOS compact allocator bookkeeping grows during warmup; use its standard zone for live-allocation checks.
 compiler=${CC:-cc}
 "$compiler" "$@" -Dmain=ait_command_main -c "$AIT_DIR/ait.c" -o "$T/ait.o" || exit 1
@@ -18,7 +21,7 @@ for source in "$AIT_DIR"/*.c; do
 	set -- "$@" "$source"
 done
 set -- "$@" "$AIT_DIR/t/helper-snapshot-lifetime.c" "$T/ait.o" "$AIT_DIR"/libyaml/*.o
-case $(uname -s) in Darwin) set -- "$@" -liconv ;; esac
+case $(uname -s) in Darwin) set -- "$@" -liconv ;; *MINGW*) set -- "$@" "$AIT_DIR"/git/compat/*.o "$AIT_DIR"/git/compat/*/*.o "$AIT_DIR"/git/*.o -municode -lws2_32 -lntdll ;; esac
 "$compiler" "$@" -o "$T/snapshot-lifetime" || exit 1
 run "$T/snapshot-lifetime" branch
 check_rc 'two branch owners hold independent contracts' 0

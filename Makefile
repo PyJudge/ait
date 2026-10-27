@@ -36,6 +36,7 @@ endif
 # git's compat layer (git/, as v2.53.0 has it) built as its own code, beside windows.c;
 # ait's sources see its headers as git's do (-Icompat/win32: dirent.h matches its readdir)
 ifneq ($(findstring MINGW,$(uname_S)),)
+	X = .exe
 	CFLAGS += -DWIN32 -DHAVE_RTLGENRANDOM -DNO_POLL -DNO_SETENV -DNO_OPENSSL -DNOGDI \
 		-D__USE_MINGW_ANSI_STDIO=0 -DDETECT_MSYS_TTY -Igit -Igit/compat/win32 -Igit/compat/poll
 	LDLIBS += -municode -lws2_32 -lntdll
@@ -55,9 +56,9 @@ GIT_CFLAGS = -std=gnu99 -O2 -Igit -Igit/compat -Igit/compat/win32 -Igit/compat/p
 # flags other than the last build's rebuild, as git's GIT-CFLAGS (Makefile:3255-3260);
 # compared by content, since a file time can miss a change within its second
 ifneq ($(ALL_CFLAGS),$(shell cat AIT-CFLAGS 2>/dev/null))
-ait: FORCE
+ait$X: FORCE
 endif
-ait: $(SRC) $(wildcard *.h) $(YAML) $(GIT_OBJS)
+ait$X: $(SRC) $(wildcard *.h) $(YAML) $(GIT_OBJS)
 	$(CC) $(ALL_CFLAGS) -Ilibyaml -o $@ $(SRC) $(YAML) $(GIT_OBJS) $(LDLIBS)
 	@echo '$(ALL_CFLAGS)' >AIT-CFLAGS
 
@@ -67,7 +68,7 @@ libyaml/%.o: libyaml/%.c libyaml/yaml.h libyaml/yaml_private.h
 git/%.o: git/%.c
 	$(CC) $(GIT_CFLAGS) -c -o $@ $<
 
-test: ait
+test: ait$X
 	@sh t/run.sh
 
 # Source and archive installs use the same installer and resource layout.
@@ -76,10 +77,10 @@ install: bundle
 	PREFIX="$(prefix)" sh dist/ait/install.sh
 
 # The v1.1 release: native executable, skill and setup scripts.
-bundle: ait
+bundle: ait$X
 	rm -rf dist/ait
 	mkdir -p dist/ait/bin dist/ait/skills
-	cp ait dist/ait/bin/
+	cp ait$X dist/ait/bin/
 	cp -R spec/skills/ait dist/ait/skills/
 	cp bundle/README.md bundle/install.sh bundle/setup.sh bundle/try.sh bundle/ait-graph.sh dist/ait/
 	printf '1.1\n' > dist/ait/VERSION
@@ -98,7 +99,7 @@ cloud:
 	tar -czf dist/ait-v1.1-cloud.tar.gz -C dist ait-cloud
 
 clean:
-	rm -f ait ait.exe AIT-CFLAGS $(YAML) $(GIT_OBJS)
+	rm -f ait$X AIT-CFLAGS $(YAML) $(GIT_OBJS)
 
 FORCE:
 

@@ -1119,8 +1119,9 @@ int create_file(const char *path, const char *text, mode_t mode)
 
 	leading_dirs(path);
 	fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+	/* an existing directory is EISDIR, not EEXIST, from git's mingw_open (compat/mingw.c) */
 	if (fd < 0) {
-		if (errno == EEXIST)
+		if (errno == EEXIST || errno == EISDIR)
 			return 0;
 		write_error(path);
 	}
