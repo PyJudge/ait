@@ -20,10 +20,10 @@ jobs:
       - name: traces
         shell: bash
         run: |
+          set +e +o pipefail
           trace() { # SCRIPT CHECK: the trace up to 'not ok CHECK'
             echo "======== $1 (to not ok $2)"
             timeout 120 sh -x "t/$1.sh" > "trace.$1" 2>&1
-            awk -v k="not ok $2 " 'index($0, k) == 1 { print; for (i = 0; i < 6 && (getline l) > 0; i++) print l; exit } { buf[NR % 70] = $0 } NR > 70 { } END { }' "trace.$1" > /dev/null
             n=$(grep -n "^not ok $2 " "trace.$1" | head -1 | cut -d: -f1)
             if [ -n "$n" ]; then sed -n "$((n > 60 ? n - 60 : 1)),$((n + 6))p" "trace.$1"; else tail -60 "trace.$1"; fi
           }
@@ -42,10 +42,16 @@ jobs:
         if: always()
         shell: bash
         run: |
-          . t/lib.sh; setup
+          set +e
+          cat > t/diag-result.sh <<'SH'
+          . "$(dirname "$0")/lib.sh"
+          setup
           run ait future demand src/order.c src/stock.c cond.yaml -m d; D=$(newest D)
           run ait fulfill "$D" -m f; cat "$T/out" "$T/err"
           res=$(git rev-parse --absolute-git-dir)/ait/check-result.yaml
           echo "res=$res"; od -c "$res" | head -20
           sed -i.bak 's/^  outcome:$/  outcome: pass/; s/^  basis: |$/  basis: |\n    checked/' "$res"; echo "sed rc=$?"
           od -c "$res" | head -20
+          run ait fulfill "$D" -r "$res" -m f; cat "$T/out" "$T/err"
+          SH
+          sh t/diag-result.sh
